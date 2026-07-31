@@ -1,1 +1,6 @@
 .worktrees/
+
+# Go build artifacts
+bin/
+*.test
+*.out
