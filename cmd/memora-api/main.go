@@ -2,15 +2,16 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/1090-f/Memora/internal/app/api"
+	"github.com/1090-f/Memora/internal/platform/cache"
 	"github.com/1090-f/Memora/internal/platform/config"
 	"github.com/1090-f/Memora/internal/platform/database"
+	"github.com/1090-f/Memora/internal/platform/objectstore"
 )
 
 func main() {
@@ -22,12 +23,28 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer sqlDB.Close()
+
+	redisClient, err := cache.Open(cfg.Redis)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer redisClient.Close()
+
+	store, err := objectstore.Open(context.Background(), cfg.MinIO)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	app, err := api.New(api.Dependencies{
 		HTTP:           cfg.HTTP,
 		DatabaseHealth: func(ctx context.Context) error { return database.Check(ctx, db) },
-		RedisHealth:    unavailableDependency,
-		MinIOHealth:    unavailableDependency,
+		RedisHealth:    func(ctx context.Context) error { return redisClient.Ping(ctx).Err() },
+		MinIOHealth:    store.Health,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -38,8 +55,4 @@ func main() {
 	if err := app.Run(ctx); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func unavailableDependency(context.Context) error {
-	return errors.New("dependency adapter is not configured")
 }

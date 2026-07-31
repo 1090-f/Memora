@@ -4,3 +4,5 @@
 bin/
 *.test
 *.out
+.gocache/
+.gomodcache/

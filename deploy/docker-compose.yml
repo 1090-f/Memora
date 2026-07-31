@@ -1,0 +1,129 @@
+name: memora
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: memora
+      POSTGRES_USER: memora
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - memora-postgres:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memora -d memora"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - memora-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MEMORA_MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MEMORA_MINIO_SECRET_KEY:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - memora-minio:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MEMORA_MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MEMORA_MINIO_SECRET_KEY:-minioadmin}
+      MEMORA_MINIO_BUCKET: ${MEMORA_MINIO_BUCKET:-memora}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" &&
+        mc mb --ignore-existing "local/$${MEMORA_MINIO_BUCKET}"
+    restart: "no"
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["memora-migrate", "up"]
+    environment: &memora-environment
+      MEMORA_ENVIRONMENT: ${MEMORA_ENVIRONMENT:-development}
+      MEMORA_HTTP_ADDRESS: ":8080"
+      MEMORA_HTTP_READ_TIMEOUT: ${MEMORA_HTTP_READ_TIMEOUT:-15s}
+      MEMORA_HTTP_WRITE_TIMEOUT: ${MEMORA_HTTP_WRITE_TIMEOUT:-15s}
+      MEMORA_HTTP_SHUTDOWN_TIMEOUT: ${MEMORA_HTTP_SHUTDOWN_TIMEOUT:-10s}
+      MEMORA_DATABASE_URL: "postgres://memora:password@postgres:5432/memora?sslmode=disable"
+      MEMORA_DATABASE_MAX_OPEN: ${MEMORA_DATABASE_MAX_OPEN:-25}
+      MEMORA_DATABASE_MAX_IDLE: ${MEMORA_DATABASE_MAX_IDLE:-5}
+      MEMORA_REDIS_ADDRESS: "redis:6379"
+      MEMORA_REDIS_PASSWORD: ${MEMORA_REDIS_PASSWORD:-}
+      MEMORA_REDIS_DB: ${MEMORA_REDIS_DB:-0}
+      MEMORA_MINIO_ENDPOINT: "minio:9000"
+      MEMORA_MINIO_ACCESS_KEY: ${MEMORA_MINIO_ACCESS_KEY:-minioadmin}
+      MEMORA_MINIO_SECRET_KEY: ${MEMORA_MINIO_SECRET_KEY:-minioadmin}
+      MEMORA_MINIO_BUCKET: ${MEMORA_MINIO_BUCKET:-memora}
+      MEMORA_MINIO_USE_SSL: "false"
+      MEMORA_JWT_SECRET: ${MEMORA_JWT_SECRET:-change-me}
+      MEMORA_ACCESS_TTL: ${MEMORA_ACCESS_TTL:-2h}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["memora-api"]
+    environment: *memora-environment
+    ports:
+      - "8080:8080"
+    depends_on: &application-dependencies
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["memora-worker"]
+    environment: *memora-environment
+    depends_on: *application-dependencies
+    restart: unless-stopped
+
+volumes:
+  memora-postgres:
+  memora-redis:
+  memora-minio:
