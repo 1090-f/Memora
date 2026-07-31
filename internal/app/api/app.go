@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/1090-f/Memora/internal/modules/identity/application"
 	systemhttp "github.com/1090-f/Memora/internal/modules/system/adapters/http"
 	"github.com/1090-f/Memora/internal/platform/config"
 	"github.com/gin-gonic/gin"
@@ -19,6 +20,7 @@ type Dependencies struct {
 	DatabaseHealth systemhttp.HealthCheck
 	RedisHealth    systemhttp.HealthCheck
 	MinIOHealth    systemhttp.HealthCheck
+	AuthService    *application.AuthService
 	Logger         *slog.Logger
 }
 

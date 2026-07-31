@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"time"
 
+	identityhttp "github.com/1090-f/Memora/internal/modules/identity/adapters/http"
 	systemhttp "github.com/1090-f/Memora/internal/modules/system/adapters/http"
 	"github.com/1090-f/Memora/internal/platform/httpx"
 	"github.com/gin-gonic/gin"
@@ -24,6 +25,11 @@ func newRouter(deps Dependencies) *gin.Engine {
 	})
 	router.GET("/health/live", health.Live)
 	router.GET("/health/ready", health.Ready)
+	if deps.AuthService != nil {
+		authHandler := identityhttp.NewAuthHandler(deps.AuthService)
+		authMiddleware := identityhttp.NewAuthMiddleware(deps.AuthService)
+		identityhttp.RegisterRoutes(router, authHandler, authMiddleware.AuthRequired())
+	}
 	return router
 }
 
