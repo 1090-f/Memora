@@ -20,12 +20,17 @@ func Success(c *gin.Context, status int, data any) {
 
 // Failure writes a public API error response without exposing its internal cause.
 func Failure(c *gin.Context, appError contracts.AppError) {
+	FailureWithStatus(c, statusFor(appError.Code), appError)
+}
+
+// FailureWithStatus writes a public error response using an explicit HTTP status.
+func FailureWithStatus(c *gin.Context, status int, appError contracts.AppError) {
 	code := appError.Code
 	if code == "" {
 		code = contracts.InternalError
 	}
 
-	c.JSON(statusFor(code), contracts.Envelope{
+	c.JSON(status, contracts.Envelope{
 		Code:      string(code),
 		Message:   errorMessage(code, appError.Message),
 		Details:   appError.Details,
