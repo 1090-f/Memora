@@ -1,13 +1,28 @@
-.PHONY: test lint build
+.PHONY: build run-server run-worker migrate bootstrap-admin reset-admin-password test fmt vet
+
+build:
+	go build ./cmd/...
+
+run-server:
+	go run ./cmd/server
+
+run-worker:
+	go run ./cmd/worker
+
+migrate:
+	go run ./cmd/migrate up
+
+bootstrap-admin:
+	go run ./cmd/migrate bootstrap-admin
+
+reset-admin-password:
+	go run ./cmd/migrate reset-admin-password
 
 test:
 	go test ./...
 
-lint:
-	go vet ./...
+fmt:
+	gofmt -w ./cmd ./internal ./pkg
 
-build:
-	mkdir -p bin
-	go build -o bin/memora-api ./cmd/memora-api
-	go build -o bin/memora-worker ./cmd/memora-worker
-	go build -o bin/memora-migrate ./cmd/memora-migrate
+vet:
+	go vet ./...
