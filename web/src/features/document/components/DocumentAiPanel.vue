@@ -1,21 +1,16 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useDocumentScopeChat } from '../composables/useDocumentScopeChat'
 
 const props = defineProps<{
   documentTitle?: string
+  documentId?: string
   knowledgeBaseId?: string
 }>()
 
-const documentScopeEnabled = computed(() => {
-  return import.meta.env.VITE_DOCUMENT_SCOPE_ENABLED === 'true'
-})
+const { getDocumentScopeLabel } = useDocumentScopeChat()
 
-const scopeLabel = computed(() => {
-  if (documentScopeEnabled.value && props.documentTitle) {
-    return `基于当前文档: ${props.documentTitle}`
-  }
-  return '基于当前知识库'
-})
+const scopeLabel = computed(() => getDocumentScopeLabel(props.documentTitle))
 
 function openFullChat() {
   if (props.knowledgeBaseId) {

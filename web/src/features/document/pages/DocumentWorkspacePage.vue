@@ -117,6 +117,7 @@ async function handleRetry() {
     <template #inspector>
       <DocumentAiPanel
         :document-title="document?.title"
+        :document-id="documentId"
         :knowledge-base-id="kbId"
       />
     </template>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { renderMarkdown, processExternalLinks } from '@/utils/markdown'
+import CitationList from '@/features/agent-run/components/CitationList.vue'
 import type { Message } from '../types'
 
 const props = defineProps<{
@@ -14,6 +15,7 @@ const renderedContent = computed(() => {
 
 const isStreaming = computed(() => props.message.status === 'streaming')
 const isFailed = computed(() => props.message.status === 'failed')
+const hasCitations = computed(() => props.message.citations && props.message.citations.length > 0)
 </script>
 
 <template>
@@ -35,6 +37,12 @@ const isFailed = computed(() => props.message.status === 'failed')
       >
         <!-- eslint-disable-next-line vue/no-v-html -->
         <div class="prose prose-sm max-w-none" v-html="renderedContent" />
+
+        <!-- Citations -->
+        <CitationList
+          v-if="hasCitations"
+          :citations="message.citations || []"
+        />
       </div>
 
       <!-- Failed state -->
