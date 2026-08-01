@@ -62,6 +62,18 @@ const router = createRouter({
       ],
     },
     {
+      path: '/mcp',
+      component: () => import('@/layouts/AppShell.vue'),
+      meta: { requiresAuth: true },
+      children: [
+        {
+          path: '',
+          name: 'mcp',
+          component: () => import('@/features/mcp/pages/McpPage.vue'),
+        },
+      ],
+    },
+    {
       path: '/kb/:kbId/docs',
       component: () => import('@/layouts/AppShell.vue'),
       meta: { requiresAuth: true },
