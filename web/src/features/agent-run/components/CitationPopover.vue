@@ -15,6 +15,17 @@ function isKnowledgeBase(citation: Citation): citation is KnowledgeBaseCitation 
 function isNetwork(citation: Citation): citation is NetworkCitation {
   return citation.source_type === 'network'
 }
+
+function openDocument(citation: KnowledgeBaseCitation) {
+  const section = citation.source_location?.section
+    ? `&section=${encodeURIComponent(citation.source_location.section)}`
+    : ''
+  const quote = citation.quoted_text
+    ? `&quote=${encodeURIComponent(citation.quoted_text)}`
+    : ''
+  const url = `/kb/${citation.knowledge_base_id}/docs/${citation.document_id}?fromConversation=true${section}${quote}`
+  void window.open(url, '_blank')
+}
 </script>
 
 <template>
@@ -66,10 +77,20 @@ function isNetwork(citation: Citation): citation is NetworkCitation {
         </p>
         <div
           v-if="citation.source_location?.section"
-          class="text-xs text-[var(--memora-muted)]"
+          class="mb-2 text-xs text-[var(--memora-muted)]"
         >
           章节: {{ citation.source_location.section }}
+          <span v-if="citation.source_location.page"> | 页码: {{ citation.source_location.page }}</span>
         </div>
+        <p class="mb-2 text-xs text-[var(--memora-muted)]">
+          文档更新: {{ new Date(citation.document_updated_at).toLocaleDateString() }}
+        </p>
+        <button
+          class="w-full rounded-md bg-[var(--memora-brand-500)]/10 px-3 py-1.5 text-xs font-medium text-[var(--memora-brand-500)] hover:bg-[var(--memora-brand-500)]/20"
+          @click="openDocument(citation)"
+        >
+          打开文档
+        </button>
       </div>
 
       <div v-else-if="isNetwork(citation)">

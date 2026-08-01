@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useMessageList, useSubmitQuestion, useCreateConversation } from '../queries'
+import { useMessageList, useCreateConversation } from '../queries'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useAuthStore } from '@/stores/auth'
 import { useAgentRuntimeStore } from '@/stores/agent-runtime'
 import { streamAgentEvents } from '@/api/sse'
+import { request } from '@/api/client'
+import type { AgentRun } from '@/features/agent-run/api'
 import ChatWorkspaceShell from '@/layouts/ChatWorkspaceShell.vue'
 import ConversationSidebar from '../components/ConversationSidebar.vue'
 import MessageList from '../components/MessageList.vue'
@@ -22,18 +24,24 @@ const runtimeStore = useAgentRuntimeStore()
 const kbId = computed(() => route.params.kbId as string)
 const conversationId = computed(() => route.params.conversationId as string | undefined)
 
+const sseResumeEnabled = import.meta.env.VITE_SSE_RESUME_ENABLED === 'true'
+
 // Set current knowledge base
 watch(kbId, (id) => {
   if (id) workspaceStore.setCurrentKbId(id)
 }, { immediate: true })
 
 // Conversation and messages
-const { data: messagesData, isLoading: messagesLoading } = useMessageList(conversationId)
+const { data: messagesData, isLoading: messagesLoading, refetch: refetchMessages } = useMessageList(conversationId)
 
 // Local messages state for optimistic updates
 const localMessages = ref<Message[]>([])
 const isStreaming = ref(false)
+const showReconnect = ref(false)
 let abortController: AbortController | null = null
+
+// Pending question for redirect scenario
+const pendingQuery = ref<string | null>(null)
 
 // Watch for server messages and merge with local
 watch(messagesData, (data) => {
@@ -44,22 +52,35 @@ watch(messagesData, (data) => {
   }
 }, { immediate: true })
 
+// After navigation to new conversation, submit the pending question
+watch(conversationId, (newId, oldId) => {
+  if (newId && !oldId && pendingQuery.value) {
+    const query = pendingQuery.value
+    pendingQuery.value = null
+    // Small delay to ensure component is mounted
+    setTimeout(() => {
+      void submitQuestionDirect(newId, query)
+    }, 100)
+  }
+})
+
 const messages = computed(() => localMessages.value)
 
 // Mutations
-const submitMutation = useSubmitQuestion(computed(() => conversationId.value || ''))
 const createConversationMutation = useCreateConversation(kbId)
 
-async function startSseStream(eventsUrl: string, assistantMessage: Message) {
+async function startSseStream(eventsUrl: string, assistantMessage: Message, afterSequence?: number) {
   if (!authStore.access_token) return
 
   abortController = new AbortController()
+  showReconnect.value = false
 
   try {
     await streamAgentEvents({
       url: eventsUrl,
       access_token: authStore.access_token,
       signal: abortController.signal,
+      after_sequence: afterSequence,
       on_event: (event) => {
         runtimeStore.handleEvent(event)
 
@@ -73,6 +94,8 @@ async function startSseStream(eventsUrl: string, assistantMessage: Message) {
           assistantMessage.status = 'completed'
           assistantMessage.citations = runtimeStore.citations
           isStreaming.value = false
+          // Refresh persisted messages from server
+          void refetchMessages()
         } else if (runtimeStore.status === 'failed') {
           assistantMessage.status = 'failed'
           isStreaming.value = false
@@ -84,26 +107,60 @@ async function startSseStream(eventsUrl: string, assistantMessage: Message) {
     })
   } catch (err) {
     if ((err as Error).name !== 'AbortError') {
-      assistantMessage.status = 'failed'
-      isStreaming.value = false
+      // SSE disconnected - check run status
+      void handleSseDisconnect(assistantMessage)
     }
   }
 }
 
-async function handleSubmit(query: string) {
-  if (!query.trim()) return
-
-  // If no conversation, create one first
-  if (!conversationId.value) {
-    try {
-      const conv = await createConversationMutation.mutateAsync({ title: query.slice(0, 50) })
-      void router.push(`/chat/${kbId.value}/${conv.id}`)
-      return
-    } catch {
-      return
-    }
+async function handleSseDisconnect(assistantMessage: Message) {
+  if (!runtimeStore.run_id) {
+    assistantMessage.status = 'failed'
+    isStreaming.value = false
+    return
   }
 
+  try {
+    const run = await request<AgentRun>(`/agent-runs/${runtimeStore.run_id}`)
+
+    if (run.status === 'completed') {
+      // Run completed while disconnected - refresh messages
+      assistantMessage.status = 'completed'
+      assistantMessage.content = run.final_result || assistantMessage.content
+      isStreaming.value = false
+      void refetchMessages()
+    } else if (run.status === 'failed' || run.status === 'cancelled') {
+      assistantMessage.status = run.status
+      isStreaming.value = false
+    } else if (run.status === 'running' || run.status === 'queued') {
+      // Still running - show reconnect option
+      isStreaming.value = false
+      showReconnect.value = true
+    }
+  } catch {
+    assistantMessage.status = 'failed'
+    isStreaming.value = false
+  }
+}
+
+function handleReconnect() {
+  if (!runtimeStore.run_id || !authStore.access_token) return
+
+  // Find the streaming assistant message
+  const assistantMessage = localMessages.value.find(
+    m => m.agent_run_id === runtimeStore.run_id && m.role === 'assistant',
+  )
+  if (!assistantMessage) return
+
+  isStreaming.value = true
+  showReconnect.value = false
+
+  const eventsUrl = `/api/v1/agent-runs/${runtimeStore.run_id}/events`
+  const afterSeq = sseResumeEnabled ? runtimeStore.last_sequence + 1 : undefined
+  void startSseStream(eventsUrl, assistantMessage, afterSeq)
+}
+
+async function submitQuestionDirect(convId: string, query: string) {
   // Add user message optimistically
   const userMessage: Message = {
     id: `temp-${Date.now()}`,
@@ -129,16 +186,38 @@ async function handleSubmit(query: string) {
   runtimeStore.reset()
 
   try {
-    const result = await submitMutation.mutateAsync({ query })
+    // Use direct request since submitMutation is bound to conversationId
+    const result = await request<{ run_id: string; events_url: string; status: string }>(
+      `/conversations/${convId}/questions`,
+      { method: 'POST', body: { query } },
+    )
     assistantMessage.agent_run_id = result.run_id
     runtimeStore.startRun(result.run_id)
-
-    // Start SSE stream
     void startSseStream(result.events_url, assistantMessage)
   } catch {
     assistantMessage.status = 'failed'
     isStreaming.value = false
   }
+}
+
+async function handleSubmit(query: string) {
+  if (!query.trim()) return
+
+  // If no conversation, create one first and store pending query
+  if (!conversationId.value) {
+    pendingQuery.value = query
+    try {
+      const conv = await createConversationMutation.mutateAsync({ title: query.slice(0, 50) })
+      void router.push(`/chat/${kbId.value}/${conv.id}`)
+      // The watch on conversationId will trigger submitQuestionDirect
+      return
+    } catch {
+      pendingQuery.value = null
+      return
+    }
+  }
+
+  await submitQuestionDirect(conversationId.value, query)
 }
 
 function handleStop() {
@@ -147,11 +226,10 @@ function handleStop() {
     abortController = null
   }
 
-  // Cancel via API if we have a run_id
-  if (runtimeStore.run_id && authStore.access_token) {
-    void fetch(`/api/v1/agent-runs/${runtimeStore.run_id}/cancel`, {
+  // Cancel via API using unified client
+  if (runtimeStore.run_id) {
+    void request(`/agent-runs/${runtimeStore.run_id}/cancel`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${authStore.access_token}` },
     }).catch(() => {})
   }
 
@@ -180,10 +258,28 @@ onUnmounted(() => {
     </template>
 
     <template #messages>
-      <MessageList
-        :messages="messages"
-        :loading="messagesLoading"
-      />
+      <div class="flex flex-1 flex-col overflow-hidden">
+        <MessageList
+          :messages="messages"
+          :loading="messagesLoading"
+        />
+
+        <!-- Reconnect banner -->
+        <div
+          v-if="showReconnect"
+          class="border-t border-[var(--memora-border)] bg-yellow-50 px-4 py-3 text-center"
+        >
+          <p class="mb-2 text-sm text-yellow-800">
+            连接中断，任务仍在执行中
+          </p>
+          <button
+            class="rounded-md bg-yellow-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-yellow-700"
+            @click="handleReconnect"
+          >
+            重新连接
+          </button>
+        </div>
+      </div>
     </template>
 
     <template #composer>
