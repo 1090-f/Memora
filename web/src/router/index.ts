@@ -28,6 +28,11 @@ const router = createRouter({
       ],
     },
     {
+      path: '/chat/:kbId/:conversationId?',
+      component: () => import('@/features/conversation/pages/ChatPage.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       path: '/kb/:kbId/docs',
       component: () => import('@/layouts/AppShell.vue'),
       meta: { requiresAuth: true },
