@@ -33,6 +33,23 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: '/runs',
+      component: () => import('@/layouts/AppShell.vue'),
+      meta: { requiresAuth: true },
+      children: [
+        {
+          path: '',
+          name: 'agent-runs',
+          component: () => import('@/features/agent-run/pages/AgentRunListPage.vue'),
+        },
+        {
+          path: ':runId',
+          name: 'agent-run-detail',
+          component: () => import('@/features/agent-run/pages/AgentRunDetailPage.vue'),
+        },
+      ],
+    },
+    {
       path: '/kb/:kbId/docs',
       component: () => import('@/layouts/AppShell.vue'),
       meta: { requiresAuth: true },
