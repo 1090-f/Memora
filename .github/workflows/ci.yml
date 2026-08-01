@@ -1,0 +1,22 @@
+name: CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.25.0
+          cache: true
+      - run: go mod download
+      - name: Check formatting
+        run: test -z "$(gofmt -l ./cmd ./internal ./pkg)"
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: go build ./cmd/...

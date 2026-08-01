@@ -1,0 +1,1 @@
+-- Extensions are shared database capabilities and are intentionally retained.
