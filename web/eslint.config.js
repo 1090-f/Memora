@@ -43,6 +43,9 @@ export default tseslint.config(
         Node: 'readonly',
         Element: 'readonly',
         HTMLElement: 'readonly',
+        File: 'readonly',
+        FormData: 'readonly',
+        alert: 'readonly',
       },
     },
     rules: {
@@ -50,6 +53,7 @@ export default tseslint.config(
       'vue/attributes-order': 'off',
       'vue/html-self-closing': 'off',
       'vue/no-v-html': 'off',
+      'vue/singleline-html-element-content-newline': 'off',
     },
   },
   {

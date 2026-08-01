@@ -45,6 +45,18 @@ const router = createRouter({
       ],
     },
     {
+      path: '/kb/:kbId/search-test',
+      component: () => import('@/layouts/AppShell.vue'),
+      meta: { requiresAuth: true },
+      children: [
+        {
+          path: '',
+          name: 'search-test',
+          component: () => import('@/features/search/pages/SearchTestPage.vue'),
+        },
+      ],
+    },
+    {
       path: '/settings',
       component: () => import('@/layouts/AppShell.vue'),
       meta: { requiresAuth: true },

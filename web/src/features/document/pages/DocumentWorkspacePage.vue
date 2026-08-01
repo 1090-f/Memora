@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useDirectoryTree, useDocumentDetail, useDeleteDocument, useProcessingState } from '../queries'
+import { useDirectoryTree, useDocumentDetail, useDeleteDocument, useProcessingState, useReindexDocument, useRetryProcessing } from '../queries'
 import DocumentWorkspaceShell from '@/layouts/DocumentWorkspaceShell.vue'
 import KnowledgeTree from '../components/KnowledgeTree.vue'
 import DocumentToolbar from '../components/DocumentToolbar.vue'
 import DocumentViewer from '../components/DocumentViewer.vue'
 import DocumentProcessingState from '../components/DocumentProcessingState.vue'
 import DocumentAiPanel from '../components/DocumentAiPanel.vue'
+import ImportDrawer from '../components/ImportDrawer.vue'
 import ConfirmDialog from '@/components/shared/ConfirmDialog.vue'
+import BaseButton from '@/components/base/BaseButton.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -27,9 +29,12 @@ const { data: processingState } = useProcessingState(documentId)
 
 // Mutations
 const deleteMutation = useDeleteDocument()
+const reindexMutation = useReindexDocument()
+const retryMutation = useRetryProcessing()
 
-// Delete confirmation
+// UI state
 const showDeleteConfirm = ref(false)
+const showImportDrawer = ref(false)
 
 function handleSelectDocument(id: string) {
   void router.push(`/kb/${kbId.value}/docs/${id}`)
@@ -46,8 +51,14 @@ async function handleDelete() {
   }
 }
 
-function handleReindex() {
-  // Placeholder - will be implemented in Task 5
+async function handleReindex() {
+  if (!documentId.value) return
+  await reindexMutation.mutateAsync({ id: documentId.value })
+}
+
+async function handleRetry() {
+  if (!documentId.value) return
+  await retryMutation.mutateAsync(documentId.value)
 }
 </script>
 
@@ -55,10 +66,16 @@ function handleReindex() {
   <DocumentWorkspaceShell>
     <template #sidebar>
       <div class="flex h-full flex-col">
-        <div class="border-b border-[var(--memora-border)] px-4 py-3">
+        <div class="flex items-center justify-between border-b border-[var(--memora-border)] px-4 py-3">
           <h2 class="text-sm font-medium text-[var(--memora-text)]">
             目录
           </h2>
+          <BaseButton
+            size="sm"
+            @click="showImportDrawer = true"
+          >
+            导入
+          </BaseButton>
         </div>
         <div class="flex-1 overflow-y-auto">
           <KnowledgeTree
@@ -93,6 +110,7 @@ function handleReindex() {
       <DocumentProcessingState
         v-if="processingState && processingState.processing_status !== 'succeeded'"
         :state="processingState"
+        @retry="handleRetry"
       />
     </template>
 
@@ -103,6 +121,12 @@ function handleReindex() {
       />
     </template>
   </DocumentWorkspaceShell>
+
+  <!-- Import Drawer -->
+  <ImportDrawer
+    v-model:open="showImportDrawer"
+    :knowledge-base-id="kbId"
+  />
 
   <!-- Delete confirmation -->
   <ConfirmDialog

@@ -82,3 +82,61 @@ export interface IndexVersion {
 export function getIndexVersions(id: string): Promise<IndexVersion[]> {
   return request<IndexVersion[]>(`/documents/${id}/index-versions`)
 }
+
+// Import APIs
+export interface ImportTask {
+  id: string
+  source_type: 'file' | 'url'
+  file_name: string | null
+  file_size: number | null
+  mime_type: string | null
+  source_url: string | null
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped'
+  current_step: string | null
+  failure_reason: string | null
+  document_id: string | null
+  created_at: string
+  completed_at: string | null
+}
+
+export interface FileImportResponse {
+  tasks: Array<{
+    task_id: string
+    file_name: string
+    status: string
+  }>
+}
+
+export interface UrlImportRequest {
+  url: string
+  directory_id?: string
+  duplicate_policy?: 'skip' | 'create_new'
+}
+
+export function importFiles(kbId: string, formData: FormData): Promise<FileImportResponse> {
+  return request<FileImportResponse>(`/knowledge-bases/${kbId}/imports/files`, {
+    method: 'POST',
+    body: formData,
+  })
+}
+
+export function importUrl(kbId: string, data: UrlImportRequest): Promise<FileImportResponse> {
+  return request<FileImportResponse>(`/knowledge-bases/${kbId}/imports/url`, {
+    method: 'POST',
+    body: data,
+  })
+}
+
+export function listImportTasks(kbId: string): Promise<PageData<ImportTask>> {
+  return request<PageData<ImportTask>>(`/knowledge-bases/${kbId}/import-tasks`)
+}
+
+export function getImportTask(taskId: string): Promise<ImportTask> {
+  return request<ImportTask>(`/import-tasks/${taskId}`)
+}
+
+export function retryImportTask(taskId: string): Promise<void> {
+  return request<void>(`/import-tasks/${taskId}/retry`, {
+    method: 'POST',
+  })
+}
