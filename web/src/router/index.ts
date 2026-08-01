@@ -50,6 +50,18 @@ const router = createRouter({
       ],
     },
     {
+      path: '/memories',
+      component: () => import('@/layouts/AppShell.vue'),
+      meta: { requiresAuth: true },
+      children: [
+        {
+          path: '',
+          name: 'memories',
+          component: () => import('@/features/memory/pages/MemoryPage.vue'),
+        },
+      ],
+    },
+    {
       path: '/kb/:kbId/docs',
       component: () => import('@/layouts/AppShell.vue'),
       meta: { requiresAuth: true },
