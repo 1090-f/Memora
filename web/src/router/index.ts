@@ -57,6 +57,18 @@ const router = createRouter({
       ],
     },
     {
+      path: '/kb/:kbId/settings',
+      component: () => import('@/layouts/AppShell.vue'),
+      meta: { requiresAuth: true },
+      children: [
+        {
+          path: '',
+          name: 'kb-settings',
+          component: () => import('@/features/knowledge-base/pages/KnowledgeBaseSettingsPage.vue'),
+        },
+      ],
+    },
+    {
       path: '/settings',
       component: () => import('@/layouts/AppShell.vue'),
       meta: { requiresAuth: true },
@@ -65,6 +77,11 @@ const router = createRouter({
           path: 'profile',
           name: 'profile',
           component: () => import('@/features/user/pages/ProfilePage.vue'),
+        },
+        {
+          path: 'models',
+          name: 'model-config',
+          component: () => import('@/features/model-config/pages/ModelConfigPage.vue'),
         },
       ],
     },
