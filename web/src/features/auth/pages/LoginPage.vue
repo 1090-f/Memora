@@ -1,18 +1,57 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
+import { login } from '@/features/auth/api'
+import { useAuthStore } from '@/stores/auth'
+import { AppError } from '@/api/errors'
+
+const router = useRouter()
+const route = useRoute()
+const authStore = useAuthStore()
 
 const account = ref('')
 const password = ref('')
 const loading = ref(false)
 const errorMessage = ref('')
+const requestId = ref('')
 
-function handleSubmit() {
-  // Task 2 will connect this to the authentication API
+onMounted(() => {
+  if (authStore.isAuthenticated) {
+    const redirect = (route.query.redirect as string) || '/'
+    void router.replace(redirect)
+  }
+})
+
+async function handleSubmit() {
+  if (!account.value || !password.value) {
+    errorMessage.value = '请输入账号和密码'
+    return
+  }
+
   loading.value = true
-  // Placeholder: will be replaced with actual API call in Task 2
-  void Promise.resolve().then(() => {
+  errorMessage.value = ''
+  requestId.value = ''
+
+  try {
+    const data = await login({
+      account: account.value,
+      password: password.value,
+    })
+
+    authStore.setSession(data.access_token, data.expires_in, data.user)
+
+    const redirect = (route.query.redirect as string) || '/'
+    await router.replace(redirect)
+  } catch (err) {
+    if (err instanceof AppError) {
+      errorMessage.value = err.message
+      requestId.value = err.requestId || ''
+    } else {
+      errorMessage.value = '登录失败，请稍后重试'
+    }
+  } finally {
     loading.value = false
-  })
+  }
 }
 </script>
 
@@ -67,6 +106,12 @@ function handleSubmit() {
           role="alert"
         >
           {{ errorMessage }}
+          <span
+            v-if="requestId"
+            class="ml-1 text-xs text-[var(--memora-muted)]"
+          >
+            ({{ requestId }})
+          </span>
         </p>
 
         <button
