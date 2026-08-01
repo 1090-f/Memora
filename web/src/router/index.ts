@@ -16,10 +16,28 @@ const router = createRouter({
       component: () => import('@/features/auth/pages/LoginPage.vue'),
     },
     {
-      path: '/settings/profile',
-      name: 'profile',
-      component: () => import('@/features/user/pages/ProfilePage.vue'),
+      path: '/knowledge-bases',
+      component: () => import('@/layouts/AppShell.vue'),
       meta: { requiresAuth: true },
+      children: [
+        {
+          path: '',
+          name: 'knowledge-bases',
+          component: () => import('@/features/knowledge-base/pages/KnowledgeBaseListPage.vue'),
+        },
+      ],
+    },
+    {
+      path: '/settings',
+      component: () => import('@/layouts/AppShell.vue'),
+      meta: { requiresAuth: true },
+      children: [
+        {
+          path: 'profile',
+          name: 'profile',
+          component: () => import('@/features/user/pages/ProfilePage.vue'),
+        },
+      ],
     },
   ],
 })
@@ -62,8 +80,9 @@ router.beforeEach(async (to) => {
     }
   }
 
-  // Check auth
-  if (to.meta.requiresAuth && !authStore.isAuthenticated) {
+  // Check auth - if route has requiresAuth or is a child of a requiresAuth route
+  const requiresAuth = to.matched.some(record => record.meta.requiresAuth)
+  if (requiresAuth && !authStore.isAuthenticated) {
     return {
       name: 'login',
       query: { redirect: to.fullPath },
