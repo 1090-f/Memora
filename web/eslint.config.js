@@ -49,6 +49,7 @@ export default tseslint.config(
       'vue/max-attributes-per-line': 'off',
       'vue/attributes-order': 'off',
       'vue/html-self-closing': 'off',
+      'vue/no-v-html': 'off',
     },
   },
   {

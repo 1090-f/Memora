@@ -28,6 +28,23 @@ const router = createRouter({
       ],
     },
     {
+      path: '/kb/:kbId/docs',
+      component: () => import('@/layouts/AppShell.vue'),
+      meta: { requiresAuth: true },
+      children: [
+        {
+          path: '',
+          name: 'document-workspace',
+          component: () => import('@/features/document/pages/DocumentWorkspacePage.vue'),
+        },
+        {
+          path: ':documentId',
+          name: 'document-detail',
+          component: () => import('@/features/document/pages/DocumentWorkspacePage.vue'),
+        },
+      ],
+    },
+    {
       path: '/settings',
       component: () => import('@/layouts/AppShell.vue'),
       meta: { requiresAuth: true },
