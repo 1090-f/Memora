@@ -7,7 +7,7 @@ import {
   StyledTopicTitle,
   StyledEllipsis,
 } from '../component/styledCommon';
-import { IconWenjianjia, IconWenjian } from '@panda-wiki/icons';
+import { IconWenjianjia, IconWenjian } from '@memora/icons';
 import {
   useFadeInText,
   useCardFadeInAnimation,

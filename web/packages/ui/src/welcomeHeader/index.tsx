@@ -1,6 +1,6 @@
 'use client';
 import React, { useEffect, useState } from 'react';
-import { IconSousuo } from '@panda-wiki/icons';
+import { IconSousuo } from '@memora/icons';
 import {
   Box,
   Button,

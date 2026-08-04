@@ -11,7 +11,7 @@ import {
   Stack,
   TextField,
 } from '@mui/material';
-import { IconSousuo } from '@panda-wiki/icons';
+import { IconSousuo } from '@memora/icons';
 import React, { useEffect, useState } from 'react';
 import NavBtns, { NavBtn } from './NavBtns';
 

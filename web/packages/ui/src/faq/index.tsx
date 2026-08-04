@@ -3,7 +3,7 @@
 import React from 'react';
 import { styled, Grid, alpha } from '@mui/material';
 import { StyledTopicBox, StyledTopicTitle } from '../component/styledCommon';
-import { IconLianjiezu } from '@panda-wiki/icons';
+import { IconLianjiezu } from '@memora/icons';
 import {
   useFadeInText,
   useCardFadeInAnimation,

@@ -3,7 +3,7 @@
 import React from 'react';
 import { styled, Stack, alpha } from '@mui/material';
 import { StyledTopicBox, StyledTopicTitle } from '../component/styledCommon';
-import { IconWenhao } from '@panda-wiki/icons';
+import { IconWenhao } from '@memora/icons';
 import {
   useFadeInText,
   useCardFadeInAnimation,

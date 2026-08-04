@@ -1,4 +1,4 @@
-/// <reference types="@panda-wiki/themes/types" />
+/// <reference types="@memora/themes/types" />
 
 declare module '*.png' {
   const value: string;

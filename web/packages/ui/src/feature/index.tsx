@@ -7,7 +7,7 @@ import {
   useFadeInText,
   useCardFadeInAnimation,
 } from '../hooks/useGsapAnimation';
-import { IconTips } from '@panda-wiki/icons';
+import { IconTips } from '@memora/icons';
 
 interface FeatureProps {
   mobile?: boolean;

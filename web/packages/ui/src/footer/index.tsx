@@ -2,7 +2,7 @@
 import React from 'react';
 import { Box, Divider, Stack, Link, alpha } from '@mui/material';
 import { useState } from 'react';
-import { IconDianhua, IconWeixingongzhonghao } from '@panda-wiki/icons';
+import { IconDianhua, IconWeixingongzhonghao } from '@memora/icons';
 import Overlay from './Overlay';
 import { DocWidth } from '../constants';
 import { PROJECT_NAME } from '../constants';
@@ -112,7 +112,7 @@ const Footer = React.memo(
                     {footerSetting?.brand_logo && (
                       <img
                         src={footerSetting.brand_logo}
-                        alt='PandaWiki'
+                        alt='Memora'
                         height={24}
                       />
                     )}
@@ -350,7 +350,7 @@ const Footer = React.memo(
                     }}
                   >
                     <Box>{decodeBase64(PROJECT_NAME)}</Box>
-                    <img src={logo} alt='PandaWiki' width={0} height={0} />
+                    <img src={logo} alt='Memora' width={0} height={0} />
                   </Stack>
                 </Link>
               </Stack>
@@ -504,7 +504,7 @@ const Footer = React.memo(
                     {footerSetting?.brand_logo && (
                       <img
                         src={footerSetting.brand_logo}
-                        alt='PandaWiki'
+                        alt='Memora'
                         height={36}
                       />
                     )}
@@ -795,7 +795,7 @@ const Footer = React.memo(
                           <Box>{decodeBase64(PROJECT_NAME)}</Box>
                           <img
                             src={logo}
-                            alt='PandaWiki'
+                            alt='Memora'
                             width={0}
                             height={0}
                           />

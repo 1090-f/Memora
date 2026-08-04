@@ -156,7 +156,7 @@ a {
   }
 }
 
-@keyframes panda-wiki-scale {
+@keyframes memora-scale {
   0% {
     transform: scale(0);
   }
@@ -174,7 +174,7 @@ a {
   }
 }
 
-@keyframes panda-wiki-rotate {
+@keyframes memora-rotate {
   0% {
     transform: rotate(0deg);
   }

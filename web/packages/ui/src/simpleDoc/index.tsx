@@ -9,7 +9,7 @@ import {
   StyledTopicTitle,
   StyledEllipsis,
 } from '../component/styledCommon';
-import IconWenjian from '@panda-wiki/icons/IconWenjian';
+import IconWenjian from '@memora/icons/IconWenjian';
 import ArrowForwardIosRoundedIcon from '@mui/icons-material/ArrowForwardIosRounded';
 import {
   useFadeInText,

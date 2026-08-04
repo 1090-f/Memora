@@ -3,7 +3,7 @@
 import React from 'react';
 import { styled, Grid, Box, alpha } from '@mui/material';
 import { StyledTopicBox, StyledTopicTitle } from '../component/styledCommon';
-import IconWenjian from '@panda-wiki/icons/IconWenjian';
+import IconWenjian from '@memora/icons/IconWenjian';
 import {
   useFadeInText,
   useCardFadeInAnimation,

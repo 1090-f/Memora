@@ -1,5 +1,10 @@
 /// <reference types="vite/client" />
-/// <reference types="@panda-wiki/themes/types" />
+
+declare module '*.html?raw' {
+  const source: string;
+  export default source;
+}
+/// <reference types="@memora/themes/types" />
 
 declare module 'swiper/css' {
   const content: string;

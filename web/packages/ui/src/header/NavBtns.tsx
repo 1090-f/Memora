@@ -1,6 +1,6 @@
 import { Box, Button, IconButton, Stack, Link } from '@mui/material';
 import { useEffect, useState } from 'react';
-import { IconChahao, IconACaidan } from '@panda-wiki/icons';
+import { IconChahao, IconACaidan } from '@memora/icons';
 
 export interface NavBtn {
   id: string;
