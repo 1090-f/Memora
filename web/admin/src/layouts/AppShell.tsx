@@ -1,6 +1,7 @@
 import AccountCircleOutlined from '@mui/icons-material/AccountCircleOutlined';
 import AutoAwesomeOutlined from '@mui/icons-material/AutoAwesomeOutlined';
 import BuildOutlined from '@mui/icons-material/BuildOutlined';
+import LogoutOutlined from '@mui/icons-material/LogoutOutlined';
 import MemoryOutlined from '@mui/icons-material/MemoryOutlined';
 import MenuBookOutlined from '@mui/icons-material/MenuBookOutlined';
 import SettingsOutlined from '@mui/icons-material/SettingsOutlined';
@@ -8,6 +9,7 @@ import TimelineOutlined from '@mui/icons-material/TimelineOutlined';
 import {
   AppBar,
   Box,
+  Button,
   List,
   ListItemButton,
   ListItemIcon,
@@ -16,7 +18,10 @@ import {
   Typography,
 } from '@mui/material';
 import type { ReactNode } from 'react';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { logout } from '@/features/auth/api';
+import { useAppDispatch, useAppSelector } from '@/store';
+import { clearAuth } from '@/store/authSlice';
 
 const navigation: Array<{ label: string; path: string; icon: ReactNode }> = [
   { label: '知识库', path: '/knowledge-bases', icon: <MenuBookOutlined /> },
@@ -38,6 +43,19 @@ const pageTitles: Record<string, string> = {
 
 export function AppShell() {
   const location = useLocation();
+  const navigate = useNavigate();
+  const dispatch = useAppDispatch();
+  const user = useAppSelector((state) => state.auth.user);
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } catch {
+      // Local authentication state is authoritative after the user requests logout.
+    } finally {
+      dispatch(clearAuth());
+      navigate('/login', { replace: true });
+    }
+  };
   const title =
     pageTitles[location.pathname] ||
     (location.pathname.startsWith('/chat') ? '智能问答' : undefined) ||
@@ -92,6 +110,15 @@ export function AppShell() {
       >
         <Toolbar sx={{ minHeight: '64px !important' }}>
           <Typography component="h1" variant="h6" fontWeight={750}>{title}</Typography>
+          <Box sx={{ flexGrow: 1 }} />
+          {user && <Typography color="text.secondary" sx={{ mr: 2 }}>{user.nickname}</Typography>}
+          <Button
+            color="inherit"
+            startIcon={<LogoutOutlined />}
+            onClick={() => void handleLogout()}
+          >
+            退出登录
+          </Button>
         </Toolbar>
       </AppBar>
 

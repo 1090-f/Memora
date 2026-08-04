@@ -1,7 +1,9 @@
 import { render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
+import { http, HttpResponse } from 'msw';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import App from '@/App';
+import { server } from '@/test/server';
 
 function LocationProbe() {
   const location = useLocation();
@@ -57,6 +59,23 @@ describe('Memora application routes', () => {
     ['/settings/profile', '个人资料'],
     ['/settings/models', '模型设置'],
   ])('renders %s with the page title %s', async (path, title) => {
+    server.use(
+      http.get('/api/v1/users/me', () =>
+        HttpResponse.json({
+          code: 'OK',
+          message: 'success',
+          data: {
+            id: 'user-1',
+            username: 'admin',
+            nickname: '管理员',
+            email: 'admin@example.com',
+            avatar_url: null,
+            bio: null,
+          },
+          request_id: 'req-router',
+        }),
+      ),
+    );
     sessionStorage.setItem(
       'memora.auth',
       JSON.stringify({ access_token: 'test-token', expires_at: Date.now() + 60_000 }),
