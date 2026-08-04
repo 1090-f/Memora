@@ -14,5 +14,4 @@ export const DocWidth = {
   },
 };
 
-export const PROJECT_NAME =
-  '5pys572R56uZ55SxIFBhbmRhV2lraSDmj5DkvpvmioDmnK/mlK/mjIE=';
+export const PROJECT_NAME = 'TWVtb3Jh';

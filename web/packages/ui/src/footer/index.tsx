@@ -337,10 +337,7 @@ const Footer = React.memo(
                   color: alpha(theme.palette.text.primary, 0.3),
                 })}
               >
-                <Link
-                  href={'https://pandawiki.docs.baizhi.cloud/'}
-                  target='_blank'
-                >
+                <Link href={'/'}>
                   <Stack
                     direction={'row'}
                     alignItems={'center'}
@@ -777,10 +774,7 @@ const Footer = React.memo(
                         color: alpha(theme.palette.text.primary, 0.5),
                       })}
                     >
-                      <Link
-                        href={'https://pandawiki.docs.baizhi.cloud/'}
-                        target='_blank'
-                      >
+                      <Link href={'/'}>
                         <Stack
                           direction={'row'}
                           alignItems={'center'}
