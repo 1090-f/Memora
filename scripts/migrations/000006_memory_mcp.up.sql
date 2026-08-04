@@ -1,3 +1,12 @@
+-- 文件作用：创建记忆与 MCP 相关表
+-- 说明：
+--   memories          - 记忆表（存储用户偏好、项目、决策、目标等记忆片段，含向量嵌入和重要性评分）
+--   mcp_servers       - MCP 服务器表（Model Context Protocol 服务器配置，含连接参数和认证信息密文）
+--   mcp_tools         - MCP 工具表（从 MCP 服务器发现的工具，记录输入 Schema、只读标记、启用状态）
+--   agent_mcp_tools   - Agent-MCP 工具关联表（将 MCP 工具绑定到特定 Agent 配置）
+-- 同时为 tool_calls 表补充 MCP 相关外键约束
+
+-- 创建记忆表，存储用户偏好、项目、决策、目标等记忆片段，含向量嵌入和重要性评分
 CREATE TABLE memories (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id),
@@ -22,9 +31,12 @@ CREATE TABLE memories (
     CHECK ((scope_type = 'user' AND scope_id IS NULL) OR (scope_type = 'knowledge_base' AND scope_id IS NOT NULL))
 );
 
+-- 创建索引，按用户、状态和作用域筛选记忆
 CREATE INDEX idx_memories_scope ON memories(user_id, status, scope_type, scope_id);
+-- 创建唯一索引，基于内容哈希防止同一作用域下的重复记忆
 CREATE UNIQUE INDEX uq_memories_content ON memories(user_id, scope_type, COALESCE(scope_id, '00000000-0000-0000-0000-000000000000'::uuid), content_hash) WHERE deleted_at IS NULL;
 
+-- 创建 MCP 服务器表，存储 Model Context Protocol 服务器的连接参数和认证信息
 CREATE TABLE mcp_servers (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id),
@@ -47,8 +59,10 @@ CREATE TABLE mcp_servers (
     deleted_at timestamptz
 );
 
+-- 创建唯一索引，确保同一用户下 MCP 服务器名称不重复（不区分大小写）
 CREATE UNIQUE INDEX uq_mcp_servers_user_name ON mcp_servers(user_id, lower(name)) WHERE deleted_at IS NULL;
 
+-- 创建 MCP 工具表，记录从 MCP 服务器发现的工具及其输入 Schema、只读标记
 CREATE TABLE mcp_tools (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     server_id uuid NOT NULL REFERENCES mcp_servers(id),
@@ -67,6 +81,7 @@ CREATE TABLE mcp_tools (
     CHECK (read_only = true OR enabled = false)
 );
 
+-- 创建 Agent-MCP 工具关联表，将 MCP 工具绑定到特定 Agent 配置
 CREATE TABLE agent_mcp_tools (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     agent_config_id uuid NOT NULL REFERENCES agent_configs(id),
@@ -77,8 +92,11 @@ CREATE TABLE agent_mcp_tools (
     UNIQUE(agent_config_id, mcp_tool_id)
 );
 
+-- 为工具调用表添加外键约束，关联 MCP 服务器
 ALTER TABLE tool_calls ADD CONSTRAINT fk_tool_calls_mcp_server FOREIGN KEY (mcp_server_id) REFERENCES mcp_servers(id);
+-- 为工具调用表添加外键约束，关联 MCP 工具
 ALTER TABLE tool_calls ADD CONSTRAINT fk_tool_calls_mcp_tool FOREIGN KEY (mcp_tool_id) REFERENCES mcp_tools(id);
+-- 为工具调用表添加检查约束，确保内部工具无 MCP 标识、MCP 工具必须有 MCP 标识
 ALTER TABLE tool_calls ADD CONSTRAINT ck_tool_calls_mcp_identity CHECK (
     (tool_type = 'internal' AND mcp_server_id IS NULL AND mcp_tool_id IS NULL)
     OR (tool_type = 'mcp' AND mcp_server_id IS NOT NULL AND mcp_tool_id IS NOT NULL)

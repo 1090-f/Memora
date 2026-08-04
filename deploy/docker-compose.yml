@@ -111,6 +111,13 @@ services:
     depends_on: *application-dependencies
     restart: unless-stopped
 
+  web:
+    build: {context: ../web, dockerfile: Dockerfile}
+    ports: ["3000:80"]
+    depends_on:
+      api: {condition: service_healthy}
+    restart: unless-stopped
+
 volumes:
   memora-postgres:
   memora-redis:

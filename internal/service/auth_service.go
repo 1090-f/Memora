@@ -30,6 +30,7 @@ const (
 	blacklistPrefix = "auth:blacklist:"
 )
 
+// authService 是 AuthService 接口的实现。
 type authService struct {
 	users     repository.UserRepository
 	redis     *redis.Client
@@ -37,6 +38,7 @@ type authService struct {
 	dummyHash string
 }
 
+// NewAuthService 创建一个新的认证服务实例。
 func NewAuthService(users repository.UserRepository, redisClient *redis.Client, tokens *jwtmanager.Manager) (AuthService, error) {
 	if users == nil || redisClient == nil || tokens == nil {
 		return nil, errors.New("authentication dependencies are required")
@@ -48,6 +50,7 @@ func NewAuthService(users repository.UserRepository, redisClient *redis.Client, 
 	return &authService{users: users, redis: redisClient, tokens: tokens, dummyHash: dummy}, nil
 }
 
+// Login 验证用户凭据，生成 JWT Token 并返回登录响应。
 func (s *authService) Login(ctx context.Context, req *request.LoginRequest) (*dto.LoginResponse, error) {
 	user, err := s.users.FindActiveByAccount(ctx, strings.TrimSpace(req.Account))
 	if err != nil {
@@ -74,6 +77,7 @@ func (s *authService) Login(ctx context.Context, req *request.LoginRequest) (*dt
 	return &dto.LoginResponse{AccessToken: token, TokenType: "Bearer", ExpiresIn: expiresIn, User: UserResponse(user)}, nil
 }
 
+// Authenticate 解析 JWT Token，检查黑名单并返回用户信息。
 func (s *authService) Authenticate(ctx context.Context, token string) (*entity.User, *jwtmanager.Claims, error) {
 	claims, err := s.tokens.Parse(token)
 	if err != nil {
@@ -96,6 +100,7 @@ func (s *authService) Authenticate(ctx context.Context, token string) (*entity.U
 	return user, claims, nil
 }
 
+// Logout 将 JWT Token 加入 Redis 黑名单以实现 Token 吊销。
 func (s *authService) Logout(ctx context.Context, claims *jwtmanager.Claims) error {
 	if claims == nil || claims.ExpiresAt == nil {
 		return apperrors.ErrUnauthorized
@@ -110,6 +115,7 @@ func (s *authService) Logout(ctx context.Context, claims *jwtmanager.Claims) err
 	return nil
 }
 
+// HashPassword 使用 Argon2id 算法对密码进行哈希处理。
 func HashPassword(password string) (string, error) {
 	salt := make([]byte, argonSaltLength)
 	if _, err := rand.Read(salt); err != nil {
@@ -120,6 +126,7 @@ func HashPassword(password string) (string, error) {
 		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(hash)), nil
 }
 
+// VerifyPassword 验证密码是否与 Argon2id 编码的哈希值匹配。
 func VerifyPassword(password, encoded string) bool {
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 6 || parts[1] != "argon2id" {

@@ -14,6 +14,7 @@ import (
 
 const heartbeatPrefix = "worker:heartbeat:"
 
+// Heartbeat 通过 Redis 定时写入心跳键实现 Worker 存活检测。
 type Heartbeat struct {
 	redis    *redis.Client
 	key      string
@@ -21,6 +22,7 @@ type Heartbeat struct {
 	ttl      time.Duration
 }
 
+// NewHeartbeat 创建一个新的心跳实例，基于主机名和 PID 生成唯一键。
 func NewHeartbeat(client *redis.Client, interval, ttl time.Duration) (*Heartbeat, error) {
 	if client == nil || interval <= 0 || ttl <= interval {
 		return nil, fmt.Errorf("worker heartbeat client and valid durations are required")
@@ -30,6 +32,7 @@ func NewHeartbeat(client *redis.Client, interval, ttl time.Duration) (*Heartbeat
 	return &Heartbeat{redis: client, key: key, interval: interval, ttl: ttl}, nil
 }
 
+// Run 启动心跳循环，定期写入心跳键，上下文取消时自动清理。
 func (h *Heartbeat) Run(ctx context.Context) error {
 	h.beat(ctx)
 	ticker := time.NewTicker(h.interval)

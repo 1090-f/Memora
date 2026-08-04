@@ -1,5 +1,6 @@
 package errors
 
+// Code 表示业务错误码类型
 type Code string
 
 const (
@@ -18,6 +19,7 @@ var messages = map[Code]string{
 	CodeInternal: "internal server error",
 }
 
+// Message 根据错误码返回对应的默认错误消息，未知错误码返回内部错误消息
 func Message(code Code) string {
 	if message, ok := messages[code]; ok {
 		return message

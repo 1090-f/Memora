@@ -12,10 +12,13 @@ import (
 	apperrors "github.com/1090-f/Memora/pkg/errors"
 )
 
+// userService 是 UserService 接口的实现。
 type userService struct{ users repository.UserRepository }
 
+// NewUserService 创建一个新的用户服务实例。
 func NewUserService(users repository.UserRepository) UserService { return &userService{users: users} }
 
+// GetCurrent 根据用户 ID 获取当前用户信息。
 func (s *userService) GetCurrent(ctx context.Context, id string) (*dto.UserResponse, error) {
 	user, err := s.users.FindActiveByID(ctx, id)
 	if errors.Is(err, repository.ErrUserNotFound) {
@@ -28,6 +31,7 @@ func (s *userService) GetCurrent(ctx context.Context, id string) (*dto.UserRespo
 	return &response, nil
 }
 
+// UpdateCurrent 更新当前用户的个人资料，包含参数校验和冲突检测。
 func (s *userService) UpdateCurrent(ctx context.Context, id string, req *request.UpdateUserRequest) (*dto.UserResponse, error) {
 	if req == nil || (req.Nickname == nil && req.AvatarURL == nil && req.Bio == nil && req.Email == nil) {
 		return nil, apperrors.ErrInvalidArgument
@@ -53,6 +57,7 @@ func (s *userService) UpdateCurrent(ctx context.Context, id string, req *request
 	return &response, nil
 }
 
+// ChangePassword 验证旧密码并更新为新密码。
 func (s *userService) ChangePassword(ctx context.Context, id string, req *request.ChangePasswordRequest) error {
 	if req == nil || req.OldPassword == "" || len(req.NewPassword) < 12 || req.OldPassword == req.NewPassword {
 		return apperrors.ErrInvalidArgument
@@ -80,6 +85,7 @@ func (s *userService) ChangePassword(ctx context.Context, id string, req *reques
 	return nil
 }
 
+// trimOptional 去除可选字符串指针值的首尾空白。
 func trimOptional(value **string) {
 	if *value == nil {
 		return
@@ -88,6 +94,7 @@ func trimOptional(value **string) {
 	*value = &trimmed
 }
 
+// UserResponse 将用户实体转换为用户响应 DTO。
 func UserResponse(user *entity.User) dto.UserResponse {
 	nickname := user.Username
 	if user.Nickname != nil && *user.Nickname != "" {

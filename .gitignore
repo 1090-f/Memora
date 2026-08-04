@@ -1,8 +1,20 @@
 .worktrees/
 
+.env
+.idea/
+configs/config.yaml
+logs/
+
 # Go build artifacts
 bin/
 *.test
 *.out
 .gocache/
 .gomodcache/
+
+# Frontend
+web/node_modules/
+web/**/node_modules/
+web/**/dist/
+web/**/coverage/
+web/admin/.env.local

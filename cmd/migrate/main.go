@@ -12,6 +12,7 @@ import (
 	"github.com/1090-f/Memora/pkg/database"
 )
 
+// main 是数据库迁移工具的入口点，支持执行迁移、引导管理员和重置密码操作。
 func main() {
 	if len(os.Args) != 2 {
 		usage()
@@ -35,11 +36,13 @@ func main() {
 	}
 }
 
+// usage 显示命令行用法信息并退出程序。
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: memora-migrate <up|down|bootstrap-admin|reset-admin-password>")
 	os.Exit(2)
 }
 
+// bootstrapAdmin 引导创建管理员账户，从环境变量读取用户名、邮箱和密码。
 func bootstrapAdmin(ctx context.Context, cfg *config.Config) error {
 	username := strings.TrimSpace(os.Getenv("MEMORA_BOOTSTRAP_ADMIN_USERNAME"))
 	email := strings.TrimSpace(os.Getenv("MEMORA_BOOTSTRAP_ADMIN_EMAIL"))
@@ -86,6 +89,7 @@ func bootstrapAdmin(ctx context.Context, cfg *config.Config) error {
 	return nil
 }
 
+// resetAdminPassword 重置指定管理员账户的密码，从环境变量读取用户名和新密码。
 func resetAdminPassword(ctx context.Context, cfg *config.Config) error {
 	username := strings.TrimSpace(os.Getenv("MEMORA_BOOTSTRAP_ADMIN_USERNAME"))
 	password := os.Getenv("MEMORA_BOOTSTRAP_ADMIN_PASSWORD")
@@ -117,6 +121,7 @@ func resetAdminPassword(ctx context.Context, cfg *config.Config) error {
 	return nil
 }
 
+// validateAdminPassword 验证管理员密码强度，确保长度足够且不是示例密码。
 func validateAdminPassword(mode, password string) error {
 	if len(password) < 12 {
 		return fmt.Errorf("administrator password must contain at least 12 characters")

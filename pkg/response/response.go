@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// Envelope 是统一的API响应信封结构，包含状态码、消息、数据和请求ID
 type Envelope struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
@@ -16,10 +17,12 @@ type Envelope struct {
 	RequestID string `json:"request_id"`
 }
 
+// Success 发送成功的JSON响应，包含业务数据和请求ID
 func Success(c *gin.Context, status int, data any) {
 	c.JSON(status, Envelope{Code: string(apperrors.CodeOK), Message: apperrors.Message(apperrors.CodeOK), Data: data, RequestID: requestID(c)})
 }
 
+// Failure 发送错误的JSON响应，自动将AppError转换为统一响应格式
 func Failure(c *gin.Context, err error) {
 	appError := apperrors.ErrInternal
 	var typed *apperrors.AppError

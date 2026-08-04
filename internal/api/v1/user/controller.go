@@ -12,10 +12,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// Controller 处理用户管理相关的 HTTP 请求。
 type Controller struct{ users service.UserService }
 
+// NewController 创建一个新的用户控制器实例。
 func NewController(users service.UserService) *Controller { return &Controller{users: users} }
 
+// Me 返回当前已认证用户的个人信息。
 func (ctrl *Controller) Me(c *gin.Context) {
 	user, ok := middleware.GetUser(c)
 	if !ok {
@@ -30,6 +33,7 @@ func (ctrl *Controller) Me(c *gin.Context) {
 	response.Success(c, http.StatusOK, result)
 }
 
+// UpdateMe 更新当前已认证用户的个人信息。
 func (ctrl *Controller) UpdateMe(c *gin.Context) {
 	user, ok := middleware.GetUser(c)
 	if !ok {
@@ -50,6 +54,7 @@ func (ctrl *Controller) UpdateMe(c *gin.Context) {
 	response.Success(c, http.StatusOK, result)
 }
 
+// ChangePassword 修改当前已认证用户的密码。
 func (ctrl *Controller) ChangePassword(c *gin.Context) {
 	user, ok := middleware.GetUser(c)
 	if !ok {

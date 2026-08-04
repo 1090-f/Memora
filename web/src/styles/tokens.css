@@ -1,0 +1,18 @@
+:root {
+  --memora-brand-500: #7c3aed;
+  --memora-brand-600: #6d28d9;
+  --memora-nav: #18181b;
+  --memora-bg: #f8fafc;
+  --memora-surface: #ffffff;
+  --memora-border: #e4e4e7;
+  --memora-text: #27272a;
+  --memora-muted: #71717a;
+  --memora-success: #16a34a;
+  --memora-warning: #d97706;
+  --memora-danger: #dc2626;
+  --memora-radius-sm: 6px;
+  --memora-radius-md: 10px;
+  --memora-nav-width: 52px;
+  --memora-sidebar-width: 260px;
+  --memora-inspector-width: 360px;
+}

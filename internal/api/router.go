@@ -17,9 +17,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// HealthCheck 是一个健康检查函数类型，用于检测依赖服务的健康状态。
 type HealthCheck func(context.Context) error
+
+// WorkerCount 是一个函数类型，用于返回当前活跃的 Worker 数量。
 type WorkerCount func(context.Context) (int64, error)
 
+// Dependencies 持有 API 路由所需的所有外部依赖。
 type Dependencies struct {
 	Config         config.CORSConfig
 	Auth           service.AuthService
@@ -30,6 +34,7 @@ type Dependencies struct {
 	WorkerCount    WorkerCount
 }
 
+// NewRouter 创建一个新的 Gin 引擎，注册所有中间件、健康检查端点和 v1 路由组。
 func NewRouter(deps Dependencies) *gin.Engine {
 	engine := gin.New()
 	engine.Use(middleware.RequestID(), middleware.Trace(), middleware.Metrics(), middleware.Logger(), middleware.Recovery(), middleware.CORS(deps.Config))
@@ -44,6 +49,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	return engine
 }
 
+// workerHealth 返回一个处理器，用于报告当前活跃的 Worker 数量。
 func workerHealth(countWorkers WorkerCount) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
@@ -64,6 +70,7 @@ func workerHealth(countWorkers WorkerCount) gin.HandlerFunc {
 	}
 }
 
+// readiness 返回一个处理器，并发检查所有基础设施依赖的就绪状态。
 func readiness(deps Dependencies) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		checks := map[string]HealthCheck{"postgres": deps.PostgresHealth, "redis": deps.RedisHealth, "minio": deps.MinIOHealth}

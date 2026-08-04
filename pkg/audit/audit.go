@@ -5,6 +5,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// Record 记录一条审计事件日志
 func Record(action, actorID, resource, requestID, traceID, outcome string) {
 	logger.Info("audit event",
 		zap.String("audit_action", action), zap.String("actor_id", actorID),

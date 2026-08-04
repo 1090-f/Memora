@@ -6,20 +6,26 @@ import (
 	"os"
 	"strings"
 
+	"github.com/joho/godotenv"
 	"github.com/spf13/viper"
 )
 
 var globalConfig *Config
 
+// Load 从指定路径或默认位置加载完整配置并执行全部校验
 func Load(configPath string) (*Config, error) {
 	return load(configPath, func(cfg *Config) error { return cfg.Validate() })
 }
 
+// LoadDatabase 从指定路径加载配置并仅校验数据库相关配置项
 func LoadDatabase(configPath string) (*Config, error) {
 	return load(configPath, func(cfg *Config) error { return cfg.ValidateDatabase() })
 }
 
 func load(configPath string, validate func(*Config) error) (*Config, error) {
+	if err := loadDotEnv(".env"); err != nil {
+		return nil, err
+	}
 	v := viper.New()
 	if configPath == "" {
 		configPath = os.Getenv("MEMORA_CONFIG_FILE")
@@ -56,6 +62,17 @@ func load(configPath string, validate func(*Config) error) (*Config, error) {
 	return &cfg, nil
 }
 
+func loadDotEnv(path string) error {
+	if err := godotenv.Load(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("load environment file %q: %w", path, err)
+	}
+	return nil
+}
+
+// Get 返回全局配置实例，如果未初始化则触发panic
 func Get() *Config {
 	if globalConfig == nil {
 		panic("configuration is not initialized")
@@ -103,7 +120,8 @@ func bindEnvironment(v *viper.Viper) {
 		"app.shutdown_timeout": "MEMORA_HTTP_SHUTDOWN_TIMEOUT", "database.url": "MEMORA_DATABASE_URL",
 		"database.max_idle_conns": "MEMORA_DATABASE_MAX_IDLE", "database.max_open_conns": "MEMORA_DATABASE_MAX_OPEN",
 		"redis.address": "MEMORA_REDIS_ADDRESS", "redis.password": "MEMORA_REDIS_PASSWORD", "redis.db": "MEMORA_REDIS_DB",
-		"minio.endpoint": "MEMORA_MINIO_ENDPOINT", "minio.access_key": "MEMORA_MINIO_ACCESS_KEY",
+		"redis.pool_size": "MEMORA_REDIS_POOL_SIZE",
+		"minio.endpoint":  "MEMORA_MINIO_ENDPOINT", "minio.access_key": "MEMORA_MINIO_ACCESS_KEY",
 		"minio.secret_key": "MEMORA_MINIO_SECRET_KEY", "minio.bucket": "MEMORA_MINIO_BUCKET",
 		"minio.use_ssl": "MEMORA_MINIO_USE_SSL", "jwt.secret": "MEMORA_JWT_SECRET", "jwt.access_ttl": "MEMORA_ACCESS_TTL",
 		"worker.concurrency": "MEMORA_WORKER_CONCURRENCY", "worker.poll_interval": "MEMORA_WORKER_POLL_INTERVAL",
