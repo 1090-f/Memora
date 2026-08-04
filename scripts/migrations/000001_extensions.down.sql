@@ -1,1 +1,2 @@
--- Extensions are shared database capabilities and are intentionally retained.
+-- 文件作用：禁用 PostgreSQL 扩展（回滚）
+-- 说明：扩展属于共享数据库能力，不做删除处理，因此回滚时为空操作

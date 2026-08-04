@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// Config 是应用程序的完整配置结构，包含所有子模块的配置项
 type Config struct {
 	App      AppConfig      `mapstructure:"app"`
 	Database DatabaseConfig `mapstructure:"database"`
@@ -18,6 +19,7 @@ type Config struct {
 	CORS     CORSConfig     `mapstructure:"cors"`
 }
 
+// AppConfig 定义应用程序基础配置，包括名称、版本、运行模式和超时设置
 type AppConfig struct {
 	Name            string        `mapstructure:"name"`
 	Version         string        `mapstructure:"version"`
@@ -28,12 +30,14 @@ type AppConfig struct {
 	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`
 }
 
+// DatabaseConfig 定义PostgreSQL数据库连接配置
 type DatabaseConfig struct {
 	URL          string `mapstructure:"url"`
 	MaxIdleConns int    `mapstructure:"max_idle_conns"`
 	MaxOpenConns int    `mapstructure:"max_open_conns"`
 }
 
+// RedisConfig 定义Redis连接配置
 type RedisConfig struct {
 	Address  string `mapstructure:"address"`
 	Password string `mapstructure:"password"`
@@ -41,6 +45,7 @@ type RedisConfig struct {
 	PoolSize int    `mapstructure:"pool_size"`
 }
 
+// MinIOConfig 定义MinIO对象存储连接配置
 type MinIOConfig struct {
 	Endpoint  string `mapstructure:"endpoint"`
 	AccessKey string `mapstructure:"access_key"`
@@ -49,11 +54,13 @@ type MinIOConfig struct {
 	UseSSL    bool   `mapstructure:"use_ssl"`
 }
 
+// JWTConfig 定义JWT令牌配置，包括密钥和访问令牌有效期
 type JWTConfig struct {
 	Secret    string        `mapstructure:"secret"`
 	AccessTTL time.Duration `mapstructure:"access_ttl"`
 }
 
+// WorkerConfig 定义后台Worker任务配置，包括并发数、轮询间隔和超时设置
 type WorkerConfig struct {
 	Concurrency    int           `mapstructure:"concurrency"`
 	PollInterval   time.Duration `mapstructure:"poll_interval"`
@@ -62,6 +69,7 @@ type WorkerConfig struct {
 	IdempotencyTTL time.Duration `mapstructure:"idempotency_ttl"`
 }
 
+// LogConfig 定义日志系统配置，包括日志级别、文件输出和滚动策略
 type LogConfig struct {
 	Level      string `mapstructure:"level"`
 	Filename   string `mapstructure:"filename"`
@@ -71,6 +79,7 @@ type LogConfig struct {
 	Compress   bool   `mapstructure:"compress"`
 }
 
+// CORSConfig 定义跨域资源共享配置
 type CORSConfig struct {
 	Enabled          bool     `mapstructure:"enabled"`
 	AllowOrigins     []string `mapstructure:"allow_origins"`
@@ -81,6 +90,7 @@ type CORSConfig struct {
 	MaxAge           int      `mapstructure:"max_age"`
 }
 
+// Validate 校验所有配置项，收集所有错误后返回合并的错误信息
 func (c Config) Validate() error {
 	var errs []error
 	if c.App.Address == "" {
@@ -121,6 +131,7 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// ValidateDatabase 校验数据库相关配置项
 func (c Config) ValidateDatabase() error {
 	var errs []error
 	if c.Database.URL == "" {

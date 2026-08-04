@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// RunnerConfig 定义 Worker 运行器的配置参数。
 type RunnerConfig struct {
 	Concurrency     int
 	PollInterval    time.Duration
@@ -21,6 +22,7 @@ type RunnerConfig struct {
 	FinalizeTimeout time.Duration
 }
 
+// Runner 是并发消费任务的 Worker 运行器，负责任务调度、幂等性检查和重试。
 type Runner struct {
 	config      RunnerConfig
 	source      Source
@@ -30,6 +32,7 @@ type Runner struct {
 	active      map[string]context.CancelFunc
 }
 
+// NewRunner 创建一个新的 Worker 运行器实例。
 func NewRunner(config RunnerConfig, source Source, registry *Registry, idempotency IdempotencyStore) (*Runner, error) {
 	if source == nil || registry == nil || idempotency == nil {
 		return nil, fmt.Errorf("worker source, registry and idempotency store are required")
@@ -46,6 +49,7 @@ func NewRunner(config RunnerConfig, source Source, registry *Registry, idempoten
 	return &Runner{config: config, source: source, registry: registry, idempotency: idempotency, active: make(map[string]context.CancelFunc)}, nil
 }
 
+// Run 启动指定并发数的 Worker 协程，阻塞等待直到上下文取消。
 func (r *Runner) Run(ctx context.Context) error {
 	var wait sync.WaitGroup
 	for workerID := 1; workerID <= r.config.Concurrency; workerID++ {
@@ -61,6 +65,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	return nil
 }
 
+// Cancel 取消指定 ID 的正在运行的任务。
 func (r *Runner) Cancel(jobID string) bool {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()

@@ -5,6 +5,7 @@ import (
 	"net/http"
 )
 
+// AppError 是应用级错误类型，包含错误码、HTTP状态码、错误消息和原始错误
 type AppError struct {
 	Code       Code
 	Message    string
@@ -13,6 +14,7 @@ type AppError struct {
 	Cause      error
 }
 
+// Error 实现error接口，返回格式化的错误信息
 func (e *AppError) Error() string {
 	if e.Cause != nil {
 		return fmt.Sprintf("%s: %v", e.safeMessage(), e.Cause)
@@ -20,6 +22,7 @@ func (e *AppError) Error() string {
 	return e.safeMessage()
 }
 
+// Unwrap 返回被包装的原始错误，支持errors.Is和errors.As链式检查
 func (e *AppError) Unwrap() error { return e.Cause }
 
 func (e *AppError) safeMessage() string {
@@ -29,6 +32,7 @@ func (e *AppError) safeMessage() string {
 	return Message(e.Code)
 }
 
+// New 创建一个新的AppError实例
 func New(code Code, status int, cause error) *AppError {
 	return &AppError{Code: code, HTTPStatus: status, Cause: cause}
 }

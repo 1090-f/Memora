@@ -1,3 +1,11 @@
+-- 文件作用：创建文档与检索相关表
+-- 说明：
+--   documents          - 文档表（支持手动创建、文件上传、URL 导入，记录处理管线状态及版本号）
+--   document_chunks    - 文档分块表（分块内容、字符/Token 计数、全文检索向量 fts_vector）
+--   document_vectors   - 文档向量表（存储 pgvector 向量嵌入，支持按模型和版本管理）
+--   import_tasks       - 导入任务表（文件/URL 批量导入，支持去重策略与状态追踪）
+
+-- 创建文档表，记录文档元数据、来源信息、处理管线状态及内容版本
 CREATE TABLE documents (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id),
@@ -26,9 +34,12 @@ CREATE TABLE documents (
     deleted_at timestamptz
 );
 
+-- 创建索引，按用户和知识库查询文档并按更新时间降序排列
 CREATE INDEX idx_documents_owner ON documents(user_id, knowledge_base_id, updated_at DESC) WHERE deleted_at IS NULL;
+-- 创建索引，加速按处理状态筛选待处理文档
 CREATE INDEX idx_documents_processing ON documents(processing_status, updated_at) WHERE deleted_at IS NULL;
 
+-- 创建文档分块表，存储文档切分后的文本片段、字符/Token 计数及全文检索向量
 CREATE TABLE document_chunks (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id),
@@ -51,9 +62,12 @@ CREATE TABLE document_chunks (
     UNIQUE(document_id, index_version, chunk_no)
 );
 
+-- 创建 GIN 索引，加速基于 tsvector 的全文检索查询
 CREATE INDEX idx_chunks_fts ON document_chunks USING GIN(fts_vector);
+-- 创建组合索引，按用户、知识库、文档和版本号筛选分块
 CREATE INDEX idx_chunks_filter ON document_chunks(user_id, knowledge_base_id, document_id, index_version);
 
+-- 创建文档向量表，存储 pgvector 向量嵌入，按模型和版本管理
 CREATE TABLE document_vectors (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id),
@@ -69,8 +83,10 @@ CREATE TABLE document_vectors (
     UNIQUE(chunk_id, embedding_model_id, index_version)
 );
 
+-- 创建组合索引，加速按用户、知识库、文档、版本和状态筛选向量
 CREATE INDEX idx_vectors_filter ON document_vectors(user_id, knowledge_base_id, document_id, index_version, status);
 
+-- 创建导入任务表，记录文件/URL 批量导入的进度、去重策略和状态
 CREATE TABLE import_tasks (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id),
@@ -94,5 +110,7 @@ CREATE TABLE import_tasks (
     completed_at timestamptz
 );
 
+-- 创建索引，按用户和知识库查询导入任务并按创建时间降序排列
 CREATE INDEX idx_import_tasks_owner ON import_tasks(user_id, knowledge_base_id, created_at DESC);
+-- 创建索引，加速工作线程拉取待执行和正在执行的导入任务
 CREATE INDEX idx_import_tasks_worker ON import_tasks(status, created_at) WHERE status IN ('pending', 'running');

@@ -14,5 +14,7 @@ bin/
 
 # Frontend
 web/node_modules/
-web/dist/
-web/.env
+web/**/node_modules/
+web/**/dist/
+web/**/coverage/
+web/admin/.env.local

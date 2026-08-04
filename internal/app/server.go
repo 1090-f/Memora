@@ -20,6 +20,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// ServerApp 管理 HTTP 服务器应用的生命周期，包括初始化、运行和关闭。
 type ServerApp struct {
 	cfg    *config.Config
 	db     *gorm.DB
@@ -28,8 +29,10 @@ type ServerApp struct {
 	server *http.Server
 }
 
+// NewServer 创建一个新的 ServerApp 实例。
 func NewServer() *ServerApp { return &ServerApp{} }
 
+// Initialize 初始化所有依赖，包括配置、数据库、缓存、对象存储、服务和路由。
 func (a *ServerApp) Initialize(ctx context.Context) error {
 	cfg, err := config.Load("")
 	if err != nil {
@@ -86,6 +89,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	return nil
 }
 
+// Run 启动 HTTP 服务器并阻塞等待，直到上下文取消后执行优雅关闭。
 func (a *ServerApp) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
 	go func() {
@@ -106,6 +110,7 @@ func (a *ServerApp) Run(ctx context.Context) error {
 	}
 }
 
+// Close 释放服务器应用持有的所有资源。
 func (a *ServerApp) Close() error {
 	var closeErr error
 	if a.redis != nil {

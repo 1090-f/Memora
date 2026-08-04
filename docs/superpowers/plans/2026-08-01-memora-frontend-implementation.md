@@ -1577,7 +1577,7 @@ location / {
 }
 
 location /api/v1/agent-runs/ {
-    proxy_pass http://memora-server:8080;
+    proxy_pass http://api:8080;
     proxy_http_version 1.1;
     proxy_buffering off;
     proxy_cache off;
@@ -1587,13 +1587,13 @@ location /api/v1/agent-runs/ {
 }
 
 location /api/ {
-    proxy_pass http://memora-server:8080;
+    proxy_pass http://api:8080;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto $scheme;
 }
 ```
 
-Confirm the Compose service name and adjust only `memora-server` if the current file uses another exact name.
+The current Compose service name is exactly `api`; use `api:8080` for API, SSE, and health proxy locations.
 
 - [ ] **Step 3: Add the frontend service to Compose**
 
@@ -1678,6 +1678,267 @@ git commit -m "build(web): add frontend delivery and documentation"
 
 ---
 
+### Task 15: Repair App Visibility, Visual System, Runtime Recovery, and Document AI
+
+**Files:**
+- Modify: `web/src/styles/tokens.css`
+- Modify: `web/src/styles/index.css`
+- Modify: `web/src/layouts/AppShell.vue`
+- Modify: `web/src/router/index.ts`
+- Modify: `web/src/components/shared/EmptyState.vue`
+- Modify: `web/src/components/shared/ErrorState.vue`
+- Modify: `web/src/components/shared/LoadingSkeleton.vue`
+- Modify: `web/src/features/knowledge-base/pages/KnowledgeBaseListPage.vue`
+- Modify: `web/src/features/conversation/api.ts`
+- Modify: `web/src/features/conversation/queries.ts`
+- Modify: `web/src/features/conversation/pages/ChatPage.vue`
+- Create: `web/src/features/agent-run/composables/useAgentRunStream.ts`
+- Modify: `web/src/features/agent-run/api.ts`
+- Modify: `web/src/features/agent-run/queries.ts`
+- Modify: `web/src/features/agent-run/types.ts`
+- Modify: `web/src/features/agent-run/components/AgentRunPanel.vue`
+- Modify: `web/src/features/agent-run/components/CitationPopover.vue`
+- Modify: `web/src/features/document/components/DocumentAiPanel.vue`
+- Modify: `web/src/features/document/components/CitationHighlight.vue`
+- Modify: `web/src/features/document/pages/DocumentWorkspacePage.vue`
+- Modify: `web/nginx.conf`
+- Modify: `web/Dockerfile`
+- Add: `web/.gitignore`
+- Add: `web/pnpm-workspace.yaml`
+- Modify: `web/README.md`
+- Modify: `docs/FRONTEND.md`
+
+**Interfaces:**
+- Consumes: the existing API envelope, `QuestionAccepted`, AgentRun SSE events, `VITE_SSE_RESUME_ENABLED`, `VITE_DOCUMENT_SCOPE_ENABLED`, Vue Router route metadata, and the Compose service named `api`.
+- Produces: visible nested routes, a fixed visual token contract, `submitQuestion({ conversation_id, question })`, `cancelAgentRun(runId)`, `retryAgentRun(runId)`, reusable AgentRun stream lifecycle management, functional document-side chat, navigable citations, and reproducible delivery files.
+
+- [ ] **Step 1: Restore every routed page inside AppShell**
+
+Replace the AppShell content placeholder with Vue Router's child outlet:
+
+```vue
+<script setup lang="ts">
+import { RouterView } from 'vue-router'
+</script>
+
+<main class="min-w-0 flex-1 overflow-hidden">
+  <RouterView />
+</main>
+```
+
+Do not use `<slot />` for route children. Nest `/chat/:kbId/:conversationId?` under `AppShell` exactly like the other protected workspaces so chat never loses the global navigation.
+
+Make navigation destinations knowledge-base-aware:
+
+```ts
+function resolveWorkspacePath(kind: 'chat' | 'docs'): string {
+  const kbId = workspaceStore.current_kb_id
+  if (!kbId) return '/knowledge-bases'
+  return kind === 'chat' ? `/chat/${kbId}` : `/kb/${kbId}/docs`
+}
+```
+
+The logo routes to `/knowledge-bases`. The Chat and Document buttons use `resolveWorkspacePath`; no button may navigate to unmatched `/chat` or `/kb` routes.
+
+- [ ] **Step 2: Freeze the visual token and icon contract**
+
+Define these exact tokens in `tokens.css` and use them instead of scattered color literals:
+
+```css
+:root {
+  --memora-brand-50: #f5f3ff;
+  --memora-brand-500: #7c3aed;
+  --memora-brand-600: #6d28d9;
+  --memora-focus: #8b5cf6;
+  --memora-nav: #18181b;
+  --memora-nav-muted: #a1a1aa;
+  --memora-bg: #f8fafc;
+  --memora-surface: #ffffff;
+  --memora-surface-subtle: #fafafa;
+  --memora-border: #e4e4e7;
+  --memora-text-strong: #18181b;
+  --memora-text: #27272a;
+  --memora-muted: #71717a;
+  --memora-info: #2563eb;
+  --memora-success: #16a34a;
+  --memora-warning: #d97706;
+  --memora-danger: #dc2626;
+  --memora-nav-width: 60px;
+  --memora-header-height: 64px;
+  --memora-sidebar-width: 260px;
+  --memora-inspector-width: 360px;
+  --memora-radius-control: 6px;
+  --memora-radius-panel: 10px;
+}
+```
+
+Set the application font stack to `Inter, "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif`. Use the exact typography and spacing rules in design section 12.2. Add a shared `:focus-visible` ring using `--memora-focus` and do not remove outlines without an equivalent replacement.
+
+Replace AppShell's inline placeholder SVGs with named Lucide components. Use `22px` navigation icons with `stroke-width="1.75"`, a `40×40px` hit area, `--memora-nav-muted` at rest, white on hover, and white on a brand-colored active background. Keep visible tooltips and accessible names.
+
+- [ ] **Step 3: Make loading, empty, error, and ready states unmistakable**
+
+Every page must keep a `64px` header visible while its query changes. For the knowledge-base page, destructure and render the complete query state:
+
+```ts
+const { data, isLoading, isError, error, refetch } = useKnowledgeBaseList(query)
+```
+
+Render in this strict order:
+
+```vue
+<LoadingSkeleton v-if="isLoading" type="card" :rows="6" />
+<ErrorState v-else-if="isError" :error="error" @retry="refetch()" />
+<EmptyState v-else-if="!data?.items.length" ... />
+<div v-else class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+  <KnowledgeBaseCard
+    v-for="knowledgeBase in data.items"
+    :key="knowledgeBase.id"
+    :knowledge-base="knowledgeBase"
+  />
+</div>
+```
+
+Apply the same state order to documents, conversations, runs, Memory, MCP, models, and profile pages. An API failure must never be rendered as an empty list. Each empty state contains one icon, title, explanatory sentence, and primary action where the user has write permission.
+
+- [ ] **Step 4: Preserve the first question when creating a conversation**
+
+Refactor the question mutation so the conversation identifier is passed with the mutation variables instead of captured from the current route:
+
+```ts
+export interface SubmitQuestionVariables {
+  conversation_id: string
+  question: QuestionInput
+}
+
+export function useSubmitQuestion() {
+  return useMutation({
+    mutationFn: ({ conversation_id, question }: SubmitQuestionVariables) =>
+      submitQuestion(conversation_id, question),
+  })
+}
+```
+
+In `ChatPage.handleSubmit`, calculate `targetConversationId`: use the current ID or await conversation creation, update the route, then submit the original query exactly once. Only append optimistic user/assistant messages after the target conversation exists. Disable submission until the create-and-submit sequence finishes.
+
+- [ ] **Step 5: Implement AgentRun cancel, retry, and disconnect reconciliation**
+
+Define exact transport types and functions:
+
+```ts
+export interface CancelAgentRunResult {
+  run_id: string
+  status: 'cancelled'
+}
+
+export interface RetryAgentRunResult {
+  new_run_id: string
+  retry_of_run_id: string
+  status: 'queued'
+}
+
+export function cancelAgentRun(runId: string): Promise<CancelAgentRunResult>
+export function retryAgentRun(runId: string): Promise<RetryAgentRunResult>
+export function agentRunEventsUrl(runId: string): string
+```
+
+Both mutations use the shared API client and `VITE_API_BASE_URL`; remove the direct `fetch('/api/v1/...')` call from `ChatPage`.
+
+Create `useAgentRunStream.ts` as the sole owner of the current `AbortController`. It must:
+
+1. subscribe with Bearer authentication;
+2. pass `after_sequence=last_sequence` only when `VITE_SSE_RESUME_ENABLED=true`;
+3. abort on terminal events, logout, component disposal, and conversation route change;
+4. on a non-terminal disconnect, call `getAgentRun(run_id)`;
+5. refresh messages and AgentRun queries when the persisted run is terminal;
+6. expose a reconnect action when the persisted run is still `queued` or `running`;
+7. keep sequence deduplication in `agentRuntimeStore`.
+
+Cancel must await `cancelAgentRun` successfully before aborting the local stream. Retry is shown only for a failed run, resets the runtime with `new_run_id`, derives `/api/v1/agent-runs/{new_run_id}/events`, and subscribes to the replacement run.
+
+- [ ] **Step 6: Complete the document-side AI experience**
+
+Remove the Task 9 placeholder from `DocumentAiPanel`. Reuse `ChatComposer`, `MessageList`, `AgentRunPanel`, `useSubmitQuestion`, and the stream composable rather than creating a second runtime implementation.
+
+On the first submitted question, create one conversation in the current knowledge base, retain its ID for subsequent panel questions, and submit:
+
+```ts
+buildQuestionPayload(query, props.documentId)
+```
+
+When `VITE_DOCUMENT_SCOPE_ENABLED=false`, omit `document_id` and visibly label the panel `基于当前知识库`. When enabled, send `document_id` and label it `基于当前文档：{documentTitle}`. The “打开完整聊天” action opens the same conversation, not a new blank chat.
+
+- [ ] **Step 7: Make knowledge and network citations navigable**
+
+For a knowledge citation, route to:
+
+```ts
+router.push({
+  name: 'document-detail',
+  params: {
+    kbId: citation.knowledge_base_id,
+    documentId: citation.document_id,
+  },
+  query: {
+    section: citation.source_location.section,
+    quote: citation.quoted_text,
+    fromConversation: currentConversationId,
+  },
+})
+```
+
+Network citations remain external anchors with `target="_blank"` and `rel="noopener noreferrer"`. In `DocumentWorkspacePage`, render sanitized document HTML through `CitationHighlight`. Locate the section using `CSS.escape`, wrap the matched quote in `<mark data-citation-highlight>`, scroll it into view, and remove the previous mark before applying a new one. If the quote is not found or `document_updated_at` differs from the current document, show `文档可能已更新，已定位到最接近章节` instead of silently approximating success.
+
+- [ ] **Step 8: Repair production proxy and reproducible package metadata**
+
+Use the Compose service name in all Nginx upstreams:
+
+```nginx
+proxy_pass http://api:8080;
+```
+
+Keep `proxy_buffering off`, `proxy_cache off`, HTTP/1.1, and the extended read timeout on the SSE location. Commit `web/.gitignore` and `web/pnpm-workspace.yaml`. Copy the workspace file before frozen installation:
+
+```dockerfile
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN corepack enable && pnpm install --frozen-lockfile
+```
+
+Document that the production container resolves `api` through the Compose network.
+
+- [ ] **Step 9: Run static, route, visual, and runtime verification**
+
+Run from `web/`:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm lint
+pnpm build
+```
+
+Run from the repository root where Docker is available:
+
+```bash
+docker compose --env-file .env -f deploy/docker-compose.yml config
+docker compose --env-file .env -f deploy/docker-compose.yml up --build web
+```
+
+At 1280×720, 1440×900, and 1920×1080, capture and review `/knowledge-bases`, one chat, one document, `/runs`, `/memories`, `/mcp`, and `/settings/models`. Each screenshot must show readable navigation icons, a visible page header, and a loading, empty, error, or ready content state. Reject any screen containing only the navigation rail and a blank canvas.
+
+Manually verify: first-question preservation, chat route shell, normal SSE completion, disconnect reconciliation, reconnect, cancel acknowledgement, retry, document-side question fallback, enabled document scope, knowledge citation navigation/highlight, stale citation warning, and network citation external-link safety.
+
+- [ ] **Step 10: Update evidence and commit Task 15**
+
+Record static checks separately from Docker/runtime and visual acceptance in `docs/FRONTEND.md`. Include viewport, route, state, result, and `request_id` for every failure. Do not mark unavailable backend contracts as passed.
+
+```bash
+git add web/src web/nginx.conf web/Dockerfile web/.gitignore web/pnpm-workspace.yaml web/README.md docs/FRONTEND.md docs/superpowers/specs/2026-08-01-memora-frontend-design.md docs/superpowers/plans/2026-08-01-memora-frontend-implementation.md
+git commit -m "fix(web): complete frontend usability and runtime recovery"
+```
+
+---
+
 ## Backend Contract Gates
 
 Claude must not silently invent backend behavior. Keep feature flags disabled until these contracts are implemented and verified:
@@ -1698,7 +1959,7 @@ VITE_SSE_RESUME_ENABLED=false
 
 ## Final Completion Checklist
 
-- [ ] All 14 task commits exist in order or have equivalent scoped commits.
+- [ ] All 15 task commits exist in order or have equivalent scoped commits.
 - [ ] `pnpm install --frozen-lockfile`, typecheck, lint, and build exit 0.
 - [ ] The Compose configuration renders successfully.
 - [ ] No committed test files violate repository policy.
@@ -1709,3 +1970,8 @@ VITE_SSE_RESUME_ENABLED=false
 - [ ] SSE terminates cleanly on completion, failure, cancel, logout, and route leave.
 - [ ] Knowledge and network citations are visually distinct and navigable.
 - [ ] P0 manual chain results are recorded without conflating static checks and runtime acceptance.
+- [ ] Every protected route renders inside AppShell through `RouterView`; no route shows only navigation and a blank canvas.
+- [ ] Navigation, typography, surfaces, icons, focus states, and status colors match design section 12 exactly.
+- [ ] The first question survives conversation creation and is submitted exactly once.
+- [ ] AgentRun disconnect reconciliation, reconnect, acknowledged cancel, and failed-run retry are manually verified.
+- [ ] Document AI submits through the shared conversation/runtime path and clearly labels knowledge-base versus document scope.

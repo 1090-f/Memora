@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// Recovery 返回一个 Panic 恢复中间件，捕获 HTTP 处理过程中的 panic 并返回 500 错误响应。
 func Recovery() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
