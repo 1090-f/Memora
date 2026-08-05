@@ -20,3 +20,4 @@ web/**/coverage/
 web/admin/.env.local
 
 .idea
+web/.pnpm-store
