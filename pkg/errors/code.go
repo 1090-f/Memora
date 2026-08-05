@@ -19,14 +19,18 @@ const (
 )
 
 var messages = map[Code]string{
-	CodeOK: "成功", CodeInvalidArgument: "参数无效", CodeUnauthorized: "未授权",
-	CodeForbidden: "禁止访问", CodeNotFound: "资源不存在", CodeConflict: "资源重复",
-	CodeInternal: "服务器内部错误",
-	CodeOK: "success", CodeInvalidArgument: "invalid argument", CodeUnauthorized: "unauthorized",
-	CodeForbidden: "forbidden", CodeNotFound: "resource not found", CodeConflict: "duplicate resource",
-	CodePayloadTooLarge: "payload too large", CodeMCPImportFailed: "mcp import failed",
-	CodeMCPConnFailed: "mcp connection failed", CodeMCPDiscoveryFail: "mcp discovery failed",
-	CodeMCPCallFailed: "mcp call failed", CodeInternal: "internal server error",
+	CodeOK:               "成功",
+	CodeInvalidArgument:  "参数无效",
+	CodeUnauthorized:     "未授权",
+	CodeForbidden:        "禁止访问",
+	CodeNotFound:         "资源不存在",
+	CodeConflict:         "资源重复",
+	CodeInternal:         "服务器内部错误",
+	CodePayloadTooLarge:  "传输数据包过大",
+	CodeMCPImportFailed:  "MCP 导入加载失败",
+	CodeMCPConnFailed:    "MCP 服务连接失败",
+	CodeMCPDiscoveryFail: "MCP 服务发现失败",
+	CodeMCPCallFailed:    "调用 MCP 方法执行失败",
 }
 
 // Message 根据错误码返回对应的默认错误消息，未知错误码返回内部错误消息
