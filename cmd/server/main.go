@@ -16,9 +16,9 @@ func main() {
 	defer stop()
 	application := app.NewServer()
 	if err := application.Initialize(ctx); err != nil {
-		log.Fatal(err)
+		log.Fatalf("服务器初始化失败: %v\n", err)
 	}
 	if err := application.Run(ctx); err != nil {
-		log.Fatal(err)
+		log.Fatalf("服务器启动失败: %v\n", err)
 	}
 }

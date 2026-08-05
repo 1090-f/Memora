@@ -17,12 +17,12 @@ func NewRegistry() *Registry { return &Registry{handlers: make(map[string]Handle
 // Register 注册一个任务类型及其对应的处理器。
 func (r *Registry) Register(jobType string, handler Handler) error {
 	if jobType == "" || handler == nil {
-		return fmt.Errorf("job type and handler are required")
+		return fmt.Errorf("必须提供任务类型和处理器")
 	}
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	if _, exists := r.handlers[jobType]; exists {
-		return fmt.Errorf("worker handler %q is already registered", jobType)
+		return fmt.Errorf("Worker 处理器 %q 已注册", jobType)
 	}
 	r.handlers[jobType] = handler
 	return nil

@@ -26,13 +26,13 @@ func ensurePostgresDatabase(databaseURL string) error {
 
 	conn, err := pgx.Connect(ctx, maintenanceURL)
 	if err != nil {
-		return fmt.Errorf("connect postgres maintenance database: %w", err)
+		return fmt.Errorf("连接 PostgreSQL 维护数据库失败: %w", err)
 	}
 	defer func() { _ = conn.Close(context.Background()) }()
 
 	var exists bool
 	if err := conn.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)", databaseName).Scan(&exists); err != nil {
-		return fmt.Errorf("check database %q: %w", databaseName, err)
+		return fmt.Errorf("检查数据库 %q 失败: %w", databaseName, err)
 	}
 	if exists {
 		return nil
@@ -43,7 +43,7 @@ func ensurePostgresDatabase(databaseURL string) error {
 		if errors.As(err, &postgresError) && postgresError.Code == "42P04" {
 			return nil
 		}
-		return fmt.Errorf("create database %q: %w", databaseName, err)
+		return fmt.Errorf("创建数据库 %q 失败: %w", databaseName, err)
 	}
 	return nil
 }
@@ -51,22 +51,22 @@ func ensurePostgresDatabase(databaseURL string) error {
 func databaseBootstrapTarget(databaseURL string) (string, string, error) {
 	parsed, err := url.Parse(databaseURL)
 	if err != nil {
-		return "", "", fmt.Errorf("parse database URL: %w", err)
+		return "", "", fmt.Errorf("解析数据库连接串失败: %w", err)
 	}
 	if parsed.Scheme != "postgres" && parsed.Scheme != "postgresql" {
-		return "", "", fmt.Errorf("database URL must use postgres or postgresql scheme")
+		return "", "", fmt.Errorf("数据库连接串必须使用 postgres 或 postgresql 协议")
 	}
 
 	escapedName := strings.TrimPrefix(parsed.EscapedPath(), "/")
 	if escapedName == "" || strings.Contains(escapedName, "/") {
-		return "", "", fmt.Errorf("database URL must include exactly one database name")
+		return "", "", fmt.Errorf("数据库连接串必须只包含一个数据库名称")
 	}
 	databaseName, err := url.PathUnescape(escapedName)
 	if err != nil {
-		return "", "", fmt.Errorf("decode database name: %w", err)
+		return "", "", fmt.Errorf("解码数据库名称失败: %w", err)
 	}
 	if databaseName == "" || strings.ContainsRune(databaseName, '\x00') {
-		return "", "", fmt.Errorf("database URL contains an invalid database name")
+		return "", "", fmt.Errorf("数据库连接串包含无效的数据库名称")
 	}
 
 	parsed.Path = "/postgres"

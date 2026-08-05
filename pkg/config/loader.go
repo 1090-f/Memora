@@ -47,13 +47,13 @@ func load(configPath string, validate func(*Config) error) (*Config, error) {
 	if err := v.ReadInConfig(); err != nil {
 		var notFound viper.ConfigFileNotFoundError
 		if !errors.As(err, &notFound) {
-			return nil, fmt.Errorf("read configuration: %w", err)
+			return nil, fmt.Errorf("读取配置文件失败: %w", err)
 		}
 	}
 
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
-		return nil, fmt.Errorf("decode configuration: %w", err)
+		return nil, fmt.Errorf("解析配置失败: %w", err)
 	}
 	if err := validate(&cfg); err != nil {
 		return nil, err
@@ -67,7 +67,7 @@ func loadDotEnv(path string) error {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
-		return fmt.Errorf("load environment file %q: %w", path, err)
+		return fmt.Errorf("加载环境文件 %q 失败: %w", path, err)
 	}
 	return nil
 }
@@ -127,6 +127,9 @@ func bindEnvironment(v *viper.Viper) {
 		"worker.concurrency": "MEMORA_WORKER_CONCURRENCY", "worker.poll_interval": "MEMORA_WORKER_POLL_INTERVAL",
 		"worker.default_timeout": "MEMORA_WORKER_DEFAULT_TIMEOUT", "worker.max_retry_delay": "MEMORA_WORKER_MAX_RETRY_DELAY",
 		"worker.idempotency_ttl": "MEMORA_WORKER_IDEMPOTENCY_TTL",
+		"log.level":             "MEMORA_LOG_LEVEL", "log.filename": "MEMORA_LOG_FILENAME",
+		"log.max_size": "MEMORA_LOG_MAX_SIZE", "log.max_backups": "MEMORA_LOG_MAX_BACKUPS",
+		"log.max_age": "MEMORA_LOG_MAX_AGE", "log.compress": "MEMORA_LOG_COMPRESS",
 	}
 	for key, environment := range bindings {
 		_ = v.BindEnv(key, environment)

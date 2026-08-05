@@ -8,7 +8,7 @@ import (
 )
 
 // ErrInvalidToken 表示令牌无效的错误
-var ErrInvalidToken = errors.New("invalid token")
+var ErrInvalidToken = errors.New("令牌无效")
 
 // Manager 是JWT令牌管理器，负责令牌的生成和解析
 type Manager struct {
@@ -19,7 +19,7 @@ type Manager struct {
 // NewManager 创建JWT管理器实例，secret为签名密钥，ttl为令牌有效期
 func NewManager(secret string, ttl time.Duration) (*Manager, error) {
 	if secret == "" || ttl <= 0 {
-		return nil, errors.New("invalid JWT configuration")
+		return nil, errors.New("JWT 配置无效")
 	}
 	return &Manager{secret: []byte(secret), ttl: ttl}, nil
 }

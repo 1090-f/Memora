@@ -14,9 +14,9 @@ import (
 
 var (
 	// ErrUserNotFound 表示未找到指定用户。
-	ErrUserNotFound = errors.New("user not found")
+	ErrUserNotFound = errors.New("用户不存在")
 	// ErrUserConflict 表示用户字段与已有用户冲突。
-	ErrUserConflict = errors.New("user field conflicts with an existing user")
+	ErrUserConflict = errors.New("用户信息与现有用户冲突")
 )
 
 // userRepository 是 UserRepository 接口的 GORM 实现。
@@ -44,7 +44,7 @@ func (r *userRepository) FindActiveByID(ctx context.Context, id string) (*entity
 // UpdateLastLogin 更新用户的最后登录时间。
 func (r *userRepository) UpdateLastLogin(ctx context.Context, id string) error {
 	if err := r.db.WithContext(ctx).Model(&entity.User{}).Where("id = ?", id).Update("last_login_at", time.Now().UTC()).Error; err != nil {
-		return fmt.Errorf("update last login: %w", err)
+		return fmt.Errorf("更新最近登录时间失败: %w", err)
 	}
 	return nil
 }
@@ -71,7 +71,7 @@ func (r *userRepository) UpdateProfile(ctx context.Context, id string, req *requ
 		if errors.As(result.Error, &postgresError) && postgresError.Code == "23505" {
 			return nil, ErrUserConflict
 		}
-		return nil, fmt.Errorf("update user profile: %w", result.Error)
+		return nil, fmt.Errorf("更新用户资料失败: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return nil, ErrUserNotFound
@@ -85,7 +85,7 @@ func (r *userRepository) UpdatePassword(ctx context.Context, id, passwordHash st
 		Where("id = ? AND status = ? AND deleted_at IS NULL", id, "active").
 		Updates(map[string]any{"password_hash": passwordHash, "updated_at": time.Now().UTC()})
 	if result.Error != nil {
-		return fmt.Errorf("update user password: %w", result.Error)
+		return fmt.Errorf("更新用户密码失败: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return ErrUserNotFound
@@ -98,7 +98,7 @@ func mapUserResult(user *entity.User, err error) (*entity.User, error) {
 		return nil, ErrUserNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("query user: %w", err)
+		return nil, fmt.Errorf("查询用户失败: %w", err)
 	}
 	return user, nil
 }

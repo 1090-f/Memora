@@ -21,7 +21,7 @@ func Migrate(databaseURL, direction string) error {
 		}
 	case "down":
 	default:
-		return fmt.Errorf("unsupported migration direction %q", direction)
+		return fmt.Errorf("不支持的迁移方向 %q", direction)
 	}
 
 	source, err := migrationSource()
@@ -30,7 +30,7 @@ func Migrate(databaseURL, direction string) error {
 	}
 	migrator, err := migrate.New(source, databaseURL)
 	if err != nil {
-		return fmt.Errorf("create migrator: %w", err)
+		return fmt.Errorf("创建迁移器失败: %w", err)
 	}
 	defer func() { _, _ = migrator.Close() }()
 	switch direction {
@@ -43,7 +43,7 @@ func Migrate(databaseURL, direction string) error {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("migrate %s: %w", direction, err)
+		return fmt.Errorf("数据库迁移 %s 失败: %w", direction, err)
 	}
 	return nil
 }
@@ -62,5 +62,5 @@ func migrationSource() (string, error) {
 			return (&url.URL{Scheme: "file", Path: filepath.ToSlash(absolute)}).String(), nil
 		}
 	}
-	return "", errors.New("locate scripts/migrations directory")
+	return "", errors.New("找不到 scripts/migrations 目录")
 }
