@@ -10,6 +10,8 @@ import (
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/1090-f/Memora/internal/repository"
 	apperrors "github.com/1090-f/Memora/pkg/errors"
+	"github.com/1090-f/Memora/pkg/logger"
+	"go.uber.org/zap"
 )
 
 // userService 是 UserService 接口的实现。
@@ -54,6 +56,8 @@ func (s *userService) UpdateCurrent(ctx context.Context, id string, req *request
 		return nil, apperrors.New(apperrors.CodeInternal, 500, err)
 	}
 	response := UserResponse(user)
+	logger.Info("用户资料已更新",
+		zap.String("user_id", id), zap.String("username", user.Username))
 	return &response, nil
 }
 
@@ -82,6 +86,7 @@ func (s *userService) ChangePassword(ctx context.Context, id string, req *reques
 		}
 		return apperrors.New(apperrors.CodeInternal, 500, err)
 	}
+	logger.Info("用户密码已修改", zap.String("user_id", id))
 	return nil
 }
 

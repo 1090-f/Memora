@@ -35,10 +35,10 @@ type Runner struct {
 // NewRunner 创建一个新的 Worker 运行器实例。
 func NewRunner(config RunnerConfig, source Source, registry *Registry, idempotency IdempotencyStore) (*Runner, error) {
 	if source == nil || registry == nil || idempotency == nil {
-		return nil, fmt.Errorf("worker source, registry and idempotency store are required")
+		return nil, fmt.Errorf("必须提供 Worker 源、注册表和幂等性存储")
 	}
 	if config.Concurrency <= 0 || config.PollInterval <= 0 || config.DefaultTimeout <= 0 || config.IdempotencyTTL <= 0 {
-		return nil, fmt.Errorf("worker concurrency and durations must be positive")
+		return nil, fmt.Errorf("Worker 并发数和时长必须为正数")
 	}
 	if config.MaxRetryDelay <= 0 {
 		config.MaxRetryDelay = time.Minute
@@ -86,7 +86,7 @@ func (r *Runner) loop(ctx context.Context, workerID int) {
 			continue
 		}
 		if err != nil {
-			logger.Error("worker reserve failed", zap.Int("worker_id", workerID), zap.Error(err))
+			logger.Error("Worker 任务预留失败", zap.Int("worker_id", workerID), zap.Error(err))
 			if !waitFor(ctx, r.config.PollInterval) {
 				return
 			}
@@ -129,7 +129,7 @@ func (r *Runner) execute(parent context.Context, job Job) {
 		defer finalizeCancel()
 		result = "duplicate"
 		if err := r.source.Complete(finalizeCtx, job); err != nil {
-			logger.Error("worker duplicate completion failed", zap.String("job_id", job.ID), zap.Error(err))
+			logger.Error("Worker 重复任务完成失败", zap.String("job_id", job.ID), zap.Error(err))
 		}
 		return
 	}
@@ -137,7 +137,7 @@ func (r *Runner) execute(parent context.Context, job Job) {
 	if !exists {
 		finalizeCtx, finalizeCancel := r.finalizeContext()
 		defer finalizeCancel()
-		err := fmt.Errorf("worker handler %q is not registered", job.Type)
+		err := fmt.Errorf("Worker 处理器 %q 未注册", job.Type)
 		_ = r.idempotency.Release(finalizeCtx, key)
 		result = retryResult(job)
 		r.retryOrFail(finalizeCtx, job, err)
@@ -163,7 +163,7 @@ func (r *Runner) execute(parent context.Context, job Job) {
 		return
 	}
 	if err := r.source.Complete(finalizeCtx, job); err != nil {
-		logger.Error("worker completion failed", zap.String("job_id", job.ID), zap.Error(err))
+		logger.Error("Worker 任务完成失败", zap.String("job_id", job.ID), zap.Error(err))
 	}
 	result = "succeeded"
 }
@@ -187,12 +187,12 @@ func (r *Runner) retryOrFail(ctx context.Context, job Job, cause error) {
 		}
 		job.Attempt++
 		if err := r.source.Retry(ctx, job, time.Now().UTC().Add(delay), cause); err != nil {
-			logger.Error("worker retry scheduling failed", zap.String("job_id", job.ID), zap.Error(err))
+			logger.Error("Worker 重试调度失败", zap.String("job_id", job.ID), zap.Error(err))
 		}
 		return
 	}
 	if err := r.source.Fail(ctx, job, cause); err != nil {
-		logger.Error("worker failure persistence failed", zap.String("job_id", job.ID), zap.Error(err))
+		logger.Error("Worker 失败记录持久化失败", zap.String("job_id", job.ID), zap.Error(err))
 	}
 }
 

@@ -94,39 +94,39 @@ type CORSConfig struct {
 func (c Config) Validate() error {
 	var errs []error
 	if c.App.Address == "" {
-		errs = append(errs, errors.New("MEMORA_HTTP_ADDRESS is required"))
+		errs = append(errs, errors.New("缺少环境变量 MEMORA_HTTP_ADDRESS"))
 	}
 	if err := c.ValidateDatabase(); err != nil {
 		errs = append(errs, err)
 	}
 	if c.Redis.Address == "" {
-		errs = append(errs, errors.New("MEMORA_REDIS_ADDRESS is required"))
+		errs = append(errs, errors.New("缺少环境变量 MEMORA_REDIS_ADDRESS"))
 	}
 	if c.MinIO.Endpoint == "" || c.MinIO.Bucket == "" {
-		errs = append(errs, errors.New("MEMORA_MINIO_ENDPOINT and MEMORA_MINIO_BUCKET are required"))
+		errs = append(errs, errors.New("缺少环境变量 MEMORA_MINIO_ENDPOINT 和 MEMORA_MINIO_BUCKET"))
 	}
 	if c.MinIO.AccessKey == "" || c.MinIO.SecretKey == "" {
-		errs = append(errs, errors.New("MEMORA_MINIO_ACCESS_KEY and MEMORA_MINIO_SECRET_KEY are required"))
+		errs = append(errs, errors.New("缺少环境变量 MEMORA_MINIO_ACCESS_KEY 和 MEMORA_MINIO_SECRET_KEY"))
 	}
 	if c.JWT.Secret == "" || c.JWT.AccessTTL <= 0 {
-		errs = append(errs, errors.New("MEMORA_JWT_SECRET and a positive MEMORA_ACCESS_TTL are required"))
+		errs = append(errs, errors.New("缺少环境变量 MEMORA_JWT_SECRET 且 MEMORA_ACCESS_TTL 必须为正数"))
 	}
 	if c.App.Mode == "release" && (len(c.JWT.Secret) < 32 || strings.HasPrefix(strings.ToLower(c.JWT.Secret), "change-me")) {
-		errs = append(errs, errors.New("MEMORA_JWT_SECRET must be at least 32 characters and must not use an example value in release mode"))
+		errs = append(errs, errors.New("MEMORA_JWT_SECRET 至少需要 32 个字符，且在发布模式下不能使用示例值"))
 	}
 	if c.Worker.Concurrency <= 0 || c.Worker.PollInterval <= 0 || c.Worker.DefaultTimeout <= 0 || c.Worker.IdempotencyTTL <= 0 {
-		errs = append(errs, errors.New("worker concurrency and durations must be positive"))
+		errs = append(errs, errors.New("Worker 并发数和各项时长必须为正数"))
 	}
 	if c.App.Mode != "debug" && c.App.Mode != "release" && c.App.Mode != "test" {
-		errs = append(errs, errors.New("MEMORA_GIN_MODE must be debug, release or test"))
+		errs = append(errs, errors.New("MEMORA_GIN_MODE 必须是 debug、release 或 test"))
 	}
 	for _, origin := range c.CORS.AllowOrigins {
 		if c.CORS.AllowCredentials && origin == "*" {
-			errs = append(errs, errors.New("CORS wildcard origin cannot be used with credentials"))
+			errs = append(errs, errors.New("CORS 通配符来源不能与凭据模式同时使用"))
 		}
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("invalid configuration: %w", errors.Join(errs...))
+		return fmt.Errorf("配置无效: %w", errors.Join(errs...))
 	}
 	return nil
 }
@@ -135,13 +135,13 @@ func (c Config) Validate() error {
 func (c Config) ValidateDatabase() error {
 	var errs []error
 	if c.Database.URL == "" {
-		errs = append(errs, errors.New("MEMORA_DATABASE_URL is required"))
+		errs = append(errs, errors.New("缺少环境变量 MEMORA_DATABASE_URL"))
 	}
 	if c.Database.MaxIdleConns < 0 || c.Database.MaxOpenConns <= 0 || c.Database.MaxIdleConns > c.Database.MaxOpenConns {
-		errs = append(errs, errors.New("database connection pool settings are invalid"))
+		errs = append(errs, errors.New("数据库连接池配置无效"))
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("invalid database configuration: %w", errors.Join(errs...))
+		return fmt.Errorf("数据库配置无效: %w", errors.Join(errs...))
 	}
 	return nil
 }

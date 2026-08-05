@@ -8,7 +8,7 @@ import (
 )
 
 // ErrNoWork 表示没有可用的任务。
-var ErrNoWork = errors.New("no work available")
+var ErrNoWork = errors.New("没有可处理的任务")
 
 // Job 表示一个待执行的工作任务。
 type Job struct {

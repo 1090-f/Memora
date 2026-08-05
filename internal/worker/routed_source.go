@@ -21,12 +21,12 @@ func NewRoutedSource() *RoutedSource { return &RoutedSource{sources: make(map[st
 // Register 注册一个任务类型及其对应的任务源。
 func (s *RoutedSource) Register(jobType string, source Source) error {
 	if jobType == "" || source == nil {
-		return fmt.Errorf("job type and source are required")
+		return fmt.Errorf("必须提供任务类型和任务源")
 	}
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	if _, exists := s.sources[jobType]; exists {
-		return fmt.Errorf("worker source %q is already registered", jobType)
+		return fmt.Errorf("工作源 %q 已注册", jobType)
 	}
 	s.sources[jobType] = source
 	s.order = append(s.order, jobType)
@@ -52,7 +52,7 @@ func (s *RoutedSource) Reserve(ctx context.Context) (*Job, error) {
 			job.Type = jobType
 		}
 		if job.Type != jobType {
-			return nil, fmt.Errorf("worker source %q returned job type %q", jobType, job.Type)
+			return nil, fmt.Errorf("工作源 %q 返回了任务类型 %q", jobType, job.Type)
 		}
 		return job, nil
 	}
@@ -91,7 +91,7 @@ func (s *RoutedSource) source(jobType string) (Source, error) {
 	defer s.mutex.RUnlock()
 	source, exists := s.sources[jobType]
 	if !exists {
-		return nil, fmt.Errorf("worker source %q is not registered", jobType)
+		return nil, fmt.Errorf("工作源 %q 未注册", jobType)
 	}
 	return source, nil
 }

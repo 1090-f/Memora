@@ -46,7 +46,7 @@ func (a *WorkerApp) Initialize(ctx context.Context) error {
 		return err
 	}
 	if err := logger.Init(&cfg.Log); err != nil {
-		return fmt.Errorf("initialize logger: %w", err)
+		return fmt.Errorf("初始化日志器失败: %w", err)
 	}
 	initCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -85,7 +85,7 @@ func (a *WorkerApp) Initialize(ctx context.Context) error {
 
 // Run 启动 Worker 运行器和心跳机制，阻塞等待直到上下文取消。
 func (a *WorkerApp) Run(ctx context.Context) error {
-	logger.Info("Memora worker started")
+	logger.Info("Memora Worker 已启动")
 	heartbeatErr := make(chan error, 1)
 	go func() { heartbeatErr <- a.heartbeat.Run(ctx) }()
 	runnerErr := a.runner.Run(ctx)

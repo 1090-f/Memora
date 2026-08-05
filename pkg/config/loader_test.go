@@ -44,7 +44,7 @@ func TestLoadDotEnvRejectsMalformedFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("BROKEN='unterminated\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := loadDotEnv(path); err == nil || !strings.Contains(err.Error(), "load environment file") {
+	if err := loadDotEnv(path); err == nil || !strings.Contains(err.Error(), "加载环境文件") {
 		t.Fatalf("expected a contextual parse error, got %v", err)
 	}
 }

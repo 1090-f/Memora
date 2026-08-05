@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
 	"github.com/1090-f/Memora/internal/api"
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service"
+	"github.com/1090-f/Memora/pkg/audit"
 	"github.com/1090-f/Memora/pkg/config"
 	"github.com/1090-f/Memora/pkg/database"
 	jwtmanager "github.com/1090-f/Memora/pkg/jwt"
@@ -40,14 +42,23 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	}
 	a.cfg = cfg
 	if err := logger.Init(&cfg.Log); err != nil {
-		return fmt.Errorf("initialize logger: %w", err)
+		return fmt.Errorf("初始化日志器失败: %w", err)
 	}
 	gin.SetMode(cfg.App.Mode)
+	gin.DefaultWriter = io.Discard
 
 	initCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	if err := database.Migrate(cfg.Database.URL, "up"); err != nil {
+		return err
+	}
 	a.db, err = database.InitPostgres(initCtx, &cfg.Database)
 	if err != nil {
+		return err
+	}
+	audit.SetStore(repository.NewAuditRepository(a.db))
+	if err := bootstrapAdmin(initCtx, a.db, cfg.App.Mode); err != nil {
+		_ = database.ClosePostgres(a.db)
 		return err
 	}
 	a.redis, err = database.InitRedis(initCtx, &cfg.Redis)
@@ -93,7 +104,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 func (a *ServerApp) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("Memora API started")
+		logger.Info("Memora API 服务已启动")
 		err := a.server.ListenAndServe()
 		if errors.Is(err, http.ErrServerClosed) {
 			err = nil

@@ -16,9 +16,9 @@ func main() {
 	defer stop()
 	application := app.NewWorker()
 	if err := application.Initialize(ctx); err != nil {
-		log.Fatal(err)
+		log.Fatalf("Worker 初始化失败: %v\n", err)
 	}
 	if err := application.Run(ctx); err != nil {
-		log.Fatal(err)
+		log.Fatalf("Worker 启动失败: %v\n", err)
 	}
 }

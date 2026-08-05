@@ -1,119 +1,123 @@
-# Memora 前端文档
+# Memora React 管理端
 
 ## 概述
 
-Memora P0 前端是一个独立的 Vue 3 SPA，通过 REST API 和 SSE 与 Go 后端通信。
+Memora P0 管理端位于 `web/admin`，使用 React 19、TypeScript、Vite、MUI、TanStack Query 与 Redux Toolkit。它来自 PandaWiki 管理端的视觉基础，但运行时协议、路由、DTO 与品牌均为 Memora；不包含 Next.js 公共门户、Vue、在线协作编辑、发布和许可证功能。
 
-## 架构
+调用链固定为：
 
 ```text
-Route Page
-→ Feature Component / Composable
-→ Vue Query / Pinia / Runtime Store
-→ API Client / SSE Client
-→ Gin REST API / SSE
+Route / Page → Feature API / Query → Memora API Client or authenticated SSE → /api/v1
 ```
 
-- 页面只负责编排
-- Feature Composable 封装用例和数据组合
-- API Client 处理协议、认证和错误映射
-- DTO 与后端 JSON 保持 `snake_case`
+服务端数据由 TanStack Query 管理。Redux 只保存认证会话镜像和聊天布局偏好，DTO 保持后端 `snake_case`。
 
-## 认证
+## Workspace 与命令
 
-- Token 存储在 `sessionStorage`
-- 关闭标签页后清除
-- 401 响应触发自动登出并跳转登录页
-- 登录后返回原页面
+```text
+web/
+├─ admin/                 React/Vite 管理端
+├─ packages/icons/        @memora/icons
+├─ packages/themes/       @memora/themes
+├─ packages/ui/           @memora/ui
+├─ Dockerfile
+└─ nginx.conf
+```
 
-## SSE 流式回答
+需要 Node.js 24 与 pnpm 10.12.1：
 
-1. 提交问题获得 `run_id` 和 `events_url`
-2. 建立带 Bearer Token 的 SSE Fetch
-3. 按 `sequence` 去重处理事件
-4. `answer.delta` 拼接流式回答
-5. 终态事件关闭连接并刷新持久数据
+```sh
+cd web
+corepack enable
+pnpm install --frozen-lockfile
+pnpm dev
+pnpm test
+pnpm lint
+pnpm typecheck
+pnpm build
+```
 
-## 功能开关
+开发服务器把 `/api/v1` 转发到 `VITE_API_PROXY_TARGET`，默认 `http://localhost:8080`。环境变量样例见 `web/.env.example`。
 
-| 环境变量 | 说明 | 启用条件 |
+## 路由
+
+| 路由 | 页面 |
+|---|---|
+| `/login` | 登录 |
+| `/knowledge-bases` | 知识库 |
+| `/kb/:kbId/docs/:documentId?` | 目录树与只读文档 |
+| `/chat/:kbId/:conversationId?` | 三栏智能问答 |
+| `/runs/:runId?` | Agent 运行记录/详情 |
+| `/memories` | 长期记忆 |
+| `/mcp` | MCP 服务与只读工具 |
+| `/kb/:kbId/search-test` | 检索测试 |
+| `/kb/:kbId/settings` | 知识库设置 |
+| `/settings/profile` | 当前用户资料与密码 |
+| `/settings/models` | 模型配置 |
+
+## 当前能力状态
+
+| 能力 | 状态 | 行为 |
 |---|---|---|
-| `VITE_SSE_RESUME_ENABLED` | SSE 断线续传 | 后端支持 `after_sequence` |
-| `VITE_DOCUMENT_SCOPE_ENABLED` | 文档作用域问答 | 后端支持 `document_id` 字段 |
+| Auth、Current User | `available` | 使用当前 Go API |
+| Knowledge Base、Document | `backend_pending` | 完整页面外壳，零请求，写操作禁用 |
+| Conversation、Agent Run | `backend_pending` | 三栏工作区与事件归约器已就绪，零请求/零 SSE |
+| Memory、MCP、Search、Model | `backend_pending` | 强类型 API 边界，零请求，写操作禁用 |
 
-## 安全约束
+生产能力开关集中在 `web/admin/src/app/capabilities.ts`。只有后端路由、DTO 和错误场景都完成契约验证后才能从 `backend_pending` 改为 `available`。
 
-- 所有 Markdown/HTML 经 DOMPurify 清洗
-- 外链添加 `target="_blank" rel="noopener noreferrer"`
-- API Key/MCP Token 只显示脱敏状态
-- 前端不发送 `user_id`、`agent_run_id`、`allowed_tool_names`
-- 模型完整思维链不存储到前端
+## API、认证与错误
 
-## 部署
+统一响应：
 
-生产构建由 Nginx 提供，同域代理：
-
-```text
-/          → Vue SPA
-/api/v1    → memora-server
-/health    → memora-server
+```json
+{
+  "code": "OK",
+  "message": "success",
+  "data": {},
+  "details": null,
+  "request_id": "uuid"
+}
 ```
 
-SSE 路由关闭代理缓冲，延长读取超时。
+前端只解包 HTTP 成功且 `code === "OK"` 的响应；其他响应转换为 `AppError`。可见错误保留 `request_id` 供复制排障，非 JSON 上游错误不会把响应正文暴露给用户。
 
-## API 端点参考
+Token 只存于 `sessionStorage` 的 `memora.auth`，结构为 `{ access_token, expires_at, user }`。启动时拒绝过期或畸形数据；401 会清除会话并携带当前地址跳到登录页；退出请求即使网络失败也会清除本地会话。
 
-详见 `AI智能知识库_API接口文档_P0_轻量化版.md`。
+## Agent SSE
 
-### 联调顺序
+提交问题返回 `run_id` 与 `events_url` 后，前端使用带 Bearer Token 的 `fetch` 流读取 SSE，不使用原生 `EventSource`。传输层支持拆分 UTF-8、多行 data、`after_sequence`、终态和取消。
 
-1. Auth
-2. KnowledgeBase
-3. Directory
-4. Document + ImportTask
-5. SearchConfig + ModelConfig
-6. 文档处理状态
-7. Search / SearchTest
-8. Conversation / Message
-9. Question → AgentRun
-10. SSE
-11. RouterDecision
-12. ReAct ToolCall
-13. Plan / PlanStep
-14. Citation
-15. Memory
-16. MCP Server / Discover / Tool Grant
-17. Cancel / Retry
-18. Agent 运行详情页
+Agent 事件归约器：
 
-### 验收链路
+- 按 `sequence` 忽略重复与乱序事件；
+- 失败/取消后保留已生成答案；
+- 保存 Router、Plan、ReAct 轮次和工具调用的用户可见摘要；
+- 不保存模型完整隐藏推理；
+- `completed`、`failed`、`cancelled` 进入确定终态。
 
-最小完整验收：
+## 生产部署
 
-```text
-POST /auth/login
-→ POST /knowledge-bases
-→ POST /knowledge-bases/{kb}/imports/files
-→ GET /import-tasks/{id}
-→ POST /knowledge-bases/{kb}/search/test
-→ POST /knowledge-bases/{kb}/conversations
-→ POST /conversations/{id}/questions
-→ GET /agent-runs/{run}/events
-→ GET /agent-runs/{run}
-→ GET /agent-runs/{run}/citations
-→ GET /memories
-```
+`web/Dockerfile` 用冻结 lockfile 构建 `admin/dist`，运行时使用监听 8080 的非特权 Nginx。`web/nginx.conf` 提供：
 
-联网能力验收：
+- SPA fallback；
+- 仅 `/assets/` 使用 immutable 缓存，`index.html` 禁止缓存；
+- `/api/v1` 与健康检查反向代理；
+- Agent SSE 路由关闭缓冲并把读取超时延长到 1 小时。
 
-```text
-POST /mcp/servers
-→ POST /mcp/servers/{id}/test
-→ POST /mcp/servers/{id}/discover
-→ PATCH /mcp/tools/{id}/enabled
-→ PUT /knowledge-bases/{kb}/agent-config/mcp-tools/{tool}
-→ 开启 knowledge_base.network_enabled
-→ 发起需要最新信息的问题
-→ GET /agent-runs/{run}/tool-calls
-→ GET /agent-runs/{run}/citations
-```
+仓库 Compose 将管理端暴露在 `http://localhost:3000`。
+
+## 后端能力激活清单
+
+1. 对照当前 Go handler 与 API 文档确认路径、字段和枚举。
+2. 添加 MSW 成功、校验、401、404、409、限流与上游失败测试。
+3. 保持 `backend_pending`，确认页面零请求。
+4. 在测试中切换为 `available` 并验证 Memora 信封和 DTO。
+5. 本地真实服务完成手工路径后再修改生产 capability。
+6. 运行 `pnpm test && pnpm lint && pnpm typecheck && pnpm build`。
+
+## 已知限制
+
+- 当前 Go Foundation 只实现认证和当前用户域，因此其余页面默认明确显示“后端待接入”。
+- 管理端以 1280px 及以上桌面窗口为 P0 目标，不提供完整移动端布局。
+- 生产包仍有单块体积优化空间，后续可按路由增加懒加载。
