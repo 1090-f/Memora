@@ -1,6 +1,9 @@
 package contracts
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // RetrievalMode 表示文档检索使用的搜索策略。
 type RetrievalMode string
@@ -22,6 +25,7 @@ type SearchConfig struct {
 	RRFTopK                int      `json:"rrf_top_k"`
 	RerankerTopK           int      `json:"reranker_top_k"`
 	RerankerThreshold      *float64 `json:"reranker_threshold,omitempty"`
+	RerankerModelID        ID       `json:"reranker_model_id,omitempty"`
 	MinimumEffectiveResult int      `json:"minimum_effective_results"`
 }
 
@@ -43,21 +47,33 @@ type RetrievalRequest struct {
 
 // RetrievalItem 表示带有相关性分数的单个检索文档块。
 type RetrievalItem struct {
-	DocumentID   ID       `json:"document_id"`
-	ChunkID      ID       `json:"chunk_id"`
-	Content      string   `json:"content"`
-	Score        float64  `json:"score"`
-	KeywordRank  *int     `json:"keyword_rank,omitempty"`
-	VectorRank   *int     `json:"vector_rank,omitempty"`
-	IndexVersion int      `json:"index_version"`
-	Citation     Citation `json:"citation"`
+	DocumentID        ID             `json:"document_id"`
+	DocumentTitle     string         `json:"document_title,omitempty"`
+	DirectoryID       ID             `json:"directory_id,omitempty"`
+	ChunkID           ID             `json:"chunk_id"`
+	Content           string         `json:"content"`
+	SourceLocation    map[string]any `json:"source_location,omitempty"`
+	Score             float64        `json:"score,omitempty"`
+	KeywordScore      *float64       `json:"keyword_score,omitempty"`
+	VectorScore       *float64       `json:"vector_score,omitempty"`
+	KeywordRank       *int           `json:"keyword_rank,omitempty"`
+	VectorRank        *int           `json:"vector_rank,omitempty"`
+	RRFRank           *int           `json:"rrf_rank,omitempty"`
+	RerankerScore     *float64       `json:"reranker_score,omitempty"`
+	FinalRank         *int           `json:"final_rank,omitempty"`
+	IndexVersion      int            `json:"index_version"`
+	DocumentUpdatedAt *time.Time     `json:"document_updated_at,omitempty"`
+	Citation          Citation       `json:"citation"`
 }
 
 // RetrievalResult 包含文档检索操作的结果。
 type RetrievalResult struct {
+	Query           string          `json:"query,omitempty"`
+	Mode            RetrievalMode   `json:"mode,omitempty"`
 	Items           []RetrievalItem `json:"items"`
 	RewrittenQuery  string          `json:"rewritten_query,omitempty"`
 	KnowledgeStatus string          `json:"knowledge_status"`
+	ElapsedMS       int64           `json:"elapsed_ms,omitempty"`
 }
 
 // RetrievalService 从知识库中检索相关文档。

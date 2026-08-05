@@ -86,8 +86,18 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		return err
 	}
 
+	kbs := repository.NewKnowledgeBaseRepository(a.db)
+	dirs := repository.NewDocumentDirectoryRepository(a.db)
+	searchConfigs := repository.NewSearchConfigRepository(a.db)
+	agentConfigs := repository.NewAgentConfigRepository(a.db)
+	modelConfigs := repository.NewModelConfigRepository(a.db)
+	transactor := repository.NewTransactor(a.db)
+	kbService := service.NewKnowledgeBaseService(kbs, dirs, searchConfigs, agentConfigs, modelConfigs, transactor)
+	directoryService := service.NewDirectoryService(kbs, dirs)
+
 	router := api.NewRouter(api.Dependencies{
 		Config: cfg.CORS, Auth: authService, Users: userService,
+		KnowledgeBases: kbService, Directories: directoryService,
 		PostgresHealth: func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
 		RedisHealth:    func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
 		MinIOHealth:    a.store.Health,
