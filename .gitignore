@@ -6,5 +6,4 @@ bin/
 *.out
 .gocache/
 .gomodcache/
-
 .idea
