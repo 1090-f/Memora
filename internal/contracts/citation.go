@@ -15,6 +15,7 @@ const (
 // Citation 表示 Agent 响应中引用的参考来源。
 type Citation struct {
 	SourceType        CitationSource `json:"source_type"`
+	KnowledgeBaseID   ID             `json:"knowledge_base_id,omitempty"`
 	DocumentID        ID             `json:"document_id,omitempty"`
 	DocumentTitle     string         `json:"document_title,omitempty"`
 	ChunkID           ID             `json:"chunk_id,omitempty"`
