@@ -11,11 +11,12 @@ import (
 	"strings"
 	"time"
 
+	apperrors "github.com/1090-f/Memora/internal/apperror"
+	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/model/dto/request"
 	dto "github.com/1090-f/Memora/internal/model/dto/response"
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/1090-f/Memora/internal/repository"
-	apperrors "github.com/1090-f/Memora/pkg/errors"
 	jwtmanager "github.com/1090-f/Memora/pkg/jwt"
 	"github.com/1090-f/Memora/pkg/logger"
 	"github.com/redis/go-redis/v9"
@@ -63,7 +64,7 @@ func (s *authService) Login(ctx context.Context, req *request.LoginRequest) (*dt
 				zap.String("account", account))
 			return nil, apperrors.ErrUnauthorized
 		}
-		return nil, apperrors.New(apperrors.CodeInternal, 500, err)
+		return nil, apperrors.New(contracts.ErrInternal, err)
 	}
 	if !VerifyPassword(req.Password, user.PasswordHash) {
 		logger.Warn("登录失败：密码错误",
@@ -71,15 +72,15 @@ func (s *authService) Login(ctx context.Context, req *request.LoginRequest) (*dt
 		return nil, apperrors.ErrUnauthorized
 	}
 	if err := s.users.UpdateLastLogin(ctx, user.ID); err != nil {
-		return nil, apperrors.New(apperrors.CodeInternal, 500, err)
+		return nil, apperrors.New(contracts.ErrInternal, err)
 	}
 	tokenID, err := randomTokenID()
 	if err != nil {
-		return nil, apperrors.New(apperrors.CodeInternal, 500, err)
+		return nil, apperrors.New(contracts.ErrInternal, err)
 	}
 	token, expiresIn, err := s.tokens.Generate(user.ID, user.Username, tokenID, time.Now().UTC())
 	if err != nil {
-		return nil, apperrors.New(apperrors.CodeInternal, 500, err)
+		return nil, apperrors.New(contracts.ErrInternal, err)
 	}
 	logger.Info("用户登录成功",
 		zap.String("user_id", user.ID), zap.String("username", user.Username))
@@ -94,7 +95,7 @@ func (s *authService) Authenticate(ctx context.Context, token string) (*entity.U
 	}
 	revoked, err := s.redis.Exists(ctx, blacklistPrefix+claims.ID).Result()
 	if err != nil {
-		return nil, nil, apperrors.New(apperrors.CodeInternal, 500, err)
+		return nil, nil, apperrors.New(contracts.ErrInternal, err)
 	}
 	if revoked > 0 {
 		return nil, nil, apperrors.ErrUnauthorized
@@ -104,7 +105,7 @@ func (s *authService) Authenticate(ctx context.Context, token string) (*entity.U
 		if errors.Is(err, repository.ErrUserNotFound) {
 			return nil, nil, apperrors.ErrUnauthorized
 		}
-		return nil, nil, apperrors.New(apperrors.CodeInternal, 500, err)
+		return nil, nil, apperrors.New(contracts.ErrInternal, err)
 	}
 	return user, claims, nil
 }
@@ -119,7 +120,7 @@ func (s *authService) Logout(ctx context.Context, claims *jwtmanager.Claims) err
 		return nil
 	}
 	if err := s.redis.Set(ctx, blacklistPrefix+claims.ID, "1", ttl).Err(); err != nil {
-		return apperrors.New(apperrors.CodeInternal, 500, err)
+		return apperrors.New(contracts.ErrInternal, err)
 	}
 	logger.Info("用户已登出",
 		zap.String("user_id", claims.Subject), zap.String("username", claims.Username))

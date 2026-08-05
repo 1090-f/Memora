@@ -35,7 +35,9 @@
 
 - 前缀 `/api/v1`，JSON 使用 `snake_case`。
 - 身份从 Auth Middleware 注入，不信任请求中的 `user_id`。
-- 使用 `pkg/response` 统一返回 `code/message/data/request_id`。
+- 使用 `internal/api/response` 统一返回 `code/message/data/request_id`。
+- 错误码在 `internal/contracts/error_code.go` 定义；Service 不得携带 HTTP 状态码。
+- HTTP 状态与对外消息统一由 `internal/api/httperror` 映射。
 - 客户端不得收到 SQL、堆栈、Secret、Prompt 或内部错误。
 - Handler 完成 Binding 后必须立即处理错误并返回。
 
