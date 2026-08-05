@@ -22,9 +22,12 @@ cmd/server → internal/app → internal/api → internal/service → internal/r
 cmd/{server,worker,migrate}/       进程入口
 configs/                           YAML 配置示例
 internal/app/                      App Launcher 与生命周期
-internal/contracts/                跨模块 contracts v0.1
+internal/contracts/                跨模块 contracts v0.1 与稳定错误码
+internal/apperror/                 协议无关的应用错误与错误链
 internal/worker/                   任务来源、注册、执行、幂等与心跳
 internal/api/v1/                   Controller 和 Routes
+internal/api/httperror/            错误码到 HTTP 状态和消息的映射
+internal/api/response/             统一 API Envelope
 internal/middleware/               RequestID、日志、Recovery、CORS、Auth
 internal/model/entity/             数据库实体
 internal/model/dto/{request,response}/ HTTP DTO
@@ -32,25 +35,24 @@ internal/service/                  业务接口与实现
 internal/repository/               数据访问接口与实现
 pkg/config/                        Viper 配置
 pkg/database/                      PostgreSQL、Redis、Migration
-pkg/errors/                        稳定错误码
 pkg/jwt/                           JWT v5 封装
 pkg/logger/                        Zap + Lumberjack
 pkg/audit/                         结构化审计事件
 pkg/metrics/                       Prometheus 文本指标
 pkg/objectstore/                   MinIO 封装
-pkg/response/                      统一 API Envelope
 scripts/migrations/                版本化 SQL
 deploy/                            Docker Compose
 ```
 
 ## 3. 依赖规则
 
-1. Controller 只依赖 Service、HTTP DTO、Middleware 和 Response。
-2. Service 依赖 Repository 接口与 Entity，不依赖 Gin。
+1. Controller 只依赖 Service、HTTP DTO、Middleware 和 `internal/api/response`。
+2. Service 依赖 Repository 接口、Entity、`internal/apperror` 和错误码契约，不依赖 Gin 或 HTTP 状态码。
 3. Repository 依赖 GORM/Redis 和 Entity，不处理 HTTP。
 4. Entity 不引用 Gin、Service 或 Controller。
 5. `pkg` 不包含 Memora 业务流程。
 6. 所有外部依赖只在 `internal/app` 组装。
+7. 稳定错误码只在 `internal/contracts/error_code.go` 定义，HTTP 映射只存在于 API 层。
 
 ## 4. 请求链
 

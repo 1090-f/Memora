@@ -5,11 +5,12 @@ import (
 	"errors"
 	"strings"
 
+	apperrors "github.com/1090-f/Memora/internal/apperror"
+	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/model/dto/request"
 	dto "github.com/1090-f/Memora/internal/model/dto/response"
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/1090-f/Memora/internal/repository"
-	apperrors "github.com/1090-f/Memora/pkg/errors"
 	"github.com/1090-f/Memora/pkg/logger"
 	"go.uber.org/zap"
 )
@@ -27,7 +28,7 @@ func (s *userService) GetCurrent(ctx context.Context, id string) (*dto.UserRespo
 		return nil, apperrors.ErrUnauthorized
 	}
 	if err != nil {
-		return nil, apperrors.New(apperrors.CodeInternal, 500, err)
+		return nil, apperrors.New(contracts.ErrInternal, err)
 	}
 	response := UserResponse(user)
 	return &response, nil
@@ -53,7 +54,7 @@ func (s *userService) UpdateCurrent(ctx context.Context, id string, req *request
 		return nil, apperrors.ErrConflict
 	}
 	if err != nil {
-		return nil, apperrors.New(apperrors.CodeInternal, 500, err)
+		return nil, apperrors.New(contracts.ErrInternal, err)
 	}
 	response := UserResponse(user)
 	logger.Info("用户资料已更新",
@@ -71,20 +72,20 @@ func (s *userService) ChangePassword(ctx context.Context, id string, req *reques
 		return apperrors.ErrUnauthorized
 	}
 	if err != nil {
-		return apperrors.New(apperrors.CodeInternal, 500, err)
+		return apperrors.New(contracts.ErrInternal, err)
 	}
 	if !VerifyPassword(req.OldPassword, user.PasswordHash) {
 		return apperrors.ErrUnauthorized
 	}
 	hash, err := HashPassword(req.NewPassword)
 	if err != nil {
-		return apperrors.New(apperrors.CodeInternal, 500, err)
+		return apperrors.New(contracts.ErrInternal, err)
 	}
 	if err := s.users.UpdatePassword(ctx, id, hash); err != nil {
 		if errors.Is(err, repository.ErrUserNotFound) {
 			return apperrors.ErrUnauthorized
 		}
-		return apperrors.New(apperrors.CodeInternal, 500, err)
+		return apperrors.New(contracts.ErrInternal, err)
 	}
 	logger.Info("用户密码已修改", zap.String("user_id", id))
 	return nil

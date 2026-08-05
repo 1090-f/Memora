@@ -6,15 +6,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/1090-f/Memora/internal/api/response"
 	"github.com/1090-f/Memora/internal/api/v1/auth"
 	mcpapi "github.com/1090-f/Memora/internal/api/v1/mcp"
 	"github.com/1090-f/Memora/internal/api/v1/user"
+	apperrors "github.com/1090-f/Memora/internal/apperror"
+	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/middleware"
 	"github.com/1090-f/Memora/internal/service"
 	"github.com/1090-f/Memora/pkg/config"
-	apperrors "github.com/1090-f/Memora/pkg/errors"
 	"github.com/1090-f/Memora/pkg/metrics"
-	"github.com/1090-f/Memora/pkg/response"
 	"github.com/gin-gonic/gin"
 )
 
@@ -65,10 +66,9 @@ func workerHealth(countWorkers WorkerCount) gin.HandlerFunc {
 		}
 		count, err := countWorkers(ctx)
 		if err != nil || count == 0 {
-			failure := *apperrors.ErrInternal
-			failure.HTTPStatus = http.StatusServiceUnavailable
+			failure := apperrors.New(contracts.ErrServiceUnavailable, err)
 			failure.Details = gin.H{"active_workers": count}
-			response.Failure(c, &failure)
+			response.Failure(c, failure)
 			return
 		}
 		response.Success(c, http.StatusOK, gin.H{"status": "available", "active_workers": count})
@@ -100,10 +100,9 @@ func readiness(deps Dependencies) gin.HandlerFunc {
 		wait.Wait()
 		for _, status := range results {
 			if status != "ok" {
-				err := *apperrors.ErrInternal
-				err.HTTPStatus = http.StatusServiceUnavailable
+				err := apperrors.New(contracts.ErrServiceUnavailable, nil)
 				err.Details = results
-				response.Failure(c, &err)
+				response.Failure(c, err)
 				return
 			}
 		}

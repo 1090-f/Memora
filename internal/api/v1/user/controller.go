@@ -3,12 +3,12 @@ package user
 import (
 	"net/http"
 
+	"github.com/1090-f/Memora/internal/api/response"
+	apperrors "github.com/1090-f/Memora/internal/apperror"
 	"github.com/1090-f/Memora/internal/middleware"
 	"github.com/1090-f/Memora/internal/model/dto/request"
 	"github.com/1090-f/Memora/internal/service"
 	"github.com/1090-f/Memora/pkg/audit"
-	apperrors "github.com/1090-f/Memora/pkg/errors"
-	"github.com/1090-f/Memora/pkg/response"
 	"github.com/gin-gonic/gin"
 )
 

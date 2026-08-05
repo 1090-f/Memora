@@ -3,9 +3,9 @@ package middleware
 import (
 	"runtime/debug"
 
-	apperrors "github.com/1090-f/Memora/pkg/errors"
+	"github.com/1090-f/Memora/internal/api/response"
+	apperrors "github.com/1090-f/Memora/internal/apperror"
 	"github.com/1090-f/Memora/pkg/logger"
-	"github.com/1090-f/Memora/pkg/response"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )

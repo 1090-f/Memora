@@ -3,11 +3,11 @@ package middleware
 import (
 	"strings"
 
+	"github.com/1090-f/Memora/internal/api/response"
+	apperrors "github.com/1090-f/Memora/internal/apperror"
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/1090-f/Memora/internal/service"
-	apperrors "github.com/1090-f/Memora/pkg/errors"
 	jwtmanager "github.com/1090-f/Memora/pkg/jwt"
-	"github.com/1090-f/Memora/pkg/response"
 	"github.com/gin-gonic/gin"
 )
 
