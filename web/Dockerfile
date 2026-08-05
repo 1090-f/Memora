@@ -3,15 +3,11 @@ FROM node:24-alpine AS build
 WORKDIR /workspace
 RUN corepack enable
 
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json prettier.config.js ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY admin/package.json admin/package.json
-COPY packages/icons/package.json packages/icons/package.json
-COPY packages/themes/package.json packages/themes/package.json
-COPY packages/ui/package.json packages/ui/package.json
 RUN pnpm install --frozen-lockfile
 
 COPY admin admin
-COPY packages packages
 RUN pnpm --filter memora-admin build
 
 FROM nginxinc/nginx-unprivileged:1.29-alpine
