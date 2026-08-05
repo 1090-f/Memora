@@ -12,11 +12,12 @@ type IdleSource struct{}
 func (IdleSource) Reserve(context.Context) (*Job, error) { return nil, ErrNoWork }
 
 // Complete 空操作，不做任何处理。
-func (IdleSource) Complete(context.Context, Job) error   { return nil }
+func (IdleSource) Complete(context.Context, Job) error { return nil }
 
 // Retry 空操作，不做任何处理。
 func (IdleSource) Retry(context.Context, Job, time.Time, error) error {
 	return nil
 }
+
 // Fail 空操作，不做任何处理。
 func (IdleSource) Fail(context.Context, Job, error) error { return nil }

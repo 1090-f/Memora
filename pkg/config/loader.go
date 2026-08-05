@@ -130,7 +130,7 @@ func bindEnvironment(v *viper.Viper) {
 		"worker.concurrency": "MEMORA_WORKER_CONCURRENCY", "worker.poll_interval": "MEMORA_WORKER_POLL_INTERVAL",
 		"worker.default_timeout": "MEMORA_WORKER_DEFAULT_TIMEOUT", "worker.max_retry_delay": "MEMORA_WORKER_MAX_RETRY_DELAY",
 		"worker.idempotency_ttl": "MEMORA_WORKER_IDEMPOTENCY_TTL",
-		"log.level":             "MEMORA_LOG_LEVEL", "log.filename": "MEMORA_LOG_FILENAME",
+		"log.level":              "MEMORA_LOG_LEVEL", "log.filename": "MEMORA_LOG_FILENAME",
 		"log.max_size": "MEMORA_LOG_MAX_SIZE", "log.max_backups": "MEMORA_LOG_MAX_BACKUPS",
 		"log.max_age": "MEMORA_LOG_MAX_AGE", "log.compress": "MEMORA_LOG_COMPRESS",
 		"mcp.encryption_key":     "MEMORA_MCP_ENCRYPTION_KEY", "mcp.allow_local_http": "MEMORA_MCP_ALLOW_LOCAL_HTTP",

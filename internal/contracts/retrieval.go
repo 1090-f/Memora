@@ -10,9 +10,9 @@ const (
 	// RetrievalKeyword 使用基于关键词的搜索进行文档检索。
 	RetrievalKeyword RetrievalMode = "keyword"
 	// RetrievalVector 使用向量相似性搜索进行文档检索。
-	RetrievalVector  RetrievalMode = "vector"
+	RetrievalVector RetrievalMode = "vector"
 	// RetrievalHybrid 结合关键词和向量搜索进行文档检索。
-	RetrievalHybrid  RetrievalMode = "hybrid"
+	RetrievalHybrid RetrievalMode = "hybrid"
 )
 
 // SearchConfig 定义文档检索和重排序的参数。

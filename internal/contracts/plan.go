@@ -11,31 +11,31 @@ type PlanStepStatus string
 // 计划与步骤的状态常量。
 const (
 	// PlanPending 表示计划已创建但尚未开始。
-	PlanPending    PlanStatus     = "pending"
+	PlanPending PlanStatus = "pending"
 	// PlanExecuting 表示计划正在执行中。
-	PlanExecuting  PlanStatus     = "executing"
+	PlanExecuting PlanStatus = "executing"
 	// PlanReplanning 表示计划正在被重新评估和修改。
-	PlanReplanning PlanStatus     = "replanning"
+	PlanReplanning PlanStatus = "replanning"
 	// PlanReviewing 表示计划正在接受质量审查。
-	PlanReviewing  PlanStatus     = "reviewing"
+	PlanReviewing PlanStatus = "reviewing"
 	// PlanCompleted 表示计划已全部执行完成。
-	PlanCompleted  PlanStatus     = "completed"
+	PlanCompleted PlanStatus = "completed"
 	// PlanFailed 表示计划执行失败。
-	PlanFailed     PlanStatus     = "failed"
+	PlanFailed PlanStatus = "failed"
 	// PlanCancelled 表示计划执行已取消。
-	PlanCancelled  PlanStatus     = "cancelled"
+	PlanCancelled PlanStatus = "cancelled"
 	// StepPending 表示步骤尚未开始。
-	StepPending    PlanStepStatus = "pending"
+	StepPending PlanStepStatus = "pending"
 	// StepRunning 表示步骤正在执行中。
-	StepRunning    PlanStepStatus = "running"
+	StepRunning PlanStepStatus = "running"
 	// StepCompleted 表示步骤已成功执行。
-	StepCompleted  PlanStepStatus = "completed"
+	StepCompleted PlanStepStatus = "completed"
 	// StepFailed 表示步骤执行失败。
-	StepFailed     PlanStepStatus = "failed"
+	StepFailed PlanStepStatus = "failed"
 	// StepSkipped 表示步骤在执行过程中被跳过。
-	StepSkipped    PlanStepStatus = "skipped"
+	StepSkipped PlanStepStatus = "skipped"
 	// StepCancelled 表示步骤执行已取消。
-	StepCancelled  PlanStepStatus = "cancelled"
+	StepCancelled PlanStepStatus = "cancelled"
 )
 
 // Plan 表示 Agent 需要按顺序执行的计划。

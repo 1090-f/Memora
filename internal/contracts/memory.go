@@ -14,21 +14,21 @@ type MemoryScope string
 // 预定义的记忆类型与作用域常量。
 const (
 	// MemoryPreference 存储用户偏好和设置。
-	MemoryPreference MemoryType  = "preference"
+	MemoryPreference MemoryType = "preference"
 	// MemoryProject 存储项目相关信息。
-	MemoryProject    MemoryType  = "project"
+	MemoryProject MemoryType = "project"
 	// MemoryDecision 存储对话中做出的决策。
-	MemoryDecision   MemoryType  = "decision"
+	MemoryDecision MemoryType = "decision"
 	// MemoryGoal 存储用户目标和目的。
-	MemoryGoal       MemoryType  = "goal"
+	MemoryGoal MemoryType = "goal"
 	// MemoryFact 存储事实信息。
-	MemoryFact       MemoryType  = "fact"
+	MemoryFact MemoryType = "fact"
 	// MemoryProgress 存储进度跟踪信息。
-	MemoryProgress   MemoryType  = "progress"
+	MemoryProgress MemoryType = "progress"
 	// MemoryScopeUser 表示记忆的作用域为特定用户。
-	MemoryScopeUser  MemoryScope = "user"
+	MemoryScopeUser MemoryScope = "user"
 	// MemoryScopeKB 表示记忆的作用域为知识库。
-	MemoryScopeKB    MemoryScope = "knowledge_base"
+	MemoryScopeKB MemoryScope = "knowledge_base"
 )
 
 // MemoryQuery 表示检索相关记忆的查询。

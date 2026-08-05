@@ -10,7 +10,7 @@ const (
 	// CitationKnowledge 表示引用来自知识库文档。
 	CitationKnowledge CitationSource = "knowledge_base"
 	// CitationNetwork 表示引用来自网络资源。
-	CitationNetwork   CitationSource = "network"
+	CitationNetwork CitationSource = "network"
 )
 
 // Citation 表示 Agent 响应中引用的参考来源。
