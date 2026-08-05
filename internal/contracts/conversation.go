@@ -15,10 +15,10 @@ type ConversationMessage struct {
 
 // ConversationContext 是一次 Agent 运行所使用到的会话上下文。
 type ConversationContext struct {
-	ConversationID ID                    `json:"conversation_id"` // 会话 ID
-	Messages       []ConversationMessage `json:"messages"`       // 会话消息列表
+	ConversationID ID                    `json:"conversation_id"`   // 会话 ID
+	Messages       []ConversationMessage `json:"messages"`          // 会话消息列表
 	Summary        string                `json:"summary,omitempty"` // 可选：会话摘要（用于压缩长上下文）
-	TokenCount     int                   `json:"token_count"`     // 上下文 token 数
+	TokenCount     int                   `json:"token_count"`       // 上下文 token 数
 }
 
 // ConversationContextService 负责构建会话上下文。

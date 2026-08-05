@@ -14,6 +14,7 @@ type Config struct {
 	MinIO    MinIOConfig    `mapstructure:"minio"`
 	JWT      JWTConfig      `mapstructure:"jwt"`
 	Worker   WorkerConfig   `mapstructure:"worker"`
+	MCP      MCPConfig      `mapstructure:"mcp"`
 	Log      LogConfig      `mapstructure:"log"`
 	CORS     CORSConfig     `mapstructure:"cors"`
 }
@@ -62,6 +63,13 @@ type WorkerConfig struct {
 	IdempotencyTTL time.Duration `mapstructure:"idempotency_ttl"`
 }
 
+// MCPConfig 是 MCP 导入与调用的安全配置。
+type MCPConfig struct {
+	EncryptionKey         string   `mapstructure:"encryption_key"`
+	StdioCommandWhitelist []string `mapstructure:"stdio_command_whitelist"`
+	AllowLocalHTTP        bool     `mapstructure:"allow_local_http"`
+}
+
 type LogConfig struct {
 	Level      string `mapstructure:"level"`
 	Filename   string `mapstructure:"filename"`
@@ -106,6 +114,9 @@ func (c Config) Validate() error {
 	}
 	if c.Worker.Concurrency <= 0 || c.Worker.PollInterval <= 0 || c.Worker.DefaultTimeout <= 0 || c.Worker.IdempotencyTTL <= 0 {
 		errs = append(errs, errors.New("worker concurrency and durations must be positive"))
+	}
+	if c.App.Mode == "release" && len(c.MCP.EncryptionKey) < 32 {
+		errs = append(errs, errors.New("MEMORA_MCP_ENCRYPTION_KEY must be at least 32 characters in release mode"))
 	}
 	if c.App.Mode != "debug" && c.App.Mode != "release" && c.App.Mode != "test" {
 		errs = append(errs, errors.New("MEMORA_GIN_MODE must be debug, release or test"))

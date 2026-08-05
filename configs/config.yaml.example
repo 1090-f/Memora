@@ -36,6 +36,11 @@ worker:
   max_retry_delay: 1m
   idempotency_ttl: 24h
 
+mcp:
+  encryption_key: "change-me-mcp-encryption-key-32bytes"
+  stdio_command_whitelist: ["npx", "python", "python3", "uvx", "node"]
+  allow_local_http: false
+
 log:
   level: info
   filename: ""

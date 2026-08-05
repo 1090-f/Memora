@@ -21,9 +21,9 @@ type ChatRequest struct {
 
 // ChatResponse 是模型对话生成的结果。
 type ChatResponse struct {
-	Content   string     `json:"content"`             // 生成的文本内容
+	Content   string     `json:"content"`              // 生成的文本内容
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"` // 可选：模型请求调用的工具
-	Usage     TokenUsage `json:"usage"`               // token 消耗
+	Usage     TokenUsage `json:"usage"`                // token 消耗
 }
 
 // ChatStreamEvent 是流式对话输出的单条增量事件。
@@ -64,7 +64,7 @@ type Reranker interface {
 
 // ModelFactory 是模型工厂，负责按模型配置 ID 创建不同类型的模型实例。
 type ModelFactory interface {
-	GetChatModel(ctx context.Context, modelConfigID ID) (ChatModel, error)       // 获取对话模型
+	GetChatModel(ctx context.Context, modelConfigID ID) (ChatModel, error)           // 获取对话模型
 	GetEmbeddingModel(ctx context.Context, modelConfigID ID) (EmbeddingModel, error) // 获取文本模型
-	GetReranker(ctx context.Context, modelConfigID ID) (Reranker, error)        // 获取重排模型
+	GetReranker(ctx context.Context, modelConfigID ID) (Reranker, error)             // 获取重排模型
 }

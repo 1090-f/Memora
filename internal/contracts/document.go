@@ -4,7 +4,7 @@ import "context"
 
 // DocumentReadRequest 是文档读取请求，支持分片/游标分段读取以控制 token。
 type DocumentReadRequest struct {
-	UserID          ID     `json:"user_id"`            // 用户标识
+	UserID          ID     `json:"user_id"`           // 用户标识
 	KnowledgeBaseID ID     `json:"knowledge_base_id"` // 知识库标识
 	DocumentID      ID     `json:"document_id"`       // 文档 ID
 	Section         string `json:"section,omitempty"` // 可选：目标章节
@@ -14,12 +14,12 @@ type DocumentReadRequest struct {
 
 // DocumentReadResult 是文档读取结果。
 type DocumentReadResult struct {
-	DocumentID ID       `json:"document_id"`              // 文档 ID
-	Title      string   `json:"title"`                    // 文档标题
-	Content    string   `json:"content"`                  // 读取到的内容
-	NextCursor string   `json:"next_cursor,omitempty"`    // 下次继续读取的游标
-	Truncated  bool     `json:"truncated"`                // 是否因 token 限制被截断
-	Citation   Citation `json:"citation"`                 // 对应文档的引用信息
+	DocumentID ID       `json:"document_id"`           // 文档 ID
+	Title      string   `json:"title"`                 // 文档标题
+	Content    string   `json:"content"`               // 读取到的内容
+	NextCursor string   `json:"next_cursor,omitempty"` // 下次继续读取的游标
+	Truncated  bool     `json:"truncated"`             // 是否因 token 限制被截断
+	Citation   Citation `json:"citation"`              // 对应文档的引用信息
 }
 
 // DocumentService 提供文档读取能力。

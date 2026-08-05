@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/1090-f/Memora/internal/contracts"
+	"github.com/1090-f/Memora/pkg/utils"
 )
 
 // KnowledgeSearchToolName 是知识库搜索工具在注册表中的名称。
@@ -132,7 +133,7 @@ func (t *KnowledgeSearchTool) Run(ctx context.Context, toolContext contracts.Too
 
 	// 文本部分使用结构化的 JSON 表示并做字节级截断。
 	return contracts.ToolResult{
-		Text:           truncateUTF8ByBytes(string(structured), 4000),
+		Text:           utils.TruncateUTF8ByBytes(string(structured), 4000),
 		StructuredData: structured,
 		Citations:      citations,
 		Success:        true,

@@ -9,6 +9,7 @@ import (
 
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/pkg/logger"
+	"github.com/1090-f/Memora/pkg/utils"
 	"go.uber.org/zap"
 )
 
@@ -79,7 +80,7 @@ func (e *Executor) Execute(ctx context.Context, toolContext contracts.ToolContex
 			zap.String("agent_run_id", string(toolContext.AgentRunID)),
 			zap.String("user_id", string(toolContext.UserID)),
 			zap.String("knowledge_base_id", string(toolContext.KnowledgeBaseID)),
-			zap.String("arguments", summarizeAndRedact(call.Arguments)),
+			zap.String("arguments", utils.SummarizeAndRedact(call.Arguments)),
 		)
 	}
 
@@ -110,7 +111,7 @@ func (e *Executor) Execute(ctx context.Context, toolContext contracts.ToolContex
 	result.ErrorMessage = toolRes.ErrorMessage
 
 	// 对最终文本做控制字符等内容的清洗。
-	result.Text = sanitizeText(result.Text)
+	result.Text = utils.SanitizeText(result.Text)
 
 	// 若设置了结果大小上限，则压缩结果到该范围内。
 	if toolContext.MaxResultBytes > 0 {
@@ -126,7 +127,7 @@ func (e *Executor) Execute(ctx context.Context, toolContext contracts.ToolContex
 			zap.Bool("success", result.Success),
 			zap.Bool("truncated", result.Truncated),
 			zap.String("error_code", string(result.ErrorCode)),
-			zap.String("output", summarizeAndRedactResult(result)),
+			zap.String("output", utils.SummarizeAndRedactResult(result)),
 		)
 	}
 
@@ -203,7 +204,7 @@ func enforceResultSizeLimit(result *contracts.ToolResult, maxBytes int) {
 		if result.Text == "" {
 			return
 		}
-		result.Text = truncateUTF8ByBytes(result.Text, maxBytes/2)
+		result.Text = utils.TruncateUTF8ByBytes(result.Text, maxBytes/2)
 		result.Truncated = true
 	}
 }

@@ -33,14 +33,14 @@ type AgentRunRequest struct {
 
 // AgentRunResult 是一次 Agent 运行的最终结果。
 type AgentRunResult struct {
-	RunID           ID            `json:"run_id"`             // 运行 ID
-	ExecutionMode   ExecutionMode `json:"execution_mode"`     // 实际采用的执行模式
-	KnowledgeStatus string        `json:"knowledge_status"`   // 知识检索状态标识
-	FinalResult     string        `json:"final_result"`       // 最终回答文本
-	Citations       []Citation    `json:"citations"`          // 回答引用的来源
-	Usage           TokenUsage    `json:"usage"`              // token 消耗
-	StartedAt       time.Time     `json:"started_at"`         // 开始时间
-	EndedAt         time.Time     `json:"ended_at"`           // 结束时间
+	RunID           ID            `json:"run_id"`           // 运行 ID
+	ExecutionMode   ExecutionMode `json:"execution_mode"`   // 实际采用的执行模式
+	KnowledgeStatus string        `json:"knowledge_status"` // 知识检索状态标识
+	FinalResult     string        `json:"final_result"`     // 最终回答文本
+	Citations       []Citation    `json:"citations"`        // 回答引用的来源
+	Usage           TokenUsage    `json:"usage"`            // token 消耗
+	StartedAt       time.Time     `json:"started_at"`       // 开始时间
+	EndedAt         time.Time     `json:"ended_at"`         // 结束时间
 }
 
 // AgentRunService 抽象 Agent 运行的对外服务能力。

@@ -34,10 +34,15 @@ func New(code Code, status int, cause error) *AppError {
 }
 
 var (
-	ErrInvalidArgument = New(CodeInvalidArgument, http.StatusBadRequest, nil)
-	ErrUnauthorized    = New(CodeUnauthorized, http.StatusUnauthorized, nil)
-	ErrForbidden       = New(CodeForbidden, http.StatusForbidden, nil)
-	ErrNotFound        = New(CodeNotFound, http.StatusNotFound, nil)
-	ErrConflict        = New(CodeConflict, http.StatusConflict, nil)
-	ErrInternal        = New(CodeInternal, http.StatusInternalServerError, nil)
+	ErrInvalidArgument  = New(CodeInvalidArgument, http.StatusBadRequest, nil)
+	ErrUnauthorized     = New(CodeUnauthorized, http.StatusUnauthorized, nil)
+	ErrForbidden        = New(CodeForbidden, http.StatusForbidden, nil)
+	ErrNotFound         = New(CodeNotFound, http.StatusNotFound, nil)
+	ErrConflict         = New(CodeConflict, http.StatusConflict, nil)
+	ErrPayloadTooLarge  = New(CodePayloadTooLarge, http.StatusRequestEntityTooLarge, nil)
+	ErrMCPImportFailed  = New(CodeMCPImportFailed, http.StatusUnprocessableEntity, nil)
+	ErrMCPConnFailed    = New(CodeMCPConnFailed, http.StatusBadGateway, nil)
+	ErrMCPDiscoveryFail = New(CodeMCPDiscoveryFail, http.StatusBadGateway, nil)
+	ErrMCPCallFailed    = New(CodeMCPCallFailed, http.StatusBadGateway, nil)
+	ErrInternal         = New(CodeInternal, http.StatusInternalServerError, nil)
 )

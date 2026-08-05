@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/1090-f/Memora/internal/contracts"
+	"github.com/1090-f/Memora/pkg/utils"
 )
 
 // DocumentReadToolName 是文档读取工具在注册表中的名称。
@@ -108,7 +109,7 @@ func (t *DocumentReadTool) Run(ctx context.Context, toolContext contracts.ToolCo
 
 	// 文本部分做字节级截断，防止一次性返回过长内容。
 	return contracts.ToolResult{
-		Text:           truncateUTF8ByBytes(res.Content, 4000),
+		Text:           utils.TruncateUTF8ByBytes(res.Content, 4000),
 		StructuredData: structured,
 		Citations:      []contracts.Citation{res.Citation},
 		Truncated:      res.Truncated,

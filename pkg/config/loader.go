@@ -82,6 +82,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("worker.default_timeout", "5m")
 	v.SetDefault("worker.max_retry_delay", "1m")
 	v.SetDefault("worker.idempotency_ttl", "24h")
+	v.SetDefault("mcp.encryption_key", "")
+	v.SetDefault("mcp.stdio_command_whitelist", []string{"npx", "python", "python3", "uvx", "node"})
+	v.SetDefault("mcp.allow_local_http", false)
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.filename", "")
 	v.SetDefault("log.max_size", 100)
@@ -109,6 +112,7 @@ func bindEnvironment(v *viper.Viper) {
 		"worker.concurrency": "MEMORA_WORKER_CONCURRENCY", "worker.poll_interval": "MEMORA_WORKER_POLL_INTERVAL",
 		"worker.default_timeout": "MEMORA_WORKER_DEFAULT_TIMEOUT", "worker.max_retry_delay": "MEMORA_WORKER_MAX_RETRY_DELAY",
 		"worker.idempotency_ttl": "MEMORA_WORKER_IDEMPOTENCY_TTL",
+		"mcp.encryption_key":     "MEMORA_MCP_ENCRYPTION_KEY", "mcp.allow_local_http": "MEMORA_MCP_ALLOW_LOCAL_HTTP",
 	}
 	for key, environment := range bindings {
 		_ = v.BindEnv(key, environment)

@@ -13,8 +13,9 @@ import (
 )
 
 var (
-	ErrUserNotFound = errors.New("user not found")
-	ErrUserConflict = errors.New("user field conflicts with an existing user")
+	ErrUserNotFound      = errors.New("user not found")
+	ErrUserConflict      = errors.New("user field conflicts with an existing user")
+	ErrDuplicateResource = errors.New("duplicate resource")
 )
 
 type userRepository struct{ db *gorm.DB }

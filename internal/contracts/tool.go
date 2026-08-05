@@ -45,16 +45,18 @@ const (
 	ToolTypeMCP     ToolType = "mcp"
 )
 
+// ToolSpec 是工具的静态规格描述，注册时固化，
+// 供 Executor 在执行前做启用、只读、联网、超时等校验。
 type ToolSpec struct {
-	Name            string          `json:"name"`
-	Description     string          `json:"description"`
-	InputSchema     json.RawMessage `json:"input_schema,omitempty"`
-	Type            ToolType        `json:"type"`
-	ReadOnly        bool            `json:"read_only"`
-	Enabled         bool            `json:"enabled"`
-	NetworkRequired bool            `json:"network_required"`
-	Timeout         time.Duration   `json:"timeout"`
-	MaxCalls        int             `json:"max_calls"`
+	Name            string          `json:"name"`                   // 工具名称，注册表中的唯一标识
+	Description     string          `json:"description"`            // 工具用途说明，供模型理解何时调用
+	InputSchema     json.RawMessage `json:"input_schema,omitempty"` // 入参 JSON Schema（用于参数校验）
+	Type            ToolType        `json:"type"`                   // 工具类型：内置（builtin）或 MCP
+	ReadOnly        bool            `json:"read_only"`              // 是否只读（非只读工具一律禁止调用）
+	Enabled         bool            `json:"enabled"`                // 是否启用
+	NetworkRequired bool            `json:"network_required"`       // 是否需要联网（联网被禁用时不可调用）
+	Timeout         time.Duration   `json:"timeout"`                // 单次调用超时时间
+	MaxCalls        int             `json:"max_calls"`              // 单次运行内允许的最大调用次数
 }
 
 // ToolExecutor 抽象工具执行能力。
@@ -67,8 +69,10 @@ type ToolExecutor interface {
 type ToolRegistry interface {
 	// Has 判断指定名称的工具是否存在。
 	Has(name string) bool
+	//	Get 获取指定名称的工具的规格描述
 	Get(name string) (ToolSpec, bool)
 	// Names 返回全部已注册工具的名称。
 	Names() []string
+	//	Specs 返回全部已注册工具的规格描述
 	Specs() []ToolSpec
 }
