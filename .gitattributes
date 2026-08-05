@@ -1,0 +1,16 @@
+# 统一文本文件换行符为 LF，避免 Windows 下 CRLF/LF 混用导致的 diff 噪音
+* text=auto eol=lf
+
+# 明确标记以下类型为文本并使用 LF
+*.go   text eol=lf
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.js   text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.sql  text eol=lf
+*.sh   text eol=lf

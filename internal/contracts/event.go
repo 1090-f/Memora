@@ -11,27 +11,27 @@ type EventType string
 
 const (
 	// EventRunQueued 表示 Agent 运行已排队等待执行。
-	EventRunQueued       EventType = "agent.run.queued"
+	EventRunQueued EventType = "agent.run.queued"
 	// EventRunStarted 表示 Agent 运行已开始执行。
-	EventRunStarted      EventType = "agent.run.started"
+	EventRunStarted EventType = "agent.run.started"
 	// EventRouterCompleted 表示路由器已完成执行模式的确定。
 	EventRouterCompleted EventType = "agent.router.completed"
 	// EventStepStarted 表示计划步骤已开始执行。
-	EventStepStarted     EventType = "agent.step.started"
+	EventStepStarted EventType = "agent.step.started"
 	// EventStepCompleted 表示计划步骤已完成执行。
-	EventStepCompleted   EventType = "agent.step.completed"
+	EventStepCompleted EventType = "agent.step.completed"
 	// EventToolStarted 表示工具调用已开始。
-	EventToolStarted     EventType = "agent.tool.started"
+	EventToolStarted EventType = "agent.tool.started"
 	// EventToolCompleted 表示工具调用已完成。
-	EventToolCompleted   EventType = "agent.tool.completed"
+	EventToolCompleted EventType = "agent.tool.completed"
 	// EventAnswerDelta 表示已收到流式回答增量。
-	EventAnswerDelta     EventType = "agent.answer.delta"
+	EventAnswerDelta EventType = "agent.answer.delta"
 	// EventRunCompleted 表示 Agent 运行已成功完成。
-	EventRunCompleted    EventType = "agent.run.completed"
+	EventRunCompleted EventType = "agent.run.completed"
 	// EventRunFailed 表示 Agent 运行失败。
-	EventRunFailed       EventType = "agent.run.failed"
+	EventRunFailed EventType = "agent.run.failed"
 	// EventRunCancelled 表示 Agent 运行已取消。
-	EventRunCancelled    EventType = "agent.run.cancelled"
+	EventRunCancelled EventType = "agent.run.cancelled"
 )
 
 // AgentEvent 表示在 Agent 执行运行期间发出的事件。

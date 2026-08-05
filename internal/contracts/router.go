@@ -10,7 +10,7 @@ type ExecutionMode string
 
 const (
 	// ExecutionReact 使用响应式循环，Agent 逐步推理和行动。
-	ExecutionReact       ExecutionMode = "react"
+	ExecutionReact ExecutionMode = "react"
 	// ExecutionPlanExecute 先创建计划然后按顺序执行其步骤。
 	ExecutionPlanExecute ExecutionMode = "plan_execute"
 )
