@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// ToolContext 是工具（Tool）执行时所需的上下文信息，用于权限隔离与用量限制。
+// ToolContext 提供工具调用的执行上下文。
 type ToolContext struct {
 	UserID           ID       `json:"user_id"`                // 发起工具调用的用户
 	KnowledgeBaseID  ID       `json:"knowledge_base_id"`      // 关联的知识库
@@ -18,14 +18,14 @@ type ToolContext struct {
 	MaxResultBytes   int      `json:"max_result_bytes"`       // 工具结果最大字节数限制
 }
 
-// ToolCall 表示一次工具调用请求。
+// ToolCall 表示使用参数调用特定工具的请求。
 type ToolCall struct {
 	CallID    ID              `json:"call_id"`   // 调用 ID，用于关联结果
 	ToolName  string          `json:"tool_name"` // 工具名称
 	Arguments json.RawMessage `json:"arguments"` // 工具参数（原始 JSON）
 }
 
-// ToolResult 表示工具执行的结果。
+// ToolResult 表示工具调用的结果。
 type ToolResult struct {
 	CallID         ID              `json:"call_id"`                   // 对应的调用 ID
 	ToolName       string          `json:"tool_name"`                 // 工具名称
@@ -59,19 +59,17 @@ type ToolSpec struct {
 	MaxCalls        int             `json:"max_calls"`              // 单次运行内允许的最大调用次数
 }
 
-// ToolExecutor 抽象工具执行能力。
+// ToolExecutor 定义执行工具调用的接口。
 type ToolExecutor interface {
-	// Execute 执行一次工具调用并返回结果。
+	// Execute 在给定上下文中运行工具调用并返回结果。
 	Execute(ctx context.Context, toolContext ToolContext, call ToolCall) (ToolResult, error)
 }
 
-// ToolRegistry 提供工具注册表的查询能力，用于校验工具是否被允许。
+// ToolRegistry 提供可用工具的信息。
 type ToolRegistry interface {
-	// Has 判断指定名称的工具是否存在。
+	// Has 检查指定名称的工具是否存在。
 	Has(name string) bool
-	//	Get 获取指定名称的工具的规格描述
-	Get(name string) (ToolSpec, bool)
-	// Names 返回全部已注册工具的名称。
+	// Names 返回所有可用工具的名称列表。
 	Names() []string
 	//	Specs 返回全部已注册工具的规格描述
 	Specs() []ToolSpec

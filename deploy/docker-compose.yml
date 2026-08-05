@@ -103,12 +103,22 @@ services:
       timeout: 3s
       retries: 10
     restart: unless-stopped
+    networks:
+      default:
+        aliases: [memora-server]
 
   worker:
     build: {context: .., dockerfile: Dockerfile}
     command: ["memora-worker"]
     environment: *memora-environment
     depends_on: *application-dependencies
+    restart: unless-stopped
+
+  web:
+    build: {context: ../web, dockerfile: Dockerfile}
+    ports: ["3000:8080"]
+    depends_on:
+      api: {condition: service_healthy}
     restart: unless-stopped
 
 volumes:

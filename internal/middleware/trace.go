@@ -10,6 +10,7 @@ import (
 
 const traceIDKey = "trace_id"
 
+// Trace 返回一个链路追踪中间件，从 traceparent 头解析或生成 Trace ID。
 func Trace() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		traceID := traceIDFromParent(c.GetHeader("traceparent"))
@@ -25,6 +26,7 @@ func Trace() gin.HandlerFunc {
 	}
 }
 
+// GetTraceID 从 Gin 上下文中获取链路追踪 ID。
 func GetTraceID(c *gin.Context) string {
 	value, _ := c.Get(traceIDKey)
 	traceID, _ := value.(string)

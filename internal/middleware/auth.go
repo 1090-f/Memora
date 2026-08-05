@@ -16,6 +16,7 @@ const (
 	contextClaimsKey = "auth_claims"
 )
 
+// Auth 返回一个 JWT 认证中间件，从 Authorization 头提取 Token 并验证用户身份。
 func Auth(authService service.AuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		parts := strings.Fields(c.GetHeader("Authorization"))
@@ -36,12 +37,14 @@ func Auth(authService service.AuthService) gin.HandlerFunc {
 	}
 }
 
+// GetUser 从 Gin 上下文中获取已认证的用户信息。
 func GetUser(c *gin.Context) (*entity.User, bool) {
 	value, ok := c.Get(contextUserKey)
 	user, valid := value.(*entity.User)
 	return user, ok && valid
 }
 
+// GetClaims 从 Gin 上下文中获取 JWT 的 Claims 信息。
 func GetClaims(c *gin.Context) (*jwtmanager.Claims, bool) {
 	value, ok := c.Get(contextClaimsKey)
 	claims, valid := value.(*jwtmanager.Claims)

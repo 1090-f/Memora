@@ -25,8 +25,10 @@ var (
 	workerHeartbeat   atomic.Int64
 )
 
+// HTTPStarted 记录一个新HTTP请求开始，增加活跃请求计数
 func HTTPStarted() { httpActive.Add(1) }
 
+// HTTPFinished 记录一个HTTP请求完成，更新请求数量和耗时统计
 func HTTPFinished(method, path string, status int, duration time.Duration) {
 	httpActive.Add(-1)
 	httpDurationNanos.Add(duration.Nanoseconds())
@@ -35,6 +37,7 @@ func HTTPFinished(method, path string, status int, duration time.Duration) {
 	value.(*atomic.Uint64).Add(1)
 }
 
+// WorkerFinished 记录一个Worker任务完成，更新任务数量和耗时统计
 func WorkerFinished(jobType, result string, duration time.Duration) {
 	workerDuration.Add(duration.Nanoseconds())
 	workerCount.Add(1)
@@ -42,8 +45,10 @@ func WorkerFinished(jobType, result string, duration time.Duration) {
 	value.(*atomic.Uint64).Add(1)
 }
 
+// WorkerHeartbeat 更新Worker最后一次心跳时间戳
 func WorkerHeartbeat() { workerHeartbeat.Store(time.Now().UTC().Unix()) }
 
+// Handler 返回Prometheus格式的指标导出HTTP处理器
 func Handler() http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")

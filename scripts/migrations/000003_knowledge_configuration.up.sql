@@ -1,3 +1,12 @@
+-- 文件作用：创建知识库配置相关表
+-- 说明：
+--   ai_model_configs    - AI 模型配置表（聊天、嵌入、重排模型，存储 API 密钥密文及参数）
+--   knowledge_bases     - 知识库表（名称、描述、默认语言、功能开关、关联模型）
+--   document_directories - 文档目录表（支持最多 5 层的树形目录结构）
+--   search_configs      - 检索配置表（关键词/向量/RRF/重排参数，每个知识库一条）
+--   agent_configs       - Agent 配置表（系统提示词、ReAct/Plan-Execute 参数、记忆与网络开关）
+
+-- 创建 AI 模型配置表，存储聊天、嵌入、重排模型的连接参数和推理配置
 CREATE TABLE ai_model_configs (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id),
@@ -21,9 +30,12 @@ CREATE TABLE ai_model_configs (
     deleted_at timestamptz
 );
 
+-- 创建索引，按用户和模型类型查询，排除已删除记录
 CREATE INDEX idx_model_configs_user_type ON ai_model_configs(user_id, model_type, updated_at DESC) WHERE deleted_at IS NULL;
+-- 创建唯一索引，确保每个用户每种类型只有一个默认模型配置
 CREATE UNIQUE INDEX uq_model_configs_default ON ai_model_configs(user_id, model_type) WHERE is_default = true AND deleted_at IS NULL;
 
+-- 创建知识库表，定义知识库的基本属性、功能开关及关联的默认模型
 CREATE TABLE knowledge_bases (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id),
@@ -42,9 +54,12 @@ CREATE TABLE knowledge_bases (
     deleted_at timestamptz
 );
 
+-- 创建索引，按用户查询知识库并按更新时间降序排列
 CREATE INDEX idx_kb_user_updated ON knowledge_bases(user_id, updated_at DESC) WHERE deleted_at IS NULL;
+-- 创建唯一索引，确保同一用户下知识库名称不重复（不区分大小写）
 CREATE UNIQUE INDEX uq_kb_user_name ON knowledge_bases(user_id, lower(name)) WHERE deleted_at IS NULL;
 
+-- 创建文档目录表，支持最多 5 层的树形目录结构，用于组织知识库中的文档
 CREATE TABLE document_directories (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id),
@@ -59,9 +74,12 @@ CREATE TABLE document_directories (
     deleted_at timestamptz
 );
 
+-- 创建索引，加速按知识库和父目录查询子目录并按排序字段排列
 CREATE INDEX idx_directories_tree ON document_directories(user_id, knowledge_base_id, parent_id, sort_order) WHERE deleted_at IS NULL;
+-- 创建唯一索引，确保每个知识库只有一个默认目录
 CREATE UNIQUE INDEX uq_directories_default ON document_directories(knowledge_base_id) WHERE is_default = true AND deleted_at IS NULL;
 
+-- 创建检索配置表，定义每个知识库的关键词/向量/RRF/重排检索参数
 CREATE TABLE search_configs (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     knowledge_base_id uuid NOT NULL UNIQUE REFERENCES knowledge_bases(id),
@@ -77,6 +95,7 @@ CREATE TABLE search_configs (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- 创建 Agent 配置表，定义系统提示词、ReAct/Plan-Execute 参数、记忆与网络开关
 CREATE TABLE agent_configs (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id uuid NOT NULL REFERENCES users(id),
@@ -101,4 +120,5 @@ CREATE TABLE agent_configs (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- 创建索引，按用户查询 Agent 配置并按更新时间降序排列
 CREATE INDEX idx_agent_configs_user ON agent_configs(user_id, updated_at DESC);

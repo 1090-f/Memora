@@ -1,6 +1,6 @@
 # Memora Backend
 
-Memora 是个人 AI 智能知识库与知识服务 Agent 系统。本仓库当前提供基于 Gin 的 MVC 三层后端 Foundation 框架。
+Memora 是个人 AI 智能知识库与知识服务 Agent 系统。本仓库包含基于 Gin 的后端 Foundation，以及位于 `web/admin` 的 React 管理端。
 
 ## 框架
 
@@ -19,6 +19,7 @@ Controller → Service → Repository → PostgreSQL / Redis / MinIO
 - [架构说明](docs/ARCHITECTURE.md)
 - [开发规范](docs/DEVELOPMENT.md)
 - [Foundation API](docs/API.md)
+- [React 管理端](docs/FRONTEND.md)
 
 ## 技术栈
 
@@ -46,6 +47,7 @@ docker compose --env-file .env -f deploy/docker-compose.yml up --build
 - Worker 状态：`GET /health/workers`
 - Prometheus 指标：`GET /metrics`
 - MinIO Console：`http://localhost:9001`
+- React 管理端：`http://localhost:3000`
 
 开发管理员示例账号为 `admin@example.com`。首次启动前必须在本地 `.env` 中修改示例密钥和密码。`bootstrap-admin` 只在用户不存在时创建账号，不会覆盖已有密码；需要重置时显式运行 `go run ./cmd/migrate reset-admin-password`。
 
@@ -62,6 +64,17 @@ go run ./cmd/worker
 ```
 
 环境变量使用 `MEMORA_` 前缀，可覆盖配置文件中的敏感配置。
+
+## 前端开发
+
+```sh
+cd web
+corepack enable
+pnpm install --frozen-lockfile
+pnpm dev
+```
+
+前端默认把 `/api/v1` 代理到 `http://localhost:8080`。完整命令、路由、能力状态和部署说明见 [docs/FRONTEND.md](docs/FRONTEND.md)。
 
 ## 当前范围
 

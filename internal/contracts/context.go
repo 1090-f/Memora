@@ -2,7 +2,7 @@ package contracts
 
 import "context"
 
-// AgentContextRequest 是构建 Agent 上下文的原始入参。
+// AgentContextRequest 表示构建 Agent 运行执行上下文的请求。
 type AgentContextRequest struct {
 	UserID          ID     `json:"user_id"`           // 用户标识
 	KnowledgeBaseID ID     `json:"knowledge_base_id"` // 知识库标识
@@ -11,7 +11,7 @@ type AgentContextRequest struct {
 	Query           string `json:"query"`             // 用户查询
 }
 
-// AgentContext 是一次 Agent 运行所需的全量上下文数据。
+// AgentContext 包含 Agent 执行运行所需的全部信息。
 type AgentContext struct {
 	UserID          ID                  `json:"user_id"`           // 用户标识
 	KnowledgeBaseID ID                  `json:"knowledge_base_id"` // 知识库标识
@@ -23,8 +23,8 @@ type AgentContext struct {
 	AllowedTools    []string            `json:"allowed_tools"`     // 允许使用的工具白名单
 }
 
-// ContextBuilder 负责根据请求构建完整的 Agent 上下文。
+// ContextBuilder 根据请求构建 AgentContext。
 type ContextBuilder interface {
-	// Build 汇总会话、记忆、工具等数据并组装为 AgentContext。
+	// Build 根据给定的请求构建 AgentContext。
 	Build(ctx context.Context, request AgentContextRequest) (AgentContext, error)
 }

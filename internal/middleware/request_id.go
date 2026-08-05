@@ -9,6 +9,7 @@ import (
 
 const requestIDKey = "request_id"
 
+// RequestID 返回一个请求 ID 中间件，从请求头获取或自动生成 UUID 格式的请求标识。
 func RequestID() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		requestID := c.GetHeader("X-Request-ID")
@@ -21,6 +22,7 @@ func RequestID() gin.HandlerFunc {
 	}
 }
 
+// GetRequestID 从 Gin 上下文中获取请求 ID。
 func GetRequestID(c *gin.Context) string {
 	value, _ := c.Get(requestIDKey)
 	requestID, _ := value.(string)

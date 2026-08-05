@@ -17,7 +17,9 @@ import (
 	"github.com/1090-f/Memora/internal/repository"
 	apperrors "github.com/1090-f/Memora/pkg/errors"
 	jwtmanager "github.com/1090-f/Memora/pkg/jwt"
+	"github.com/1090-f/Memora/pkg/logger"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -30,6 +32,7 @@ const (
 	blacklistPrefix = "auth:blacklist:"
 )
 
+// authService 是 AuthService 接口的实现。
 type authService struct {
 	users     repository.UserRepository
 	redis     *redis.Client
@@ -37,9 +40,10 @@ type authService struct {
 	dummyHash string
 }
 
+// NewAuthService 创建一个新的认证服务实例。
 func NewAuthService(users repository.UserRepository, redisClient *redis.Client, tokens *jwtmanager.Manager) (AuthService, error) {
 	if users == nil || redisClient == nil || tokens == nil {
-		return nil, errors.New("authentication dependencies are required")
+		return nil, errors.New("认证服务依赖未就绪")
 	}
 	dummy, err := HashPassword("memora-invalid-credential-placeholder")
 	if err != nil {
@@ -48,16 +52,22 @@ func NewAuthService(users repository.UserRepository, redisClient *redis.Client, 
 	return &authService{users: users, redis: redisClient, tokens: tokens, dummyHash: dummy}, nil
 }
 
+// Login 验证用户凭据，生成 JWT Token 并返回登录响应。
 func (s *authService) Login(ctx context.Context, req *request.LoginRequest) (*dto.LoginResponse, error) {
-	user, err := s.users.FindActiveByAccount(ctx, strings.TrimSpace(req.Account))
+	account := strings.TrimSpace(req.Account)
+	user, err := s.users.FindActiveByAccount(ctx, account)
 	if err != nil {
 		_ = VerifyPassword(req.Password, s.dummyHash)
 		if errors.Is(err, repository.ErrUserNotFound) {
+			logger.Warn("登录失败：账号不存在",
+				zap.String("account", account))
 			return nil, apperrors.ErrUnauthorized
 		}
 		return nil, apperrors.New(apperrors.CodeInternal, 500, err)
 	}
 	if !VerifyPassword(req.Password, user.PasswordHash) {
+		logger.Warn("登录失败：密码错误",
+			zap.String("user_id", user.ID), zap.String("username", user.Username))
 		return nil, apperrors.ErrUnauthorized
 	}
 	if err := s.users.UpdateLastLogin(ctx, user.ID); err != nil {
@@ -71,9 +81,12 @@ func (s *authService) Login(ctx context.Context, req *request.LoginRequest) (*dt
 	if err != nil {
 		return nil, apperrors.New(apperrors.CodeInternal, 500, err)
 	}
+	logger.Info("用户登录成功",
+		zap.String("user_id", user.ID), zap.String("username", user.Username))
 	return &dto.LoginResponse{AccessToken: token, TokenType: "Bearer", ExpiresIn: expiresIn, User: UserResponse(user)}, nil
 }
 
+// Authenticate 解析 JWT Token，检查黑名单并返回用户信息。
 func (s *authService) Authenticate(ctx context.Context, token string) (*entity.User, *jwtmanager.Claims, error) {
 	claims, err := s.tokens.Parse(token)
 	if err != nil {
@@ -96,6 +109,7 @@ func (s *authService) Authenticate(ctx context.Context, token string) (*entity.U
 	return user, claims, nil
 }
 
+// Logout 将 JWT Token 加入 Redis 黑名单以实现 Token 吊销。
 func (s *authService) Logout(ctx context.Context, claims *jwtmanager.Claims) error {
 	if claims == nil || claims.ExpiresAt == nil {
 		return apperrors.ErrUnauthorized
@@ -107,19 +121,23 @@ func (s *authService) Logout(ctx context.Context, claims *jwtmanager.Claims) err
 	if err := s.redis.Set(ctx, blacklistPrefix+claims.ID, "1", ttl).Err(); err != nil {
 		return apperrors.New(apperrors.CodeInternal, 500, err)
 	}
+	logger.Info("用户已登出",
+		zap.String("user_id", claims.Subject), zap.String("username", claims.Username))
 	return nil
 }
 
+// HashPassword 使用 Argon2id 算法对密码进行哈希处理。
 func HashPassword(password string) (string, error) {
 	salt := make([]byte, argonSaltLength)
 	if _, err := rand.Read(salt); err != nil {
-		return "", fmt.Errorf("generate password salt: %w", err)
+		return "", fmt.Errorf("生成密码盐值失败: %w", err)
 	}
 	hash := argon2.IDKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLength)
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s", argon2.Version, argonMemory, argonTime, argonThreads,
 		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(hash)), nil
 }
 
+// VerifyPassword 验证密码是否与 Argon2id 编码的哈希值匹配。
 func VerifyPassword(password, encoded string) bool {
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 6 || parts[1] != "argon2id" {

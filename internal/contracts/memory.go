@@ -5,25 +5,33 @@ import (
 	"time"
 )
 
-// MemoryType 表示一条记忆的业务类型。
+// MemoryType 表示记忆条目的类别。
 type MemoryType string
 
-// MemoryScope 表示一条记忆的生效范围。
+// MemoryScope 表示记忆条目存在的作用域。
 type MemoryScope string
 
 // 预定义的记忆类型与作用域常量。
 const (
-	MemoryPreference MemoryType  = "preference"     // 用户偏好
-	MemoryProject    MemoryType  = "project"        // 项目相关
-	MemoryDecision   MemoryType  = "decision"       // 决策记录
-	MemoryGoal       MemoryType  = "goal"           // 目标
-	MemoryFact       MemoryType  = "fact"           // 客观事实
-	MemoryProgress   MemoryType  = "progress"       // 进度
-	MemoryScopeUser  MemoryScope = "user"           // 作用域：全局用户级
-	MemoryScopeKB    MemoryScope = "knowledge_base" // 作用域：限定知识库
+	// MemoryPreference 存储用户偏好和设置。
+	MemoryPreference MemoryType  = "preference"
+	// MemoryProject 存储项目相关信息。
+	MemoryProject    MemoryType  = "project"
+	// MemoryDecision 存储对话中做出的决策。
+	MemoryDecision   MemoryType  = "decision"
+	// MemoryGoal 存储用户目标和目的。
+	MemoryGoal       MemoryType  = "goal"
+	// MemoryFact 存储事实信息。
+	MemoryFact       MemoryType  = "fact"
+	// MemoryProgress 存储进度跟踪信息。
+	MemoryProgress   MemoryType  = "progress"
+	// MemoryScopeUser 表示记忆的作用域为特定用户。
+	MemoryScopeUser  MemoryScope = "user"
+	// MemoryScopeKB 表示记忆的作用域为知识库。
+	MemoryScopeKB    MemoryScope = "knowledge_base"
 )
 
-// MemoryQuery 是记忆检索请求。
+// MemoryQuery 表示检索相关记忆的查询。
 type MemoryQuery struct {
 	UserID          ID     `json:"user_id"`                     // 用户标识
 	KnowledgeBaseID ID     `json:"knowledge_base_id,omitempty"` // 可选：限定知识库
@@ -31,7 +39,7 @@ type MemoryQuery struct {
 	TopK            int    `json:"top_k"`                       // 返回条数上限
 }
 
-// MemoryQueryResult 是检索到的单条记忆。
+// MemoryQueryResult 表示从查询返回的单个记忆条目。
 type MemoryQueryResult struct {
 	MemoryID   ID          `json:"memory_id"`          // 记忆 ID
 	MemoryType MemoryType  `json:"memory_type"`        // 记忆类型
@@ -43,14 +51,14 @@ type MemoryQueryResult struct {
 	UpdatedAt  time.Time   `json:"updated_at"`         // 更新时间
 }
 
-// MemoryRetriever 抽象记忆语义检索能力。
+// MemoryRetriever 基于查询检索相关记忆。
 type MemoryRetriever interface {
-	// Retrieve 按查询检索相关记忆。
+	// Retrieve 搜索与查询匹配的记忆并返回排序后的结果。
 	Retrieve(ctx context.Context, query MemoryQuery) ([]MemoryQueryResult, error)
 }
 
-// MemoryExtractor 负责从 Agent 回答中提取并沉淀记忆。
+// MemoryExtractor 从 Agent 响应中提取并存储记忆。
 type MemoryExtractor interface {
-	// Extract 根据上下文与回答萃取新的记忆。
+	// Extract 处理 Agent 的回答并存储相关记忆。
 	Extract(ctx context.Context, agentContext AgentContext, answer string) error
 }

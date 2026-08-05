@@ -6,25 +6,36 @@ import (
 	"time"
 )
 
-// EventType 标识 Agent 运行生命周期事件的具体类型。
+// EventType 表示 Agent 事件的类型。
 type EventType string
 
 // Agent 运行过程发布的事件类型常量。
 const (
-	EventRunQueued       EventType = "agent.run.queued"       // 运行已入队
-	EventRunStarted      EventType = "agent.run.started"      // 运行已开始
-	EventRouterCompleted EventType = "agent.router.completed" // 路由决策完成
-	EventStepStarted     EventType = "agent.step.started"     // 某个步骤开始
-	EventStepCompleted   EventType = "agent.step.completed"   // 某个步骤完成
-	EventToolStarted     EventType = "agent.tool.started"     // 某个工具开始调用
-	EventToolCompleted   EventType = "agent.tool.completed"   // 某个工具调用完成
-	EventAnswerDelta     EventType = "agent.answer.delta"     // 回答流式增量
-	EventRunCompleted    EventType = "agent.run.completed"    // 运行成功完成
-	EventRunFailed       EventType = "agent.run.failed"       // 运行失败
-	EventRunCancelled    EventType = "agent.run.cancelled"    // 运行被取消
+	// EventRunQueued 表示 Agent 运行已排队等待执行。
+	EventRunQueued       EventType = "agent.run.queued"
+	// EventRunStarted 表示 Agent 运行已开始执行。
+	EventRunStarted      EventType = "agent.run.started"
+	// EventRouterCompleted 表示路由器已完成执行模式的确定。
+	EventRouterCompleted EventType = "agent.router.completed"
+	// EventStepStarted 表示计划步骤已开始执行。
+	EventStepStarted     EventType = "agent.step.started"
+	// EventStepCompleted 表示计划步骤已完成执行。
+	EventStepCompleted   EventType = "agent.step.completed"
+	// EventToolStarted 表示工具调用已开始。
+	EventToolStarted     EventType = "agent.tool.started"
+	// EventToolCompleted 表示工具调用已完成。
+	EventToolCompleted   EventType = "agent.tool.completed"
+	// EventAnswerDelta 表示已收到流式回答增量。
+	EventAnswerDelta     EventType = "agent.answer.delta"
+	// EventRunCompleted 表示 Agent 运行已成功完成。
+	EventRunCompleted    EventType = "agent.run.completed"
+	// EventRunFailed 表示 Agent 运行失败。
+	EventRunFailed       EventType = "agent.run.failed"
+	// EventRunCancelled 表示 Agent 运行已取消。
+	EventRunCancelled    EventType = "agent.run.cancelled"
 )
 
-// AgentEvent 是 Agent 运行过程的通用事件结构。
+// AgentEvent 表示在 Agent 执行运行期间发出的事件。
 type AgentEvent struct {
 	EventID   ID              `json:"event_id"`   // 事件唯一 ID
 	RunID     ID              `json:"run_id"`     // 所属运行 ID
@@ -34,14 +45,14 @@ type AgentEvent struct {
 	Data      json.RawMessage `json:"data"`       // 事件附加数据（原始 JSON）
 }
 
-// EventPublisher 抽象事件发布能力。
+// EventPublisher 发布 Agent 事件以供实时消费。
 type EventPublisher interface {
-	// Publish 发布一个事件。
+	// Publish 将 Agent 事件发送给订阅者。
 	Publish(ctx context.Context, event AgentEvent) error
 }
 
-// EventSubscriber 抽象事件订阅能力，支持按运行 ID 消费增量事件。
+// EventSubscriber 订阅 Agent 事件以供实时消费。
 type EventSubscriber interface {
-	// Subscribe 订阅指定运行在某个序号之后的事件流。
+	// Subscribe 返回一个通道，接收指定运行在指定序列号之后的事件。
 	Subscribe(ctx context.Context, runID ID, afterSequence int64) (<-chan AgentEvent, error)
 }

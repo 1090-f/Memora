@@ -6,20 +6,26 @@ import (
 	"os"
 	"strings"
 
+	"github.com/joho/godotenv"
 	"github.com/spf13/viper"
 )
 
 var globalConfig *Config
 
+// Load 从指定路径或默认位置加载完整配置并执行全部校验
 func Load(configPath string) (*Config, error) {
 	return load(configPath, func(cfg *Config) error { return cfg.Validate() })
 }
 
+// LoadDatabase 从指定路径加载配置并仅校验数据库相关配置项
 func LoadDatabase(configPath string) (*Config, error) {
 	return load(configPath, func(cfg *Config) error { return cfg.ValidateDatabase() })
 }
 
 func load(configPath string, validate func(*Config) error) (*Config, error) {
+	if err := loadDotEnv(".env"); err != nil {
+		return nil, err
+	}
 	v := viper.New()
 	if configPath == "" {
 		configPath = os.Getenv("MEMORA_CONFIG_FILE")
@@ -41,13 +47,13 @@ func load(configPath string, validate func(*Config) error) (*Config, error) {
 	if err := v.ReadInConfig(); err != nil {
 		var notFound viper.ConfigFileNotFoundError
 		if !errors.As(err, &notFound) {
-			return nil, fmt.Errorf("read configuration: %w", err)
+			return nil, fmt.Errorf("读取配置文件失败: %w", err)
 		}
 	}
 
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
-		return nil, fmt.Errorf("decode configuration: %w", err)
+		return nil, fmt.Errorf("解析配置失败: %w", err)
 	}
 	if err := validate(&cfg); err != nil {
 		return nil, err
@@ -56,6 +62,17 @@ func load(configPath string, validate func(*Config) error) (*Config, error) {
 	return &cfg, nil
 }
 
+func loadDotEnv(path string) error {
+	if err := godotenv.Load(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("加载环境文件 %q 失败: %w", path, err)
+	}
+	return nil
+}
+
+// Get 返回全局配置实例，如果未初始化则触发panic
 func Get() *Config {
 	if globalConfig == nil {
 		panic("configuration is not initialized")
@@ -106,12 +123,16 @@ func bindEnvironment(v *viper.Viper) {
 		"app.shutdown_timeout": "MEMORA_HTTP_SHUTDOWN_TIMEOUT", "database.url": "MEMORA_DATABASE_URL",
 		"database.max_idle_conns": "MEMORA_DATABASE_MAX_IDLE", "database.max_open_conns": "MEMORA_DATABASE_MAX_OPEN",
 		"redis.address": "MEMORA_REDIS_ADDRESS", "redis.password": "MEMORA_REDIS_PASSWORD", "redis.db": "MEMORA_REDIS_DB",
-		"minio.endpoint": "MEMORA_MINIO_ENDPOINT", "minio.access_key": "MEMORA_MINIO_ACCESS_KEY",
+		"redis.pool_size": "MEMORA_REDIS_POOL_SIZE",
+		"minio.endpoint":  "MEMORA_MINIO_ENDPOINT", "minio.access_key": "MEMORA_MINIO_ACCESS_KEY",
 		"minio.secret_key": "MEMORA_MINIO_SECRET_KEY", "minio.bucket": "MEMORA_MINIO_BUCKET",
 		"minio.use_ssl": "MEMORA_MINIO_USE_SSL", "jwt.secret": "MEMORA_JWT_SECRET", "jwt.access_ttl": "MEMORA_ACCESS_TTL",
 		"worker.concurrency": "MEMORA_WORKER_CONCURRENCY", "worker.poll_interval": "MEMORA_WORKER_POLL_INTERVAL",
 		"worker.default_timeout": "MEMORA_WORKER_DEFAULT_TIMEOUT", "worker.max_retry_delay": "MEMORA_WORKER_MAX_RETRY_DELAY",
 		"worker.idempotency_ttl": "MEMORA_WORKER_IDEMPOTENCY_TTL",
+		"log.level":             "MEMORA_LOG_LEVEL", "log.filename": "MEMORA_LOG_FILENAME",
+		"log.max_size": "MEMORA_LOG_MAX_SIZE", "log.max_backups": "MEMORA_LOG_MAX_BACKUPS",
+		"log.max_age": "MEMORA_LOG_MAX_AGE", "log.compress": "MEMORA_LOG_COMPRESS",
 		"mcp.encryption_key":     "MEMORA_MCP_ENCRYPTION_KEY", "mcp.allow_local_http": "MEMORA_MCP_ALLOW_LOCAL_HTTP",
 	}
 	for key, environment := range bindings {

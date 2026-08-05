@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// AgentConfig 是 Agent 运行的各项限额与控制参数。
+// AgentConfig 定义 Agent 执行参数的上限配置。
 type AgentConfig struct {
 	MaxReactRounds        int `json:"max_react_rounds"`         // ReAct 模式最大轮数
 	MaxPlanSteps          int `json:"max_plan_steps"`           // 计划（Plan）最大步骤数
@@ -18,20 +18,20 @@ type AgentConfig struct {
 	MemoryTopK            int `json:"memory_top_k"`             // 记忆检索返回条数
 }
 
-// DefaultAgentConfig 返回一组合理的默认 Agent 配置。
+// DefaultAgentConfig 返回具有合理默认值的 AgentConfig。
 func DefaultAgentConfig() AgentConfig {
 	return AgentConfig{MaxReactRounds: 8, MaxPlanSteps: 5, MaxReplans: 1, ReviewerRuns: 1, MaxToolCalls: 10,
 		MaxDocumentReadTokens: 6000, MaxToolResultBytes: 1048576, MaxRunSeconds: 300, MemoryTopK: 8}
 }
 
-// AgentRunRequest 是一次 Agent 运行的请求。
+// AgentRunRequest 表示启动 Agent 执行运行的请求。
 type AgentRunRequest struct {
 	RunID   ID           `json:"run_id"`  // 运行唯一标识
 	Context AgentContext `json:"context"` // 运行所需的完整上下文
 	Config  AgentConfig  `json:"config"`  // 运行配置
 }
 
-// AgentRunResult 是一次 Agent 运行的最终结果。
+// AgentRunResult 表示已完成的 Agent 执行运行的结果。
 type AgentRunResult struct {
 	RunID           ID            `json:"run_id"`           // 运行 ID
 	ExecutionMode   ExecutionMode `json:"execution_mode"`   // 实际采用的执行模式
@@ -43,12 +43,12 @@ type AgentRunResult struct {
 	EndedAt         time.Time     `json:"ended_at"`         // 结束时间
 }
 
-// AgentRunService 抽象 Agent 运行的对外服务能力。
+// AgentRunService 定义 Agent 执行运行管理的接口。
 type AgentRunService interface {
-	// Run 启动并等待一次 Agent 运行完成。
+	// Run 执行一次 Agent 运行并返回结果。
 	Run(ctx context.Context, request AgentRunRequest) (AgentRunResult, error)
-	// Cancel 取消一次正在进行的运行。
+	// Cancel 停止一个正在运行的 Agent 执行。
 	Cancel(ctx context.Context, runID, userID ID) error
-	// Retry 对一次运行进行重试，返回新的运行 ID。
+	// Retry 重新启动一个失败的 Agent 执行并返回新的运行 ID。
 	Retry(ctx context.Context, runID, userID ID) (ID, error)
 }

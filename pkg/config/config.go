@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// Config 是应用程序的完整配置结构，包含所有子模块的配置项
 type Config struct {
 	App      AppConfig      `mapstructure:"app"`
 	Database DatabaseConfig `mapstructure:"database"`
@@ -19,6 +20,7 @@ type Config struct {
 	CORS     CORSConfig     `mapstructure:"cors"`
 }
 
+// AppConfig 定义应用程序基础配置，包括名称、版本、运行模式和超时设置
 type AppConfig struct {
 	Name            string        `mapstructure:"name"`
 	Version         string        `mapstructure:"version"`
@@ -29,12 +31,14 @@ type AppConfig struct {
 	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`
 }
 
+// DatabaseConfig 定义PostgreSQL数据库连接配置
 type DatabaseConfig struct {
 	URL          string `mapstructure:"url"`
 	MaxIdleConns int    `mapstructure:"max_idle_conns"`
 	MaxOpenConns int    `mapstructure:"max_open_conns"`
 }
 
+// RedisConfig 定义Redis连接配置
 type RedisConfig struct {
 	Address  string `mapstructure:"address"`
 	Password string `mapstructure:"password"`
@@ -42,6 +46,7 @@ type RedisConfig struct {
 	PoolSize int    `mapstructure:"pool_size"`
 }
 
+// MinIOConfig 定义MinIO对象存储连接配置
 type MinIOConfig struct {
 	Endpoint  string `mapstructure:"endpoint"`
 	AccessKey string `mapstructure:"access_key"`
@@ -50,11 +55,13 @@ type MinIOConfig struct {
 	UseSSL    bool   `mapstructure:"use_ssl"`
 }
 
+// JWTConfig 定义JWT令牌配置，包括密钥和访问令牌有效期
 type JWTConfig struct {
 	Secret    string        `mapstructure:"secret"`
 	AccessTTL time.Duration `mapstructure:"access_ttl"`
 }
 
+// WorkerConfig 定义后台Worker任务配置，包括并发数、轮询间隔和超时设置
 type WorkerConfig struct {
 	Concurrency    int           `mapstructure:"concurrency"`
 	PollInterval   time.Duration `mapstructure:"poll_interval"`
@@ -70,6 +77,7 @@ type MCPConfig struct {
 	AllowLocalHTTP        bool     `mapstructure:"allow_local_http"`
 }
 
+// LogConfig 定义日志系统配置，包括日志级别、文件输出和滚动策略
 type LogConfig struct {
 	Level      string `mapstructure:"level"`
 	Filename   string `mapstructure:"filename"`
@@ -79,6 +87,7 @@ type LogConfig struct {
 	Compress   bool   `mapstructure:"compress"`
 }
 
+// CORSConfig 定义跨域资源共享配置
 type CORSConfig struct {
 	Enabled          bool     `mapstructure:"enabled"`
 	AllowOrigins     []string `mapstructure:"allow_origins"`
@@ -89,59 +98,61 @@ type CORSConfig struct {
 	MaxAge           int      `mapstructure:"max_age"`
 }
 
+// Validate 校验所有配置项，收集所有错误后返回合并的错误信息
 func (c Config) Validate() error {
 	var errs []error
 	if c.App.Address == "" {
-		errs = append(errs, errors.New("MEMORA_HTTP_ADDRESS is required"))
+		errs = append(errs, errors.New("缺少环境变量 MEMORA_HTTP_ADDRESS"))
 	}
 	if err := c.ValidateDatabase(); err != nil {
 		errs = append(errs, err)
 	}
 	if c.Redis.Address == "" {
-		errs = append(errs, errors.New("MEMORA_REDIS_ADDRESS is required"))
+		errs = append(errs, errors.New("缺少环境变量 MEMORA_REDIS_ADDRESS"))
 	}
 	if c.MinIO.Endpoint == "" || c.MinIO.Bucket == "" {
-		errs = append(errs, errors.New("MEMORA_MINIO_ENDPOINT and MEMORA_MINIO_BUCKET are required"))
+		errs = append(errs, errors.New("缺少环境变量 MEMORA_MINIO_ENDPOINT 和 MEMORA_MINIO_BUCKET"))
 	}
 	if c.MinIO.AccessKey == "" || c.MinIO.SecretKey == "" {
-		errs = append(errs, errors.New("MEMORA_MINIO_ACCESS_KEY and MEMORA_MINIO_SECRET_KEY are required"))
+		errs = append(errs, errors.New("缺少环境变量 MEMORA_MINIO_ACCESS_KEY 和 MEMORA_MINIO_SECRET_KEY"))
 	}
 	if c.JWT.Secret == "" || c.JWT.AccessTTL <= 0 {
-		errs = append(errs, errors.New("MEMORA_JWT_SECRET and a positive MEMORA_ACCESS_TTL are required"))
+		errs = append(errs, errors.New("缺少环境变量 MEMORA_JWT_SECRET 且 MEMORA_ACCESS_TTL 必须为正数"))
 	}
 	if c.App.Mode == "release" && (len(c.JWT.Secret) < 32 || strings.HasPrefix(strings.ToLower(c.JWT.Secret), "change-me")) {
-		errs = append(errs, errors.New("MEMORA_JWT_SECRET must be at least 32 characters and must not use an example value in release mode"))
+		errs = append(errs, errors.New("MEMORA_JWT_SECRET 至少需要 32 个字符，且在发布模式下不能使用示例值"))
 	}
 	if c.Worker.Concurrency <= 0 || c.Worker.PollInterval <= 0 || c.Worker.DefaultTimeout <= 0 || c.Worker.IdempotencyTTL <= 0 {
-		errs = append(errs, errors.New("worker concurrency and durations must be positive"))
+		errs = append(errs, errors.New("Worker 并发数和各项时长必须为正数"))
 	}
 	if c.App.Mode == "release" && len(c.MCP.EncryptionKey) < 32 {
 		errs = append(errs, errors.New("MEMORA_MCP_ENCRYPTION_KEY must be at least 32 characters in release mode"))
 	}
 	if c.App.Mode != "debug" && c.App.Mode != "release" && c.App.Mode != "test" {
-		errs = append(errs, errors.New("MEMORA_GIN_MODE must be debug, release or test"))
+		errs = append(errs, errors.New("MEMORA_GIN_MODE 必须是 debug、release 或 test"))
 	}
 	for _, origin := range c.CORS.AllowOrigins {
 		if c.CORS.AllowCredentials && origin == "*" {
-			errs = append(errs, errors.New("CORS wildcard origin cannot be used with credentials"))
+			errs = append(errs, errors.New("CORS 通配符来源不能与凭据模式同时使用"))
 		}
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("invalid configuration: %w", errors.Join(errs...))
+		return fmt.Errorf("配置无效: %w", errors.Join(errs...))
 	}
 	return nil
 }
 
+// ValidateDatabase 校验数据库相关配置项
 func (c Config) ValidateDatabase() error {
 	var errs []error
 	if c.Database.URL == "" {
-		errs = append(errs, errors.New("MEMORA_DATABASE_URL is required"))
+		errs = append(errs, errors.New("缺少环境变量 MEMORA_DATABASE_URL"))
 	}
 	if c.Database.MaxIdleConns < 0 || c.Database.MaxOpenConns <= 0 || c.Database.MaxIdleConns > c.Database.MaxOpenConns {
-		errs = append(errs, errors.New("database connection pool settings are invalid"))
+		errs = append(errs, errors.New("数据库连接池配置无效"))
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("invalid database configuration: %w", errors.Join(errs...))
+		return fmt.Errorf("数据库配置无效: %w", errors.Join(errs...))
 	}
 	return nil
 }

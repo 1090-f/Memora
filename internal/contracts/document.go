@@ -2,7 +2,7 @@ package contracts
 
 import "context"
 
-// DocumentReadRequest 是文档读取请求，支持分片/游标分段读取以控制 token。
+// DocumentReadRequest 表示读取文档内容的请求。
 type DocumentReadRequest struct {
 	UserID          ID     `json:"user_id"`           // 用户标识
 	KnowledgeBaseID ID     `json:"knowledge_base_id"` // 知识库标识
@@ -12,7 +12,7 @@ type DocumentReadRequest struct {
 	MaxTokens       int    `json:"max_tokens"`        // 本次允许读取的最大 token
 }
 
-// DocumentReadResult 是文档读取结果。
+// DocumentReadResult 包含从文档读取的内容及引用信息。
 type DocumentReadResult struct {
 	DocumentID ID       `json:"document_id"`           // 文档 ID
 	Title      string   `json:"title"`                 // 文档标题
@@ -24,6 +24,6 @@ type DocumentReadResult struct {
 
 // DocumentService 提供文档读取能力。
 type DocumentService interface {
-	// Read 按请求读取文档内容，支持游标分段。
+	// Read 根据请求参数从文档中检索内容。
 	Read(ctx context.Context, request DocumentReadRequest) (DocumentReadResult, error)
 }

@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
 	"github.com/1090-f/Memora/internal/api"
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service"
+	"github.com/1090-f/Memora/pkg/audit"
 	"github.com/1090-f/Memora/pkg/config"
 	"github.com/1090-f/Memora/pkg/database"
 	jwtmanager "github.com/1090-f/Memora/pkg/jwt"
@@ -20,6 +22,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// ServerApp 管理 HTTP 服务器应用的生命周期，包括初始化、运行和关闭。
 type ServerApp struct {
 	cfg    *config.Config
 	db     *gorm.DB
@@ -28,8 +31,10 @@ type ServerApp struct {
 	server *http.Server
 }
 
+// NewServer 创建一个新的 ServerApp 实例。
 func NewServer() *ServerApp { return &ServerApp{} }
 
+// Initialize 初始化所有依赖，包括配置、数据库、缓存、对象存储、服务和路由。
 func (a *ServerApp) Initialize(ctx context.Context) error {
 	cfg, err := config.Load("")
 	if err != nil {
@@ -37,14 +42,23 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	}
 	a.cfg = cfg
 	if err := logger.Init(&cfg.Log); err != nil {
-		return fmt.Errorf("initialize logger: %w", err)
+		return fmt.Errorf("初始化日志器失败: %w", err)
 	}
 	gin.SetMode(cfg.App.Mode)
+	gin.DefaultWriter = io.Discard
 
 	initCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	if err := database.Migrate(cfg.Database.URL, "up"); err != nil {
+		return err
+	}
 	a.db, err = database.InitPostgres(initCtx, &cfg.Database)
 	if err != nil {
+		return err
+	}
+	audit.SetStore(repository.NewAuditRepository(a.db))
+	if err := bootstrapAdmin(initCtx, a.db, cfg.App.Mode); err != nil {
+		_ = database.ClosePostgres(a.db)
 		return err
 	}
 	a.redis, err = database.InitRedis(initCtx, &cfg.Redis)
@@ -90,10 +104,11 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	return nil
 }
 
+// Run 启动 HTTP 服务器并阻塞等待，直到上下文取消后执行优雅关闭。
 func (a *ServerApp) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("Memora API started")
+		logger.Info("Memora API 服务已启动")
 		err := a.server.ListenAndServe()
 		if errors.Is(err, http.ErrServerClosed) {
 			err = nil
@@ -110,6 +125,7 @@ func (a *ServerApp) Run(ctx context.Context) error {
 	}
 }
 
+// Close 释放服务器应用持有的所有资源。
 func (a *ServerApp) Close() error {
 	var closeErr error
 	if a.redis != nil {

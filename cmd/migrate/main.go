@@ -12,6 +12,7 @@ import (
 	"github.com/1090-f/Memora/pkg/database"
 )
 
+// main 是数据库迁移工具的入口点，支持执行迁移、引导管理员和重置密码操作。
 func main() {
 	if len(os.Args) != 2 {
 		usage()
@@ -35,16 +36,18 @@ func main() {
 	}
 }
 
+// usage 显示命令行用法信息并退出程序。
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: memora-migrate <up|down|bootstrap-admin|reset-admin-password>")
 	os.Exit(2)
 }
 
+// bootstrapAdmin 引导创建管理员账户，从环境变量读取用户名、邮箱和密码。
 func bootstrapAdmin(ctx context.Context, cfg *config.Config) error {
 	username := strings.TrimSpace(os.Getenv("MEMORA_BOOTSTRAP_ADMIN_USERNAME"))
 	email := strings.TrimSpace(os.Getenv("MEMORA_BOOTSTRAP_ADMIN_EMAIL"))
 	if username == "" {
-		return fmt.Errorf("MEMORA_BOOTSTRAP_ADMIN_USERNAME is required")
+		return fmt.Errorf("缺少环境变量 MEMORA_BOOTSTRAP_ADMIN_USERNAME")
 	}
 	db, err := database.InitPostgres(ctx, &cfg.Database)
 	if err != nil {
@@ -54,16 +57,16 @@ func bootstrapAdmin(ctx context.Context, cfg *config.Config) error {
 
 	var exists bool
 	if err := db.WithContext(ctx).Raw("SELECT EXISTS (SELECT 1 FROM users WHERE username = ?)", username).Scan(&exists).Error; err != nil {
-		return fmt.Errorf("check bootstrap administrator: %w", err)
+		return fmt.Errorf("检查引导管理员失败: %w", err)
 	}
 	if exists {
-		log.Printf("bootstrap administrator %q already exists; credentials were not changed", username)
+		log.Printf("引导管理员 %q 已存在，凭据未变更", username)
 		return nil
 	}
 
 	password := os.Getenv("MEMORA_BOOTSTRAP_ADMIN_PASSWORD")
 	if email == "" || password == "" {
-		return fmt.Errorf("MEMORA_BOOTSTRAP_ADMIN_EMAIL and MEMORA_BOOTSTRAP_ADMIN_PASSWORD are required for first bootstrap")
+		return fmt.Errorf("首次引导需要提供环境变量 MEMORA_BOOTSTRAP_ADMIN_EMAIL 和 MEMORA_BOOTSTRAP_ADMIN_PASSWORD")
 	}
 	if err := validateAdminPassword(cfg.App.Mode, password); err != nil {
 		return err
@@ -78,19 +81,20 @@ func bootstrapAdmin(ctx context.Context, cfg *config.Config) error {
 		ON CONFLICT (username) DO NOTHING`,
 		username, email, hash, username)
 	if result.Error != nil {
-		return fmt.Errorf("bootstrap administrator: %w", result.Error)
+		return fmt.Errorf("引导管理员失败: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
-		log.Printf("bootstrap administrator %q was created concurrently; credentials were not changed", username)
+		log.Printf("引导管理员 %q 已由并发操作创建，凭据未变更", username)
 	}
 	return nil
 }
 
+// resetAdminPassword 重置指定管理员账户的密码，从环境变量读取用户名和新密码。
 func resetAdminPassword(ctx context.Context, cfg *config.Config) error {
 	username := strings.TrimSpace(os.Getenv("MEMORA_BOOTSTRAP_ADMIN_USERNAME"))
 	password := os.Getenv("MEMORA_BOOTSTRAP_ADMIN_PASSWORD")
 	if username == "" || password == "" {
-		return fmt.Errorf("MEMORA_BOOTSTRAP_ADMIN_USERNAME and MEMORA_BOOTSTRAP_ADMIN_PASSWORD are required")
+		return fmt.Errorf("缺少环境变量 MEMORA_BOOTSTRAP_ADMIN_USERNAME 和 MEMORA_BOOTSTRAP_ADMIN_PASSWORD")
 	}
 	if err := validateAdminPassword(cfg.App.Mode, password); err != nil {
 		return err
@@ -109,20 +113,21 @@ func resetAdminPassword(ctx context.Context, cfg *config.Config) error {
 		SET password_hash = ?, status = 'active', deleted_at = NULL, updated_at = now()
 		WHERE username = ?`, hash, username)
 	if result.Error != nil {
-		return fmt.Errorf("reset administrator password: %w", result.Error)
+		return fmt.Errorf("重置管理员密码失败: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
-		return fmt.Errorf("administrator %q does not exist", username)
+		return fmt.Errorf("管理员 %q 不存在", username)
 	}
 	return nil
 }
 
+// validateAdminPassword 验证管理员密码强度，确保长度足够且不是示例密码。
 func validateAdminPassword(mode, password string) error {
 	if len(password) < 12 {
-		return fmt.Errorf("administrator password must contain at least 12 characters")
+		return fmt.Errorf("管理员密码长度至少需要 12 个字符")
 	}
 	if mode == "release" && strings.HasPrefix(strings.ToLower(password), "change-me") {
-		return fmt.Errorf("administrator password must not use an example value in release mode")
+		return fmt.Errorf("发布模式下管理员密码不能使用示例值")
 	}
 	return nil
 }

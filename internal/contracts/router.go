@@ -5,16 +5,18 @@ import (
 	"time"
 )
 
-// ExecutionMode Agent 的执行模式。
+// ExecutionMode 表示 Agent 处理查询时使用的策略。
 type ExecutionMode string
 
 // 支持的执行模式常量。
 const (
-	ExecutionReact       ExecutionMode = "react"        // ReAct 模式
-	ExecutionPlanExecute ExecutionMode = "plan_execute" // 计划-执行（Plan & Execute）模式
+	// ExecutionReact 使用响应式循环，Agent 逐步推理和行动。
+	ExecutionReact       ExecutionMode = "react"
+	// ExecutionPlanExecute 先创建计划然后按顺序执行其步骤。
+	ExecutionPlanExecute ExecutionMode = "plan_execute"
 )
 
-// RouterDecision 是路由（选择执行模式）的结果。
+// RouterDecision 表示 Agent 运行的路由决策结果。
 type RouterDecision struct {
 	ExecutionMode ExecutionMode `json:"execution_mode"` // 选定的执行模式
 	ReasonSummary string        `json:"reason_summary"` // 决策理由摘要
@@ -23,8 +25,8 @@ type RouterDecision struct {
 	CreatedAt     time.Time     `json:"created_at"`     // 决策时间
 }
 
-// Router 负责根据上下文决定本次运行的执行模式。
+// Router 根据查询上下文确定 Agent 的执行模式。
 type Router interface {
-	// Route 根据 Agent 上下文做出模式选择。
+	// Route 分析 Agent 上下文并返回路由决策。
 	Route(ctx context.Context, agentContext AgentContext) (RouterDecision, error)
 }

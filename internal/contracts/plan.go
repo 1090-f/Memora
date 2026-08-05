@@ -2,30 +2,43 @@ package contracts
 
 import "context"
 
-// PlanStatus 表示整个计划的整体状态。
+// PlanStatus 表示计划执行的当前状态。
 type PlanStatus string
 
-// PlanStepStatus 表示单个步骤的状态。
+// PlanStepStatus 表示计划步骤执行的当前状态。
 type PlanStepStatus string
 
 // 计划与步骤的状态常量。
 const (
-	PlanPending    PlanStatus     = "pending"    // 计划待执行
-	PlanExecuting  PlanStatus     = "executing"  // 计划执行中
-	PlanReplanning PlanStatus     = "replanning" // 计划重新规划中
-	PlanReviewing  PlanStatus     = "reviewing"  // 计划评审中
-	PlanCompleted  PlanStatus     = "completed"  // 计划已完成
-	PlanFailed     PlanStatus     = "failed"     // 计划失败
-	PlanCancelled  PlanStatus     = "cancelled"  // 计划已取消
-	StepPending    PlanStepStatus = "pending"    // 步骤待执行
-	StepRunning    PlanStepStatus = "running"    // 步骤执行中
-	StepCompleted  PlanStepStatus = "completed"  // 步骤已完成
-	StepFailed     PlanStepStatus = "failed"     // 步骤失败
-	StepSkipped    PlanStepStatus = "skipped"    // 步骤被跳过
-	StepCancelled  PlanStepStatus = "cancelled"  // 步骤已取消
+	// PlanPending 表示计划已创建但尚未开始。
+	PlanPending    PlanStatus     = "pending"
+	// PlanExecuting 表示计划正在执行中。
+	PlanExecuting  PlanStatus     = "executing"
+	// PlanReplanning 表示计划正在被重新评估和修改。
+	PlanReplanning PlanStatus     = "replanning"
+	// PlanReviewing 表示计划正在接受质量审查。
+	PlanReviewing  PlanStatus     = "reviewing"
+	// PlanCompleted 表示计划已全部执行完成。
+	PlanCompleted  PlanStatus     = "completed"
+	// PlanFailed 表示计划执行失败。
+	PlanFailed     PlanStatus     = "failed"
+	// PlanCancelled 表示计划执行已取消。
+	PlanCancelled  PlanStatus     = "cancelled"
+	// StepPending 表示步骤尚未开始。
+	StepPending    PlanStepStatus = "pending"
+	// StepRunning 表示步骤正在执行中。
+	StepRunning    PlanStepStatus = "running"
+	// StepCompleted 表示步骤已成功执行。
+	StepCompleted  PlanStepStatus = "completed"
+	// StepFailed 表示步骤执行失败。
+	StepFailed     PlanStepStatus = "failed"
+	// StepSkipped 表示步骤在执行过程中被跳过。
+	StepSkipped    PlanStepStatus = "skipped"
+	// StepCancelled 表示步骤执行已取消。
+	StepCancelled  PlanStepStatus = "cancelled"
 )
 
-// Plan 是一次计划-执行模式下的整体任务计划。
+// Plan 表示 Agent 需要按顺序执行的计划。
 type Plan struct {
 	ID                 ID         `json:"id"`                  // 计划 ID
 	RunID              ID         `json:"run_id"`              // 关联的运行 ID
@@ -36,7 +49,7 @@ type Plan struct {
 	Steps              []PlanStep `json:"steps"`               // 步骤列表
 }
 
-// PlanStep 是计划中的单个执行步骤。
+// PlanStep 表示执行计划中的单个步骤。
 type PlanStep struct {
 	ID                 ID             `json:"id"`                            // 步骤 ID
 	StepNo             int            `json:"step_no"`                       // 步骤序号
@@ -48,26 +61,26 @@ type PlanStep struct {
 	Status             PlanStepStatus `json:"status"`                        // 步骤状态
 }
 
-// ReviewerResult 是计划评审的产出。
+// ReviewerResult 表示计划审查的结果。
 type ReviewerResult struct {
 	Result  string `json:"result"`  // 评审结论
 	Summary string `json:"summary"` // 评审摘要
 }
 
-// Planner 负责根据上下文生成初始计划。
+// Planner 为 Agent 运行创建执行计划。
 type Planner interface {
-	// Plan 生成一份计划。
+	// Plan 根据 Agent 上下文和配置创建执行计划。
 	Plan(ctx context.Context, agentContext AgentContext, config AgentConfig) (Plan, error)
 }
 
-// PlanExecutor 负责按序执行计划中的步骤。
+// PlanExecutor 按顺序执行计划的步骤。
 type PlanExecutor interface {
-	// Execute 逐步执行计划并返回更新后的计划状态。
+	// Execute 运行计划步骤并返回包含执行结果的更新后计划。
 	Execute(ctx context.Context, agentContext AgentContext, plan Plan) (Plan, error)
 }
 
-// PlanReviewer 负责评审计划质量，判断是否需要重新规划。
+// PlanReviewer 审查已完成计划的质量和正确性。
 type PlanReviewer interface {
-	// Review 对计划进行评审并给出结果。
+	// Review 评估计划执行情况并返回审查结果。
 	Review(ctx context.Context, agentContext AgentContext, plan Plan) (ReviewerResult, error)
 }

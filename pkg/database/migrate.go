@@ -12,14 +12,25 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 )
 
+// Migrate 执行数据库迁移，direction 支持 "up"（向上迁移）和 "down"（向下回滚）
 func Migrate(databaseURL, direction string) error {
+	switch direction {
+	case "up":
+		if err := ensurePostgresDatabase(databaseURL); err != nil {
+			return err
+		}
+	case "down":
+	default:
+		return fmt.Errorf("不支持的迁移方向 %q", direction)
+	}
+
 	source, err := migrationSource()
 	if err != nil {
 		return err
 	}
 	migrator, err := migrate.New(source, databaseURL)
 	if err != nil {
-		return fmt.Errorf("create migrator: %w", err)
+		return fmt.Errorf("创建迁移器失败: %w", err)
 	}
 	defer func() { _, _ = migrator.Close() }()
 	switch direction {
@@ -27,14 +38,12 @@ func Migrate(databaseURL, direction string) error {
 		err = migrator.Up()
 	case "down":
 		err = migrator.Down()
-	default:
-		return fmt.Errorf("unsupported migration direction %q", direction)
 	}
 	if errors.Is(err, migrate.ErrNoChange) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("migrate %s: %w", direction, err)
+		return fmt.Errorf("数据库迁移 %s 失败: %w", direction, err)
 	}
 	return nil
 }
@@ -53,5 +62,5 @@ func migrationSource() (string, error) {
 			return (&url.URL{Scheme: "file", Path: filepath.ToSlash(absolute)}).String(), nil
 		}
 	}
-	return "", errors.New("locate scripts/migrations directory")
+	return "", errors.New("找不到 scripts/migrations 目录")
 }

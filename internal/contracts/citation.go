@@ -2,16 +2,18 @@ package contracts
 
 import "time"
 
-// CitationSource 表示引用的来源类型。
+// CitationSource 表示引用来源的类型。
 type CitationSource string
 
 // 引用来源常量。
 const (
-	CitationKnowledge CitationSource = "knowledge_base" // 引用自知识库文档
-	CitationNetwork   CitationSource = "network"        // 引用自网络信息
+	// CitationKnowledge 表示引用来自知识库文档。
+	CitationKnowledge CitationSource = "knowledge_base"
+	// CitationNetwork 表示引用来自网络资源。
+	CitationNetwork   CitationSource = "network"
 )
 
-// Citation 描述一条回答内容的引用出处。
+// Citation 表示 Agent 响应中引用的参考来源。
 type Citation struct {
 	SourceType        CitationSource `json:"source_type"`                   // 来源类型（知识库 / 网络）
 	DocumentID        ID             `json:"document_id,omitempty"`         // 文档 ID（知识库来源）
