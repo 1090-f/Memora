@@ -22,10 +22,25 @@ func Open(ctx context.Context, cfg *config.MinIOConfig) (*Client, error) {
 		return nil, fmt.Errorf("创建 MinIO 客户端失败: %w", err)
 	}
 	store := &Client{client: client, bucket: cfg.Bucket}
-	if err := store.Health(ctx); err != nil {
+	if err := store.ensureBucket(ctx); err != nil {
 		return nil, err
 	}
 	return store, nil
+}
+
+// ensureBucket 确保存储桶存在，不存在则自动创建
+func (c *Client) ensureBucket(ctx context.Context) error {
+	exists, err := c.client.BucketExists(ctx, c.bucket)
+	if err != nil {
+		return fmt.Errorf("检查 MinIO 存储桶失败: %w", err)
+	}
+	if exists {
+		return nil
+	}
+	if err := c.client.MakeBucket(ctx, c.bucket, minio.MakeBucketOptions{}); err != nil {
+		return fmt.Errorf("创建 MinIO 存储桶 %q 失败: %w", c.bucket, err)
+	}
+	return nil
 }
 
 // Health 检查MinIO连接和存储桶是否健康
