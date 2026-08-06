@@ -18,3 +18,9 @@ web/**/node_modules/
 web/**/dist/
 web/**/coverage/
 web/admin/.env.local
+
+.idea
+web/.pnpm-store
+
+# personal data
+docs/zxp

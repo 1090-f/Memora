@@ -48,6 +48,13 @@ worker:
   max_retry_delay: 1m    # 单位/分钟
   idempotency_ttl: 24h   # 单位/小时
 
+# MCP
+mcp:
+  encryption_key: "change-me-mcp-encryption-key-32bytes"
+  stdio_command_whitelist: ["npx", "python", "python3", "uvx", "node"]
+  allow_local_http: false
+
+
 # 日志配置
 log:
   level: "info"          # debug, info, warn, error

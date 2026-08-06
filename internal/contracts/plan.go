@@ -8,6 +8,7 @@ type PlanStatus string
 // PlanStepStatus 表示计划步骤执行的当前状态。
 type PlanStepStatus string
 
+// 计划与步骤的状态常量。
 const (
 	// PlanPending 表示计划已创建但尚未开始。
 	PlanPending PlanStatus = "pending"
@@ -39,31 +40,31 @@ const (
 
 // Plan 表示 Agent 需要按顺序执行的计划。
 type Plan struct {
-	ID                 ID         `json:"id"`
-	RunID              ID         `json:"run_id"`
-	Version            int        `json:"version"`
-	Goal               string     `json:"goal"`
-	CompletionCriteria []string   `json:"completion_criteria"`
-	Status             PlanStatus `json:"status"`
-	Steps              []PlanStep `json:"steps"`
+	ID                 ID         `json:"id"`                  // 计划 ID
+	RunID              ID         `json:"run_id"`              // 关联的运行 ID
+	Version            int        `json:"version"`             // 计划版本（重新规划后递增）
+	Goal               string     `json:"goal"`                // 计划目标
+	CompletionCriteria []string   `json:"completion_criteria"` // 完成判据列表
+	Status             PlanStatus `json:"status"`              // 计划状态
+	Steps              []PlanStep `json:"steps"`               // 步骤列表
 }
 
 // PlanStep 表示执行计划中的单个步骤。
 type PlanStep struct {
-	ID                 ID             `json:"id"`
-	StepNo             int            `json:"step_no"`
-	Title              string         `json:"title"`
-	Description        string         `json:"description,omitempty"`
-	DependsOn          []int          `json:"depends_on"`
-	ToolHint           string         `json:"tool_hint,omitempty"`
-	CompletionCriteria string         `json:"completion_criteria,omitempty"`
-	Status             PlanStepStatus `json:"status"`
+	ID                 ID             `json:"id"`                            // 步骤 ID
+	StepNo             int            `json:"step_no"`                       // 步骤序号
+	Title              string         `json:"title"`                         // 步骤标题
+	Description        string         `json:"description,omitempty"`         // 可选：步骤描述
+	DependsOn          []int          `json:"depends_on"`                    // 依赖的步骤序号
+	ToolHint           string         `json:"tool_hint,omitempty"`           // 可选：建议使用的工具
+	CompletionCriteria string         `json:"completion_criteria,omitempty"` // 可选：步骤完成判据
+	Status             PlanStepStatus `json:"status"`                        // 步骤状态
 }
 
 // ReviewerResult 表示计划审查的结果。
 type ReviewerResult struct {
-	Result  string `json:"result"`
-	Summary string `json:"summary"`
+	Result  string `json:"result"`  // 评审结论
+	Summary string `json:"summary"` // 评审摘要
 }
 
 // Planner 为 Agent 运行创建执行计划。
