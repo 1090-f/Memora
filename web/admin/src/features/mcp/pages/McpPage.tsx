@@ -11,7 +11,7 @@ import { EmptyState } from '@/components/shared/EmptyState';
 import { ErrorState } from '@/components/shared/ErrorState';
 import { LoadingState } from '@/components/shared/LoadingState';
 import { UnavailableState } from '@/components/shared/UnavailableState';
-import { deleteMcpServer, discoverMcpTools, importMcpServers, listMcpServers, setMcpToolEnabled, testMcpServer } from '../api';
+import { deleteMcpServer, discoverMcpTools, importMcpServers, listMcpServers, setMcpServerEnabled, setMcpToolEnabled, testMcpServer } from '../api';
 import type {
   McpServer,
   McpServerConfig,
@@ -23,12 +23,13 @@ const statusLabel: Record<McpServer['connection_status'], string> = {
   unavailable: '不可用',
 };
 
-function ServerCard({ server, onDelete, onTest, onDiscover, onToggle }: {
+function ServerCard({ server, onDelete, onTest, onDiscover, onToggleServer, onToggleTool }: {
   server: McpServer;
   onDelete: (id: string) => void;
   onTest: (id: string) => void;
   onDiscover: (id: string) => void;
-  onToggle: (id: string, enabled: boolean) => void;
+  onToggleServer: (id: string, enabled: boolean) => void;
+  onToggleTool: (id: string, enabled: boolean) => void;
 }) {
   return (
     <Card variant="outlined">
@@ -53,7 +54,7 @@ function ServerCard({ server, onDelete, onTest, onDiscover, onToggle }: {
           <Stack direction="row" alignItems="center" spacing={0.5}>
             <IconButton aria-label="测试连接" onClick={() => onTest(server.id)}><ScienceOutlined /></IconButton>
             <IconButton aria-label="发现工具" onClick={() => onDiscover(server.id)}><SearchOutlined /></IconButton>
-            <Stack direction="row" alignItems="center" spacing={0.5}><Switch checked={server.enabled} onChange={(event) => onToggle(server.id, event.target.checked)} inputProps={{ 'aria-label': `${server.name} 启用` }} /><Typography variant="caption">启用</Typography></Stack>
+            <Stack direction="row" alignItems="center" spacing={0.5}><Switch checked={server.enabled} onChange={(event) => onToggleServer(server.id, event.target.checked)} inputProps={{ 'aria-label': `${server.name} 启用` }} /><Typography variant="caption">启用</Typography></Stack>
             <IconButton aria-label="删除" color="error" onClick={() => onDelete(server.id)}><DeleteOutlineOutlined /></IconButton>
           </Stack>
         </Stack>
@@ -61,7 +62,7 @@ function ServerCard({ server, onDelete, onTest, onDiscover, onToggle }: {
           <Stack spacing={1} mt={2}>
             <Divider />
             <Typography variant="subtitle2">已发现工具</Typography>
-            {server.tools.map((tool) => <ToolRow key={tool.id} tool={tool} onToggle={onToggle} />)}
+            {server.tools.map((tool) => <ToolRow key={tool.id} tool={tool} onToggle={onToggleTool} />)}
           </Stack>
         )}
       </CardContent>
@@ -135,7 +136,8 @@ export function McpPageContent({ status }: { status: CapabilityStatus }) {
     },
     onError: (error) => setActionError(error as Error),
   });
-  const toggle = useMutation({ mutationFn: ({ id, enabled: value }: { id: string; enabled: boolean }) => setMcpToolEnabled(id, value), onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.mcpServers }), onError: (error) => setActionError(error as Error) });
+  const toggleTool = useMutation({ mutationFn: ({ id, enabled: value }: { id: string; enabled: boolean }) => setMcpToolEnabled(id, value), onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.mcpServers }), onError: (error) => setActionError(error as Error) });
+  const toggleServer = useMutation({ mutationFn: ({ id, enabled: value }: { id: string; enabled: boolean }) => setMcpServerEnabled(id, value), onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.mcpServers }), onError: (error) => setActionError(error as Error) });
 
   if (!enabled) return <Stack spacing={3}>
     <Stack direction="row" alignItems="center"><Typography component="h2" variant="h5" fontWeight={750} sx={{ flexGrow: 1 }}>MCP 工具</Typography><Button variant="contained" disabled>新增 MCP 服务</Button></Stack>
@@ -149,7 +151,7 @@ export function McpPageContent({ status }: { status: CapabilityStatus }) {
     {query.isPending && <LoadingState label="正在加载 MCP 服务" />}
     {query.error && <ErrorState error={query.error as Error} onRetry={() => void query.refetch()} />}
     {!query.isPending && !query.error && query.data?.servers.length === 0 && <EmptyState title="暂无 MCP Server" description="导入 Claude Desktop、Cursor 或 Trae 格式的 MCP 配置。" action={<Button variant="contained" onClick={() => setImportOpen(true)}>导入配置</Button>} />}
-    {query.data?.servers.map((server) => <ServerCard key={server.id} server={server} onDelete={(id) => void action.mutateAsync({ type: 'delete', id })} onTest={(id) => void action.mutateAsync({ type: 'test', id })} onDiscover={(id) => void action.mutateAsync({ type: 'discover', id })} onToggle={(id, value) => toggle.mutate({ id, enabled: value })} />)}
+    {query.data?.servers.map((server) => <ServerCard key={server.id} server={server} onDelete={(id) => void action.mutateAsync({ type: 'delete', id })} onTest={(id) => void action.mutateAsync({ type: 'test', id })} onDiscover={(id) => void action.mutateAsync({ type: 'discover', id })} onToggleServer={(id, value) => toggleServer.mutate({ id, enabled: value })} onToggleTool={(id, value) => toggleTool.mutate({ id, enabled: value })} />)}
     <ImportDialog open={importOpen} onClose={() => setImportOpen(false)} onImported={(message) => { setNotice(message); void queryClient.invalidateQueries({ queryKey: queryKeys.mcpServers }); }} />
   </Stack>;
 }

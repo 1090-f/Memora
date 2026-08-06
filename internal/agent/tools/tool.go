@@ -9,7 +9,7 @@ import (
 
 // Tool 定义了一个可被 Agent 调用的工具。
 // 每个工具都提供一份描述其用途的参数规范（Spec），
-// 并在 Run 中根据调用参数实际执行业务逻辑。
+// 并在 run 中根据调用参数实际执行业务逻辑。
 type Tool interface {
 	// Spec 返回该工具的元数据描述（名称、是否只读、超时等）。
 	Spec() contracts.ToolSpec

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/mcp"
 	"github.com/1090-f/Memora/internal/model/dto/request"
 	"github.com/1090-f/Memora/internal/model/dto/response"
@@ -26,6 +27,7 @@ type MCPServerRepository interface {
 	ListByUser(ctx context.Context, userID string) ([]entity.MCPServer, error)
 	Create(ctx context.Context, server *entity.MCPServer) error
 	UpdateStatus(ctx context.Context, serverID, status string, lastErr *string) error
+	UpdateEnabled(ctx context.Context, userID, serverID string, enabled bool) error
 	Delete(ctx context.Context, userID, serverID string) error
 }
 
@@ -47,6 +49,7 @@ type ImportService interface {
 	TestConnection(ctx context.Context, userID string, serverID string) (*response.MCPTestResult, error)
 	DiscoverTools(ctx context.Context, userID string, serverID string) (*response.MCPDiscoverResult, error)
 	UpdateToolStatus(ctx context.Context, userID string, toolID string, enabled bool) error
+	UpdateServerEnabled(ctx context.Context, userID string, serverID string, enabled bool) error
 }
 
 // importService 是 ImportService 的实现。
@@ -480,6 +483,13 @@ func (s *importService) UpdateToolStatus(ctx context.Context, userID string, too
 	return nil
 }
 
+func (s *importService) UpdateServerEnabled(ctx context.Context, userID string, serverID string, enabled bool) error {
+	if err := s.servers.UpdateEnabled(ctx, userID, serverID, enabled); err != nil {
+		return err
+	}
+	return nil
+}
+
 // determineTransport 根据 config 判定传输类型。
 func determineTransport(config *request.MCPServerConfig) string {
 	if config.Transport != nil && (*config.Transport == "streamable_http" || *config.Transport == "stdio") {
@@ -513,13 +523,13 @@ func extractAuthMasked(masked map[string]string) *string {
 // mapErrorToCode 将内部错误映射到响应错误码。
 func mapErrorToCode(err error) string {
 	if errors.Is(err, repository.ErrDuplicateResource) {
-		return "DUPLICATE_RESOURCE"
+		return string(contracts.ErrDuplicateResource)
 	}
 	if errors.Is(err, repository.ErrMCPServerNotFound) {
-		return "RESOURCE_NOT_FOUND"
+		return string(contracts.ErrResourceNotFound)
 	}
 	if strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "required") {
-		return "INVALID_ARGUMENT"
+		return string(contracts.ErrInvalidArgument)
 	}
-	return "INTERNAL_ERROR"
+	return string(contracts.ErrInternal)
 }

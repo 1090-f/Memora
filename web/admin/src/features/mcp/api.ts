@@ -27,3 +27,6 @@ export const discoverMcpTools = (serverId: string) =>
 
 export const setMcpToolEnabled = (toolId: string, enabled: boolean) =>
   apiRequest<{ enabled: boolean }>({ url: `/mcp/tools/${toolId}`, method: 'PATCH', data: { enabled } });
+
+export const setMcpServerEnabled = (serverId: string, enabled: boolean) =>
+  apiRequest<{ enabled: boolean }>({ url: `/mcp/servers/${serverId}/status`, method: 'PATCH', data: { enabled } });

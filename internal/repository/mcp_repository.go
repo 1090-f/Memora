@@ -27,6 +27,8 @@ type MCPServerRepository interface {
 	Create(ctx context.Context, server *entity.MCPServer) error
 	// UpdateStatus 更新 MCP Server 的连接状态与错误信息。
 	UpdateStatus(ctx context.Context, serverID, status string, lastErr *string) error
+	// UpdateEnabled 更新 MCP Server 的启用状态。
+	UpdateEnabled(ctx context.Context, userID, serverID string, enabled bool) error
 	// Delete 软删除 MCP Server（设置 deleted_at）。
 	Delete(ctx context.Context, userID, serverID string) error
 }
@@ -116,6 +118,19 @@ func (r *mcpServerRepository) Delete(ctx context.Context, userID, serverID strin
 	result := r.db.WithContext(ctx).
 		Where("id = ? AND user_id = ? AND deleted_at IS NULL", serverID, userID).
 		Delete(&entity.MCPServer{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrMCPServerNotFound
+	}
+	return nil
+}
+
+func (r *mcpServerRepository) UpdateEnabled(ctx context.Context, userID, serverID string, enabled bool) error {
+	result := r.db.WithContext(ctx).Model(&entity.MCPServer{}).
+		Where("id = ? AND user_id = ? AND deleted_at IS NULL", serverID, userID).
+		Update("enabled", enabled)
 	if result.Error != nil {
 		return result.Error
 	}

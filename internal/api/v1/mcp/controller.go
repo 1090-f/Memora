@@ -6,13 +6,14 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/1090-f/Memora/internal/api/response"
+	"github.com/1090-f/Memora/internal/apperror"
+	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/middleware"
 	"github.com/1090-f/Memora/internal/model/dto/request"
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service"
 	"github.com/1090-f/Memora/pkg/audit"
-	apperrors "github.com/1090-f/Memora/pkg/errors"
-	"github.com/1090-f/Memora/pkg/response"
 	"github.com/gin-gonic/gin"
 )
 
@@ -26,22 +27,22 @@ func NewController(mcp service.ImportService) *Controller { return &Controller{m
 func (ctrl *Controller) Import(c *gin.Context) {
 	user, ok := middleware.GetUser(c)
 	if !ok {
-		response.Failure(c, apperrors.ErrUnauthorized)
+		response.Failure(c, apperror.ErrUnauthorized)
 		return
 	}
 	var req request.MCPImportRequest
 	limited := io.LimitReader(c.Request.Body, 64*1024+1)
 	body, err := io.ReadAll(limited)
 	if err != nil {
-		response.Failure(c, apperrors.ErrInvalidArgument)
+		response.Failure(c, apperror.ErrInvalidArgument)
 		return
 	}
 	if len(body) > 64*1024 {
-		response.Failure(c, apperrors.ErrPayloadTooLarge)
+		response.Failure(c, apperror.ErrPayloadTooLarge)
 		return
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
-		response.Failure(c, apperrors.ErrInvalidArgument)
+		response.Failure(c, apperror.ErrInvalidArgument)
 		return
 	}
 	result, err := ctrl.mcp.Import(c.Request.Context(), user.ID, &req)
@@ -57,7 +58,7 @@ func (ctrl *Controller) Import(c *gin.Context) {
 func (ctrl *Controller) List(c *gin.Context) {
 	user, ok := middleware.GetUser(c)
 	if !ok {
-		response.Failure(c, apperrors.ErrUnauthorized)
+		response.Failure(c, apperror.ErrUnauthorized)
 		return
 	}
 	result, err := ctrl.mcp.List(c.Request.Context(), user.ID)
@@ -72,7 +73,7 @@ func (ctrl *Controller) List(c *gin.Context) {
 func (ctrl *Controller) GetDetail(c *gin.Context) {
 	user, ok := middleware.GetUser(c)
 	if !ok {
-		response.Failure(c, apperrors.ErrUnauthorized)
+		response.Failure(c, apperror.ErrUnauthorized)
 		return
 	}
 	result, err := ctrl.mcp.GetDetail(c.Request.Context(), user.ID, c.Param("id"))
@@ -87,7 +88,7 @@ func (ctrl *Controller) GetDetail(c *gin.Context) {
 func (ctrl *Controller) Delete(c *gin.Context) {
 	user, ok := middleware.GetUser(c)
 	if !ok {
-		response.Failure(c, apperrors.ErrUnauthorized)
+		response.Failure(c, apperror.ErrUnauthorized)
 		return
 	}
 	if err := ctrl.mcp.Delete(c.Request.Context(), user.ID, c.Param("id")); err != nil {
@@ -102,7 +103,7 @@ func (ctrl *Controller) Delete(c *gin.Context) {
 func (ctrl *Controller) Test(c *gin.Context) {
 	user, ok := middleware.GetUser(c)
 	if !ok {
-		response.Failure(c, apperrors.ErrUnauthorized)
+		response.Failure(c, apperror.ErrUnauthorized)
 		return
 	}
 	result, err := ctrl.mcp.TestConnection(c.Request.Context(), user.ID, c.Param("id"))
@@ -118,7 +119,7 @@ func (ctrl *Controller) Test(c *gin.Context) {
 func (ctrl *Controller) Discover(c *gin.Context) {
 	user, ok := middleware.GetUser(c)
 	if !ok {
-		response.Failure(c, apperrors.ErrUnauthorized)
+		response.Failure(c, apperror.ErrUnauthorized)
 		return
 	}
 	result, err := ctrl.mcp.DiscoverTools(c.Request.Context(), user.ID, c.Param("id"))
@@ -134,12 +135,12 @@ func (ctrl *Controller) Discover(c *gin.Context) {
 func (ctrl *Controller) UpdateToolStatus(c *gin.Context) {
 	user, ok := middleware.GetUser(c)
 	if !ok {
-		response.Failure(c, apperrors.ErrUnauthorized)
+		response.Failure(c, apperror.ErrUnauthorized)
 		return
 	}
 	var req request.UpdateToolEnabledRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Failure(c, apperrors.ErrInvalidArgument)
+		response.Failure(c, apperror.ErrInvalidArgument)
 		return
 	}
 	if err := ctrl.mcp.UpdateToolStatus(c.Request.Context(), user.ID, c.Param("id"), req.Enabled); err != nil {
@@ -150,16 +151,36 @@ func (ctrl *Controller) UpdateToolStatus(c *gin.Context) {
 	response.Success(c, http.StatusOK, gin.H{"enabled": req.Enabled})
 }
 
+// UpdateServerStatus 处理 PATCH /servers/:id/status，更新 MCP Server 启用/停用状态。
+func (ctrl *Controller) UpdateServerStatus(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperror.ErrUnauthorized)
+		return
+	}
+	var req request.UpdateToolEnabledRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Failure(c, apperror.ErrInvalidArgument)
+		return
+	}
+	if err := ctrl.mcp.UpdateServerEnabled(c.Request.Context(), user.ID, c.Param("id"), req.Enabled); err != nil {
+		response.Failure(c, mapServiceError(err))
+		return
+	}
+	audit.Record("mcp.servers.update", user.ID, "mcp_server:"+c.Param("id"), middleware.GetRequestID(c), middleware.GetTraceID(c), "succeeded")
+	response.Success(c, http.StatusOK, gin.H{"enabled": req.Enabled})
+}
+
 // mapServiceError 将 Service 层错误映射为统一错误响应。
 func mapServiceError(err error) error {
 	if err == nil {
 		return nil
 	}
 	if errors.Is(err, repository.ErrMCPServerNotFound) {
-		return apperrors.ErrNotFound
+		return apperror.ErrNotFound
 	}
 	if errors.Is(err, repository.ErrDuplicateResource) {
-		return apperrors.ErrConflict
+		return apperror.ErrConflict
 	}
-	return apperrors.New(apperrors.CodeInternal, http.StatusInternalServerError, err)
+	return apperror.New(contracts.ErrInternal, err)
 }
