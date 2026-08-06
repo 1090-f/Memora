@@ -21,3 +21,6 @@ web/admin/.env.local
 
 .idea
 web/.pnpm-store
+
+# personal data
+docs/zxp
