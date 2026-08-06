@@ -97,16 +97,27 @@ func (r *mcpServerRepository) Delete(ctx context.Context, userID, serverID strin
 }
 
 func (r *mcpServerRepository) UpdateEnabled(ctx context.Context, userID, serverID string, enabled bool) error {
-	result := r.db.WithContext(ctx).Model(&entity.MCPServer{}).
-		Where("id = ? AND user_id = ? AND deleted_at IS NULL", serverID, userID).
-		Update("enabled", enabled)
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return ErrMCPServerNotFound
-	}
-	return nil
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&entity.MCPServer{}).
+			Where("id = ? AND user_id = ? AND deleted_at IS NULL", serverID, userID).
+			Update("enabled", enabled)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrMCPServerNotFound
+		}
+
+		if !enabled {
+			result = tx.Model(&entity.MCPTool{}).
+				Where("server_id = ?", serverID).
+				Updates(map[string]any{"enabled": false, "updated_at": tx.NowFunc()})
+			if result.Error != nil {
+				return result.Error
+			}
+		}
+		return nil
+	})
 }
 
 func mapMCPServerResult(server *entity.MCPServer, err error) (*entity.MCPServer, error) {
