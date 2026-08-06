@@ -20,48 +20,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// MCPServerRepository 是 MCP ImportService 的接口。
-type MCPServerRepository interface {
-	FindActiveByName(ctx context.Context, userID, name string) (*entity.MCPServer, error)
-	FindActiveByID(ctx context.Context, userID, serverID string) (*entity.MCPServer, error)
-	ListByUser(ctx context.Context, userID string) ([]entity.MCPServer, error)
-	Create(ctx context.Context, server *entity.MCPServer) error
-	UpdateStatus(ctx context.Context, serverID, status string, lastErr *string) error
-	UpdateEnabled(ctx context.Context, userID, serverID string, enabled bool) error
-	Delete(ctx context.Context, userID, serverID string) error
-}
-
-// MCPToolRepository 是 MCP ImportService 的工具接口。
-type MCPToolRepository interface {
-	FindByServer(ctx context.Context, serverID string) ([]entity.MCPTool, error)
-	BatchCreate(ctx context.Context, tools []entity.MCPTool) error
-	DeleteByServer(ctx context.Context, serverID string) error
-	UpdateEnabledByUser(ctx context.Context, userID, toolID string, enabled bool) error
-	UpdateSchema(ctx context.Context, toolID, schemaHash string, schema []byte) error
-}
-
-// ImportService 定义了 MCP Server 导入的管理接口。
-type ImportService interface {
-	Import(ctx context.Context, userID string, req *request.MCPImportRequest) (*response.MCPImportResponse, error)
-	List(ctx context.Context, userID string) (*response.MCPServerListResponse, error)
-	GetDetail(ctx context.Context, userID string, serverID string) (*response.MCPServerDetailResponse, error)
-	Delete(ctx context.Context, userID string, serverID string) error
-	TestConnection(ctx context.Context, userID string, serverID string) (*response.MCPTestResult, error)
-	DiscoverTools(ctx context.Context, userID string, serverID string) (*response.MCPDiscoverResult, error)
-	UpdateToolStatus(ctx context.Context, userID string, toolID string, enabled bool) error
-	UpdateServerEnabled(ctx context.Context, userID string, serverID string, enabled bool) error
-}
-
 // importService 是 ImportService 的实现。
 type importService struct {
-	servers        MCPServerRepository
-	tools          MCPToolRepository
+	servers        repository.MCPServerRepository
+	tools          repository.MCPToolRepository
 	cfg            *config.Config
 	clientProvider func() mcp.MCPClient
 }
 
 // NewImportService 创建 ImportService 实例。
-func NewImportService(servers MCPServerRepository, tools MCPToolRepository, cfg *config.Config) ImportService {
+func NewImportService(servers repository.MCPServerRepository, tools repository.MCPToolRepository, cfg *config.Config) ImportService {
 	return &importService{
 		servers: servers,
 		tools:   tools,
