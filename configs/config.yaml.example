@@ -14,9 +14,9 @@ app:
   write_timeout: 15s      # 单位/秒
   shutdown_timeout: 10s   # 单位/秒
 
-# 数据库配置（PostgreSQL）
+# 数据库配置（PostgreSQL，使用超级用户连接；密码按本机安装填写）
 database:
-  url: "postgres://memora:password@localhost:5432/memora?sslmode=disable"
+  url: "postgres://postgres:root@localhost:5432/memora?sslmode=disable"
   max_idle_conns: 5
   max_open_conns: 25
 

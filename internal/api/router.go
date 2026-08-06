@@ -8,6 +8,8 @@ import (
 
 	"github.com/1090-f/Memora/internal/api/response"
 	"github.com/1090-f/Memora/internal/api/v1/auth"
+	"github.com/1090-f/Memora/internal/api/v1/directory"
+	"github.com/1090-f/Memora/internal/api/v1/knowledgebase"
 	mcpapi "github.com/1090-f/Memora/internal/api/v1/mcp"
 	"github.com/1090-f/Memora/internal/api/v1/user"
 	apperrors "github.com/1090-f/Memora/internal/apperror"
@@ -30,6 +32,8 @@ type Dependencies struct {
 	Config         config.CORSConfig
 	Auth           service.AuthService
 	Users          service.UserService
+	KnowledgeBases service.KnowledgeBaseService
+	Directories    service.DirectoryService
 	MCP            service.ImportService
 	PostgresHealth HealthCheck
 	RedisHealth    HealthCheck
@@ -49,6 +53,8 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	authRequired := middleware.Auth(deps.Auth)
 	auth.NewController(deps.Auth).RegisterRoutes(v1, authRequired)
 	user.NewController(deps.Users).RegisterRoutes(v1, authRequired)
+	knowledgebase.NewController(deps.KnowledgeBases).RegisterRoutes(v1, authRequired)
+	directory.NewController(deps.Directories).RegisterRoutes(v1, authRequired)
 	if deps.MCP != nil {
 		mcpapi.NewController(deps.MCP).RegisterRoutes(v1, authRequired)
 	}

@@ -1,6 +1,9 @@
 package contracts
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // RetrievalMode 表示文档检索使用的搜索策略。
 type RetrievalMode string
@@ -17,13 +20,14 @@ const (
 
 // SearchConfig 定义文档检索和重排序的参数。
 type SearchConfig struct {
-	KeywordTopK            int      `json:"keyword_top_k"`                // 关键词检索返回条数
-	VectorTopK             int      `json:"vector_top_k"`                 // 向量检索返回条数
-	RRFK                   int      `json:"rrf_k"`                        // RRF 融合常数 k
-	RRFTopK                int      `json:"rrf_top_k"`                    // RRF 融合后保留条数
-	RerankerTopK           int      `json:"reranker_top_k"`               // 重排后保留条数
-	RerankerThreshold      *float64 `json:"reranker_threshold,omitempty"` // 可选：重排分数阈值，低于则丢弃
-	MinimumEffectiveResult int      `json:"minimum_effective_results"`    // 判定"知识充足"的最小有效结果数
+	KeywordTopK            int      `json:"keyword_top_k"`
+	VectorTopK             int      `json:"vector_top_k"`
+	RRFK                   int      `json:"rrf_k"`
+	RRFTopK                int      `json:"rrf_top_k"`
+	RerankerTopK           int      `json:"reranker_top_k"`
+	RerankerThreshold      *float64 `json:"reranker_threshold,omitempty"`
+	RerankerModelID        ID       `json:"reranker_model_id,omitempty"`
+	MinimumEffectiveResult int      `json:"minimum_effective_results"`
 }
 
 // DefaultSearchConfig 返回具有合理默认值的 SearchConfig。
@@ -44,21 +48,33 @@ type RetrievalRequest struct {
 
 // RetrievalItem 表示带有相关性分数的单个检索文档块。
 type RetrievalItem struct {
-	DocumentID   ID       `json:"document_id"`            // 所属文档 ID
-	ChunkID      ID       `json:"chunk_id"`               // 片段 ID
-	Content      string   `json:"content"`                // 片段内容
-	Score        float64  `json:"score"`                  // 融合后的最终得分
-	KeywordRank  *int     `json:"keyword_rank,omitempty"` // 可选：关键词检索排名
-	VectorRank   *int     `json:"vector_rank,omitempty"`  // 可选：向量检索排名
-	IndexVersion int      `json:"index_version"`          // 命中使用的索引版本
-	Citation     Citation `json:"citation"`               // 引用信息
+	DocumentID        ID             `json:"document_id"`
+	DocumentTitle     string         `json:"document_title,omitempty"`
+	DirectoryID       ID             `json:"directory_id,omitempty"`
+	ChunkID           ID             `json:"chunk_id"`
+	Content           string         `json:"content"`
+	SourceLocation    map[string]any `json:"source_location,omitempty"`
+	Score             float64        `json:"score,omitempty"`
+	KeywordScore      *float64       `json:"keyword_score,omitempty"`
+	VectorScore       *float64       `json:"vector_score,omitempty"`
+	KeywordRank       *int           `json:"keyword_rank,omitempty"`
+	VectorRank        *int           `json:"vector_rank,omitempty"`
+	RRFRank           *int           `json:"rrf_rank,omitempty"`
+	RerankerScore     *float64       `json:"reranker_score,omitempty"`
+	FinalRank         *int           `json:"final_rank,omitempty"`
+	IndexVersion      int            `json:"index_version"`
+	DocumentUpdatedAt *time.Time     `json:"document_updated_at,omitempty"`
+	Citation          Citation       `json:"citation"`
 }
 
 // RetrievalResult 包含文档检索操作的结果。
 type RetrievalResult struct {
-	Items           []RetrievalItem `json:"items"`                     // 命中的片段列表
-	RewrittenQuery  string          `json:"rewritten_query,omitempty"` // 可选：改写后的查询
-	KnowledgeStatus string          `json:"knowledge_status"`          // 知识充足性状态标识
+	Query           string          `json:"query,omitempty"`
+	Mode            RetrievalMode   `json:"mode,omitempty"`
+	Items           []RetrievalItem `json:"items"`
+	RewrittenQuery  string          `json:"rewritten_query,omitempty"`
+	KnowledgeStatus string          `json:"knowledge_status"`
+	ElapsedMS       int64           `json:"elapsed_ms,omitempty"`
 }
 
 // RetrievalService 从知识库中检索相关文档。
