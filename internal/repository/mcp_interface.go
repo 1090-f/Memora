@@ -34,6 +34,8 @@ type MCPToolRepository interface {
 	DeleteByServer(ctx context.Context, serverID string) error
 	// UpdateEnabledByUser 更新工具启用状态，并校验工具属于用户。
 	UpdateEnabledByUser(ctx context.Context, userID, toolID string, enabled bool) error
+	// IsEnabled 查询用户拥有的 MCP Server 及其工具是否均处于启用状态。
+	IsEnabled(ctx context.Context, userID, serverID, toolName string) (bool, error)
 	// UpdateSchema 更新工具 Schema（Schema 变更时）。
 	UpdateSchema(ctx context.Context, toolID, schemaHash string, schema []byte) error
 }

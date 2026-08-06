@@ -182,6 +182,19 @@ func (r *mcpToolRepository) UpdateEnabledByUser(ctx context.Context, userID, too
 	return nil
 }
 
+func (r *mcpToolRepository) IsEnabled(ctx context.Context, userID, serverID, toolName string) (bool, error) {
+	var enabled bool
+	err := r.db.WithContext(ctx).Table("mcp_tools AS t").
+		Select("t.enabled AND s.enabled").
+		Joins("JOIN mcp_servers AS s ON s.id = t.server_id").
+		Where("t.server_id = ? AND t.tool_name = ? AND s.user_id = ? AND s.deleted_at IS NULL", serverID, toolName, userID).
+		Scan(&enabled).Error
+	if err != nil {
+		return false, err
+	}
+	return enabled, nil
+}
+
 func (r *mcpToolRepository) UpdateSchema(ctx context.Context, toolID, schemaHash string, schema []byte) error {
 	result := r.db.WithContext(ctx).Model(&entity.MCPTool{}).
 		Where("id = ?", toolID).

@@ -48,8 +48,8 @@ func (e *Executor) Execute(ctx context.Context, toolContext contracts.ToolContex
 		return failedResult(result, contracts.ErrResourceNotFound, "tool not found"), nil
 	}
 	spec := tool.Spec()
-	// 工具必须是已启用的。
-	if !spec.Enabled {
+	// 非 MCP 工具必须是已启用的；MCP 工具在 Run 中实时查询数据库状态。
+	if spec.Type != contracts.ToolTypeMCP && !spec.Enabled {
 		return failedResult(result, contracts.ErrForbidden, "tool is disabled"), nil
 	}
 
