@@ -100,7 +100,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	mcpService := service.NewImportService(mcpServers, mcpTools, cfg)
 
 	router := api.NewRouter(api.Dependencies{
-		Config: cfg.CORS, Auth: authService, Users: userService,
+		Config: cfg.CORS, Auth: authService, Users: userService, MCP: mcpService,
 		KnowledgeBases: kbService, Directories: directoryService,
 		PostgresHealth: func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
 		RedisHealth:    func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
