@@ -144,33 +144,25 @@ func (s *importService) importSingleServer(ctx context.Context, userID string, n
 		return response.ImportedServer{}, err
 	}
 
+	// 连接测试必须通过后才允许写入数据库，避免不可用的 server 出现在 MCP 列表。
+	target := s.buildTarget(serverEntity)
+	client := s.clientProvider()
+	connCtx, connCancel := context.WithTimeout(ctx, time.Duration(serverEntity.ConnectTimeoutMs)*time.Millisecond)
+	defer connCancel()
+	if err := mcp.TestConnection(connCtx, client, target, 0); err != nil {
+		return response.ImportedServer{}, fmt.Errorf("%w: %v", repository.ErrMCPConnectionFailed, err)
+	}
+
+	serverEntity.ConnectionStatus = "available"
+	serverEntity.LastError = nil
 	if err := s.servers.Create(ctx, serverEntity); err != nil {
 		if errors.Is(err, repository.ErrDuplicateResource) {
 			return response.ImportedServer{}, repository.ErrDuplicateResource
 		}
 		return response.ImportedServer{}, err
 	}
-
-	target := s.buildTarget(serverEntity)
-	client := s.clientProvider()
-	connCtx, connCancel := context.WithTimeout(ctx, time.Duration(serverEntity.ConnectTimeoutMs)*time.Millisecond)
-	defer connCancel()
-	if err := mcp.TestConnection(connCtx, client, target, 0); err != nil {
-		statusErr := err.Error()
-		if statusErr == "" {
-			statusErr = "connection failed"
-		}
-		if updErr := s.servers.UpdateStatus(ctx, serverEntity.ID, "unavailable", &statusErr); updErr != nil {
-			return response.ImportedServer{}, updErr
-		}
-		serverEntity.ConnectionStatus = "unavailable"
-		serverEntity.LastError = &statusErr
-	} else {
-		if updErr := s.servers.UpdateStatus(ctx, serverEntity.ID, "available", nil); updErr != nil {
-			return response.ImportedServer{}, updErr
-		}
-		serverEntity.ConnectionStatus = "available"
-		serverEntity.LastError = nil
+	if err := s.servers.UpdateStatus(ctx, serverEntity.ID, "available", nil); err != nil {
+		return response.ImportedServer{}, err
 	}
 
 	tools, warnings := s.discoverAndImportTools(ctx, serverEntity.ID, target)
@@ -522,6 +514,9 @@ func extractAuthMasked(masked map[string]string) *string {
 
 // mapErrorToCode 将内部错误映射到响应错误码。
 func mapErrorToCode(err error) string {
+	if errors.Is(err, repository.ErrMCPConnectionFailed) {
+		return string(contracts.ErrMCPConnectionFailed)
+	}
 	if errors.Is(err, repository.ErrDuplicateResource) {
 		return string(contracts.ErrDuplicateResource)
 	}

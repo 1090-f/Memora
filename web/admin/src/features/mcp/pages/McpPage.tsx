@@ -13,6 +13,7 @@ import { LoadingState } from '@/components/shared/LoadingState';
 import { UnavailableState } from '@/components/shared/UnavailableState';
 import { deleteMcpServer, discoverMcpTools, importMcpServers, listMcpServers, setMcpServerEnabled, setMcpToolEnabled, testMcpServer } from '../api';
 import type {
+  McpImportResponse,
   McpServer,
   McpServerConfig,
 } from '../types';
@@ -84,29 +85,52 @@ function ToolRow({ tool, onToggle }: { tool: NonNullable<McpServer['tools']>[num
 
 function ImportDialog({ open, onClose, onImported }: { open: boolean; onClose: () => void; onImported: (message: string) => void }) {
   const [json, setJson] = useState('{\n  "mcpServers": {\n    "example": {\n      "transport": "streamable_http",\n      "url": "https://example.com/mcp"\n    }\n  }\n}');
+  const [failedServers, setFailedServers] = useState<McpImportResponse['failed']>([]);
   const mutation = useMutation({ mutationFn: importMcpServers });
 
   async function handleSubmit() {
     try {
       const result = await mutation.mutateAsync(JSON.parse(json) as { mcpServers: Record<string, McpServerConfig> });
-      onImported(`导入完成：成功 ${result.summary.imported} 个，失败 ${result.summary.failed} 个`);
-      onClose();
+      setFailedServers(result.failed);
+      if (result.failed.length === 0) {
+        onImported(`导入完成：成功 ${result.summary.imported} 个`);
+        onClose();
+        return;
+      }
+      onImported(`导入完成：成功 ${result.summary.imported} 个，失败 ${result.summary.failed} 个，请查看下方失败原因`);
     } catch {
       // Dialog displays the mutation or JSON error below.
     }
   }
 
+  function handleClose() {
+    setFailedServers([]);
+    mutation.reset();
+    onClose();
+  }
+
   let jsonError = '';
   try { JSON.parse(json); } catch { jsonError = '请输入有效的 JSON'; }
 
-  return <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
+  return <Dialog open={open} onClose={handleClose} fullWidth maxWidth="md">
     <DialogTitle>导入 MCP Server</DialogTitle>
     <DialogContent>
       <Typography color="text.secondary" mb={2}>支持 streamable_http 和 stdio 配置。敏感 Header、环境变量只会在服务端加密保存。</Typography>
       <TextField fullWidth multiline minRows={12} label="MCP 配置 JSON" value={json} onChange={(event) => setJson(event.target.value)} error={!!jsonError} helperText={jsonError || '格式：{ "mcpServers": { "名称": { ... } } }'} inputProps={{ spellCheck: false }} />
       {mutation.error && <Alert severity="error" sx={{ mt: 2 }}>{(mutation.error as Error).message}</Alert>}
+      {failedServers.length > 0 && (
+        <Stack spacing={1} mt={2}>
+          <Alert severity="warning">以下 Server 导入失败：</Alert>
+          {failedServers.map((failed) => (
+            <Alert key={failed.name} severity="error">
+              <Typography fontWeight={600}>{failed.name}</Typography>
+              <Typography variant="body2">{failed.message}</Typography>
+            </Alert>
+          ))}
+        </Stack>
+      )}
     </DialogContent>
-    <DialogActions><Button onClick={onClose}>取消</Button><Button variant="contained" onClick={() => void handleSubmit()} disabled={!!jsonError || mutation.isPending}>导入</Button></DialogActions>
+    <DialogActions><Button onClick={handleClose}>{failedServers.length > 0 ? '关闭' : '取消'}</Button><Button variant="contained" onClick={() => void handleSubmit()} disabled={!!jsonError || mutation.isPending}>导入</Button></DialogActions>
   </Dialog>;
 }
 
@@ -131,7 +155,8 @@ export function McpPageContent({ status }: { status: CapabilityStatus }) {
       }
       if (variables.type === 'discover') {
         const discoverResult = result as Awaited<ReturnType<typeof discoverMcpTools>>;
-        setNotice(`发现 ${discoverResult.tools.length} 个工具${discoverResult.warnings.length ? `，${discoverResult.warnings.length} 个警告` : ''}`);
+        const warningText = discoverResult.warnings.length ? `，警告：${discoverResult.warnings.join('；')}` : '';
+        setNotice(`发现 ${discoverResult.tools.length} 个工具${warningText}`);
       }
     },
     onError: (error) => setActionError(error as Error),
@@ -146,8 +171,8 @@ export function McpPageContent({ status }: { status: CapabilityStatus }) {
 
   return <Stack spacing={3}>
     <Stack direction="row" alignItems="center"><BoxTitle /><Button variant="contained" startIcon={<AddOutlined />} onClick={() => setImportOpen(true)}>导入 MCP 服务</Button></Stack>
-    {notice && <Alert onClose={() => setNotice('')} severity="success">{notice}</Alert>}
-    {actionError && <ErrorState error={actionError} onRetry={() => setActionError(null)} />}
+    {notice && <Alert onClose={() => setNotice('')} severity={notice.startsWith('连接失败') ? 'error' : 'success'}>{notice}</Alert>}
+    {actionError && <Alert severity="error" onClose={() => setActionError(null)}>操作失败：{actionError.message}</Alert>}
     {query.isPending && <LoadingState label="正在加载 MCP 服务" />}
     {query.error && <ErrorState error={query.error as Error} onRetry={() => void query.refetch()} />}
     {!query.isPending && !query.error && query.data?.servers.length === 0 && <EmptyState title="暂无 MCP Server" description="导入 Claude Desktop、Cursor 或 Trae 格式的 MCP 配置。" action={<Button variant="contained" onClick={() => setImportOpen(true)}>导入配置</Button>} />}

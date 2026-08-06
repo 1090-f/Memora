@@ -10,9 +10,10 @@ import (
 )
 
 var (
-	ErrMCPServerNotFound = errors.New("mcp server not found")
-	ErrInvalidArgument   = errors.New("invalid argument")
-	ErrDuplicateResource = errors.New("duplicate resource")
+	ErrMCPServerNotFound   = errors.New("mcp server not found")
+	ErrInvalidArgument     = errors.New("invalid argument")
+	ErrDuplicateResource   = errors.New("duplicate resource")
+	ErrMCPConnectionFailed = errors.New("mcp connection failed")
 )
 
 // MCPServerRepository 定义了 MCP Server 的数据访问接口。
