@@ -5,6 +5,7 @@ import "time"
 // CitationSource 表示引用来源的类型。
 type CitationSource string
 
+// 引用来源常量。
 const (
 	// CitationKnowledge 表示引用来自知识库文档。
 	CitationKnowledge CitationSource = "knowledge_base"

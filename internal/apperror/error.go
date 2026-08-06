@@ -36,5 +36,6 @@ var (
 	ErrForbidden       = New(contracts.ErrForbidden, nil)
 	ErrNotFound        = New(contracts.ErrResourceNotFound, nil)
 	ErrConflict        = New(contracts.ErrDuplicateResource, nil)
+	ErrPayloadTooLarge = New(contracts.ErrPayloadTooLarge, nil)
 	ErrInternal        = New(contracts.ErrInternal, nil)
 )

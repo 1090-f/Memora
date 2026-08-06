@@ -20,7 +20,7 @@ export const capabilities: Record<CapabilityKey, CapabilityStatus> = {
   conversation: 'backend_pending',
   agentRun: 'backend_pending',
   memory: 'backend_pending',
-  mcp: 'backend_pending',
+  mcp: 'available',
   search: 'backend_pending',
   model: 'backend_pending',
 };

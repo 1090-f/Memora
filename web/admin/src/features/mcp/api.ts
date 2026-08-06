@@ -1,9 +1,32 @@
 import { apiRequest } from '@/api/client';
-import type { PageResult } from '@/features/knowledge-base/types';
-import type { McpServer, McpTool } from './types';
+import type {
+  McpDiscoverResult,
+  McpImportRequest,
+  McpImportResponse,
+  McpServerDetailResponse,
+  McpServerListResponse,
+  McpTestResult,
+} from './types';
 
-export const listMcpServers = (params: Record<string, unknown> = {}) =>
-  apiRequest<PageResult<McpServer>>({ url: '/mcp/servers', params });
-export const listMcpTools = (serverId: string) => apiRequest<McpTool[]>({ url: `/mcp/servers/${serverId}/tools` });
+export const listMcpServers = () => apiRequest<McpServerListResponse>({ url: '/mcp/servers' });
+
+export const getMcpServer = (serverId: string) =>
+  apiRequest<McpServerDetailResponse>({ url: `/mcp/servers/${serverId}` });
+
+export const importMcpServers = (data: McpImportRequest) =>
+  apiRequest<McpImportResponse>({ url: '/mcp/servers/import', method: 'POST', data });
+
+export const deleteMcpServer = (serverId: string) =>
+  apiRequest<{ deleted: boolean }>({ url: `/mcp/servers/${serverId}`, method: 'DELETE' });
+
+export const testMcpServer = (serverId: string) =>
+  apiRequest<McpTestResult>({ url: `/mcp/servers/${serverId}/test`, method: 'POST' });
+
+export const discoverMcpTools = (serverId: string) =>
+  apiRequest<McpDiscoverResult>({ url: `/mcp/servers/${serverId}/discover`, method: 'POST' });
+
 export const setMcpToolEnabled = (toolId: string, enabled: boolean) =>
-  apiRequest<McpTool>({ url: `/mcp/tools/${toolId}/enabled`, method: 'PATCH', data: { enabled } });
+  apiRequest<{ enabled: boolean }>({ url: `/mcp/tools/${toolId}`, method: 'PATCH', data: { enabled } });
+
+export const setMcpServerEnabled = (serverId: string, enabled: boolean) =>
+  apiRequest<{ enabled: boolean }>({ url: `/mcp/servers/${serverId}/status`, method: 'PATCH', data: { enabled } });
