@@ -3,7 +3,6 @@ package mcp
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 
@@ -51,7 +50,6 @@ func (ctrl *Controller) Import(c *gin.Context) {
 		response.Failure(c, mapServiceError(err))
 		return
 	}
-	fmt.Println(result.Imported, "\n", result.Summary, "\n", result.Failed)
 	audit.Record("mcp.servers.import", user.ID, "mcp_servers", middleware.GetRequestID(c), middleware.GetTraceID(c), "succeeded")
 	response.Success(c, http.StatusOK, result)
 }
