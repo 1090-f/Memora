@@ -207,7 +207,11 @@ func (s *importService) importSingleServer(ctx context.Context, userID string, n
 	}
 	var warnings []string
 	if batchErr := s.tools.BatchCreate(ctx, toolEntities); batchErr != nil {
-		warnings = []string{fmt.Sprintf("工具导入失败: %s", batchErr.Error())}
+		if errors.Is(batchErr, repository.ErrDuplicateResource) {
+			warnings = []string{"工具已导入，不能重复导入"}
+		} else {
+			warnings = []string{fmt.Sprintf("工具导入失败: %s", batchErr.Error())}
+		}
 	}
 
 	return response.ImportedServer{
@@ -377,10 +381,34 @@ func (s *importService) discoverAndImportTools(ctx context.Context, serverID str
 	}
 
 	if err := s.tools.BatchCreate(ctx, toolEntities); err != nil {
+		if errors.Is(err, repository.ErrDuplicateResource) {
+			return toolSummaries, []string{buildDuplicateToolWarning(ctx, s, serverID, toolEntities)}
+		}
 		return toolSummaries, []string{fmt.Sprintf("工具导入失败: %s", err.Error())}
 	}
 
 	return toolSummaries, nil
+}
+
+// buildDuplicateToolWarning 生成"工具已导入，不能重复导入"的警告信息，并列出已存在的工具名。
+func buildDuplicateToolWarning(ctx context.Context, s *importService, serverID string, toolEntities []entity.MCPTool) string {
+	existing, findErr := s.tools.FindByServer(ctx, serverID)
+	if findErr == nil {
+		existingSet := make(map[string]struct{}, len(existing))
+		for _, e := range existing {
+			existingSet[e.ToolName] = struct{}{}
+		}
+		var duplicates []string
+		for _, t := range toolEntities {
+			if _, ok := existingSet[t.ToolName]; ok {
+				duplicates = append(duplicates, t.ToolName)
+			}
+		}
+		if len(duplicates) > 0 {
+			return fmt.Sprintf("工具已导入，不能重复导入: %s", strings.Join(duplicates, ", "))
+		}
+	}
+	return "工具已导入，不能重复导入"
 }
 
 func (s *importService) buildTarget(server *entity.MCPServer) mcp.MCPServerTarget {
