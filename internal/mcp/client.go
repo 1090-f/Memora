@@ -41,6 +41,47 @@ type MCPClient interface {
 	Initialize(ctx context.Context, target MCPServerTarget, timeout time.Duration) error
 	ListTools(ctx context.Context, target MCPServerTarget, timeout time.Duration) ([]MCPServerTool, error)
 	CallTool(ctx context.Context, target MCPServerTarget, toolName string, arguments json.RawMessage, timeout time.Duration) (json.RawMessage, error)
+	OpenSession(ctx context.Context, target MCPServerTarget) (MCPSession, error)
+}
+
+// MCPSession 表示一个已建立的 MCP 连接，支持在同一连接上执行多个操作。
+type MCPSession interface {
+	Initialize(ctx context.Context) error
+	ListTools(ctx context.Context) ([]MCPServerTool, error)
+	Close() error
+}
+
+type mcpSession struct {
+	cli *client.Client
+}
+
+func (s *mcpSession) Initialize(ctx context.Context) error {
+	_, err := s.cli.Initialize(ctx, initializeRequest())
+	return err
+}
+
+func (s *mcpSession) ListTools(ctx context.Context) ([]MCPServerTool, error) {
+	result, err := s.cli.ListTools(ctx, mcp.ListToolsRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("list MCP tools: %w", err)
+	}
+	tools := make([]MCPServerTool, 0, len(result.Tools))
+	for _, item := range result.Tools {
+		schema, err := json.Marshal(item.InputSchema)
+		if err != nil {
+			return nil, fmt.Errorf("marshal input schema for %q: %w", item.Name, err)
+		}
+		tools = append(tools, MCPServerTool{
+			Name:        item.Name,
+			Description: item.Description,
+			InputSchema: schema,
+		})
+	}
+	return tools, nil
+}
+
+func (s *mcpSession) Close() error {
+	return s.cli.Close()
 }
 
 type mcpClient struct{}
@@ -49,7 +90,7 @@ type mcpClient struct{}
 func NewMCPClient() MCPClient { return &mcpClient{} }
 
 func (c *mcpClient) Initialize(ctx context.Context, target MCPServerTarget, timeout time.Duration) error {
-	ctx, cancel := withTimeout(ctx, timeout, 5*time.Second)
+	ctx, cancel := withTimeout(ctx, timeout, 60*time.Second)
 	defer cancel()
 	cli, err := c.open(ctx, target)
 	if err != nil {
@@ -61,7 +102,7 @@ func (c *mcpClient) Initialize(ctx context.Context, target MCPServerTarget, time
 }
 
 func (c *mcpClient) ListTools(ctx context.Context, target MCPServerTarget, timeout time.Duration) ([]MCPServerTool, error) {
-	ctx, cancel := withTimeout(ctx, timeout, 10*time.Second)
+	ctx, cancel := withTimeout(ctx, timeout, 60*time.Second)
 	defer cancel()
 	cli, err := c.open(ctx, target)
 	if err != nil {
@@ -87,7 +128,7 @@ func (c *mcpClient) ListTools(ctx context.Context, target MCPServerTarget, timeo
 }
 
 func (c *mcpClient) CallTool(ctx context.Context, target MCPServerTarget, toolName string, arguments json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
-	ctx, cancel := withTimeout(ctx, timeout, 30*time.Second)
+	ctx, cancel := withTimeout(ctx, timeout, 120*time.Second)
 	defer cancel()
 	cli, err := c.open(ctx, target)
 	if err != nil {
@@ -112,6 +153,14 @@ func (c *mcpClient) CallTool(ctx context.Context, target MCPServerTarget, toolNa
 		return nil, fmt.Errorf("response exceeds maximum size of %d bytes", target.MaxResponseBytes)
 	}
 	return data, nil
+}
+
+func (c *mcpClient) OpenSession(ctx context.Context, target MCPServerTarget) (MCPSession, error) {
+	cli, err := c.open(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	return &mcpSession{cli: cli}, nil
 }
 
 func (c *mcpClient) open(ctx context.Context, target MCPServerTarget) (*client.Client, error) {

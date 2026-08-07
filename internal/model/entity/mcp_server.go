@@ -18,8 +18,8 @@ type MCPServer struct {
 	EnvCiphertext     []byte     `gorm:"column:env_ciphertext" json:"-"`
 	AuthCiphertext    []byte     `gorm:"column:auth_ciphertext" json:"-"`
 	AuthMasked        *string    `gorm:"column:auth_masked" json:"auth_masked,omitempty"`
-	ConnectTimeoutMs  int        `gorm:"column:connect_timeout_ms;not null;default:5000" json:"connect_timeout_ms"`
-	CallTimeoutMs     int        `gorm:"column:call_timeout_ms;not null;default:30000" json:"call_timeout_ms"`
+	ConnectTimeoutMs  int        `gorm:"column:connect_timeout_ms;not null;default:30000" json:"connect_timeout_ms"`
+	CallTimeoutMs     int        `gorm:"column:call_timeout_ms;not null;default:120000" json:"call_timeout_ms"`
 	MaxResponseBytes  int        `gorm:"column:max_response_bytes;not null;default:1048576" json:"max_response_bytes"`
 	Enabled           bool       `gorm:"column:enabled;not null;default:true" json:"enabled"`
 	ConnectionStatus  string     `gorm:"column:connection_status;not null;default:unknown" json:"connection_status"`
