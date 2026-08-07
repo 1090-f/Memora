@@ -31,11 +31,14 @@ func (ctrl *Controller) Create(c *gin.Context) {
 		response.Failure(c, apperrors.ErrInvalidArgument)
 		return
 	}
+	// 错误已由 Repository→Service 映射为 AppError（携带稳定错误码），
+	// 此处透传，由 response.Failure 统一转换为 HTTP 响应。
 	result, err := ctrl.kbs.Create(c.Request.Context(), user.ID, &req)
 	if err != nil {
 		response.Failure(c, err)
 		return
 	}
+	// 操作成功后才记审计日志，并附带请求 ID 与链路 ID 便于追溯。
 	audit.Record("knowledge_base.create", user.ID, "knowledge_base:"+result.ID, middleware.GetRequestID(c), middleware.GetTraceID(c), "succeeded")
 	response.Success(c, http.StatusCreated, result)
 }
@@ -143,6 +146,7 @@ func (ctrl *Controller) UpdateSearchConfig(c *gin.Context) {
 	response.Success(c, http.StatusOK, result)
 }
 
+// parseIntDefault 解析查询参数为整数，缺失或非法时返回默认值。
 func parseIntDefault(value string, defaultValue int) int {
 	if value == "" {
 		return defaultValue

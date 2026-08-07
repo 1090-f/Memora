@@ -1,0 +1,407 @@
+package repository
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/1090-f/Memora/internal/model/entity"
+	"gorm.io/gorm"
+)
+
+var (
+	// ErrDocumentNotFound 表示未找到指定文档。
+	ErrDocumentNotFound = errors.New("文档不存在")
+	// ErrImportTaskNotFound 表示未找到指定导入任务。
+	ErrImportTaskNotFound = errors.New("导入任务不存在")
+	// ErrImportTaskConflict 表示任务状态并发冲突（另一 Worker 抢先领取）。
+	ErrImportTaskConflict = errors.New("导入任务状态冲突")
+)
+
+// importTaskLease 是导入任务的 Worker 租约时长：running 超过该时长视为 Worker 崩溃，恢复为 pending。
+const importTaskLease = 10 * time.Minute
+
+// ImportTaskLease 返回导入任务的租约时长，供 Service 计算恢复窗口。
+func ImportTaskLease() time.Duration { return importTaskLease }
+
+// documentRepository 是 DocumentRepository 接口的 GORM 实现。
+type documentRepository struct{ db *gorm.DB }
+
+// NewDocumentRepository 创建一个新的文档仓储实例。
+func NewDocumentRepository(db *gorm.DB) DocumentRepository {
+	return &documentRepository{db: db}
+}
+
+// Create 创建文档。
+func (r *documentRepository) Create(ctx context.Context, doc *entity.Document) error {
+	err := dbFromContext(ctx, r.db).WithContext(ctx).Create(doc).Error
+	if err != nil {
+		return fmt.Errorf("创建文档失败: %w", err)
+	}
+	return nil
+}
+
+// FindByID 按文档 ID 与用户查询文档。
+func (r *documentRepository) FindByID(ctx context.Context, userID, documentID string) (*entity.Document, error) {
+	var doc entity.Document
+	// 查询强制带 user_id 与 deleted_at，防止越权访问他人文档或命中已删除记录。
+	err := dbFromContext(ctx, r.db).WithContext(ctx).
+		Where("id = ? AND user_id = ? AND deleted_at IS NULL", documentID, userID).
+		First(&doc).Error
+	return mapDocumentResult(&doc, err)
+}
+
+// FindByIDInKB 按文档 ID、用户与知识库查询文档。
+func (r *documentRepository) FindByIDInKB(ctx context.Context, userID, kbID, documentID string) (*entity.Document, error) {
+	var doc entity.Document
+	// 归属过滤包含 user_id 与 knowledge_base_id，确保文档确实位于该知识库。
+	err := dbFromContext(ctx, r.db).WithContext(ctx).
+		Where("id = ? AND user_id = ? AND knowledge_base_id = ? AND deleted_at IS NULL", documentID, userID, kbID).
+		First(&doc).Error
+	return mapDocumentResult(&doc, err)
+}
+
+// ListByKB 分页查询知识库文档列表。
+func (r *documentRepository) ListByKB(ctx context.Context, userID, kbID string, page, pageSize int, filter DocumentFilter) ([]*entity.Document, int64, error) {
+	db := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.Document{})
+	db = db.Where("user_id = ? AND knowledge_base_id = ? AND deleted_at IS NULL", userID, kbID)
+	// 关键词先去首尾空白并统一小写，标题同样转小写后模糊匹配，保证大小写不敏感。
+	if keyword := strings.TrimSpace(filter.Keyword); keyword != "" {
+		db = db.Where("LOWER(title) LIKE ?", "%"+strings.ToLower(keyword)+"%")
+	}
+	if filter.DirectoryID != nil {
+		db = db.Where("directory_id = ?", *filter.DirectoryID)
+	}
+	if filter.ProcessingStatus != nil {
+		db = db.Where("processing_status = ?", *filter.ProcessingStatus)
+	}
+	if filter.SourceType != nil {
+		db = db.Where("source_type = ?", *filter.SourceType)
+	}
+	// 先 Count 取总数（供前端分页），再以同样过滤条件 LIMIT/OFFSET 取当前页数据。
+	var total int64
+	if err := db.Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("统计文档失败: %w", err)
+	}
+	var items []*entity.Document
+	if err := db.Order("updated_at DESC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&items).Error; err != nil {
+		return nil, 0, fmt.Errorf("查询文档列表失败: %w", err)
+	}
+	return items, total, nil
+}
+
+// SoftDelete 软删除文档。
+func (r *documentRepository) SoftDelete(ctx context.Context, userID, documentID string) error {
+	// WHERE 带 deleted_at IS NULL：仅更新未删除行，已删除或不存在时 RowsAffected 为 0 报未找到。
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.Document{}).
+		Where("id = ? AND user_id = ? AND deleted_at IS NULL", documentID, userID).
+		Update("deleted_at", time.Now().UTC())
+	if result.Error != nil {
+		return fmt.Errorf("删除文档失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrDocumentNotFound
+	}
+	return nil
+}
+
+// FindBySourceHash 按用户、知识库与源哈希查询未删除文档。
+func (r *documentRepository) FindBySourceHash(ctx context.Context, userID, kbID, sourceHash string) (*entity.Document, error) {
+	// 按文件哈希判重（duplicate_policy=skip 用），限定同一用户同一知识库且未删除。
+	var doc entity.Document
+	err := dbFromContext(ctx, r.db).WithContext(ctx).
+		Where("user_id = ? AND knowledge_base_id = ? AND file_hash = ? AND deleted_at IS NULL", userID, kbID, sourceHash).
+		First(&doc).Error
+	return mapDocumentResult(&doc, err)
+}
+
+// FindByImportTask 通过 import_tasks.document_id 查询导入任务关联的文档。
+func (r *documentRepository) FindByImportTask(ctx context.Context, taskID string) (*entity.Document, error) {
+	var doc entity.Document
+	// 经 import_tasks.document_id 反查关联文档，用于导入流程中任务完成后回填。
+	err := dbFromContext(ctx, r.db).WithContext(ctx).
+		Table("documents").
+		Joins("JOIN import_tasks ON import_tasks.document_id = documents.id").
+		Where("import_tasks.id = ? AND documents.deleted_at IS NULL", taskID).
+		First(&doc).Error
+	return mapDocumentResult(&doc, err)
+}
+
+// UpdateProcessing 更新文档处理状态与相关字段。
+func (r *documentRepository) UpdateProcessing(ctx context.Context, docID string, updates map[string]any) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	updates["updated_at"] = time.Now().UTC()
+	// 用 map 动态更新，仅修改调用方传入的字段，避免误覆盖其他列。
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.Document{}).
+		Where("id = ? AND deleted_at IS NULL", docID).Updates(updates)
+	if result.Error != nil {
+		return fmt.Errorf("更新文档处理状态失败: %w", result.Error)
+	}
+	// 目标行不存在或已软删除时 RowsAffected 为 0，报未找到。
+	if result.RowsAffected == 0 {
+		return ErrDocumentNotFound
+	}
+	return nil
+}
+
+func mapDocumentResult(doc *entity.Document, err error) (*entity.Document, error) {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrDocumentNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询文档失败: %w", err)
+	}
+	return doc, nil
+}
+
+// importTaskRepository 是 ImportTaskRepository 接口的 GORM 实现。
+type importTaskRepository struct{ db *gorm.DB }
+
+// NewImportTaskRepository 创建一个新的导入任务仓储实例。
+func NewImportTaskRepository(db *gorm.DB) ImportTaskRepository {
+	return &importTaskRepository{db: db}
+}
+
+// Create 创建导入任务。
+func (r *importTaskRepository) Create(ctx context.Context, task *entity.ImportTask) error {
+	err := dbFromContext(ctx, r.db).WithContext(ctx).Create(task).Error
+	if err != nil {
+		return fmt.Errorf("创建导入任务失败: %w", err)
+	}
+	return nil
+}
+
+// FindByID 按任务 ID 与用户查询任务。
+func (r *importTaskRepository) FindByID(ctx context.Context, userID, taskID string) (*entity.ImportTask, error) {
+	var task entity.ImportTask
+	err := dbFromContext(ctx, r.db).WithContext(ctx).
+		Where("id = ? AND user_id = ?", taskID, userID).
+		First(&task).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrImportTaskNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询导入任务失败: %w", err)
+	}
+	return &task, nil
+}
+
+// FindByIDInternal 按任务 ID 查询任务，仅 Worker 内部使用。
+func (r *importTaskRepository) FindByIDInternal(ctx context.Context, taskID string) (*entity.ImportTask, error) {
+	var task entity.ImportTask
+	err := dbFromContext(ctx, r.db).WithContext(ctx).
+		Where("id = ?", taskID).First(&task).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrImportTaskNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询导入任务失败: %w", err)
+	}
+	return &task, nil
+}
+
+// UpdateObjectInfo 更新任务的 MinIO 对象信息与源哈希。
+func (r *importTaskRepository) UpdateObjectInfo(ctx context.Context, userID, taskID string, bucket, objectKey string, sourceHash *string) error {
+	updates := map[string]any{
+		"minio_bucket":     bucket,
+		"minio_object_key": objectKey,
+	}
+	if sourceHash != nil {
+		updates["source_hash"] = *sourceHash
+	}
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.ImportTask{}).
+		Where("id = ? AND user_id = ?", taskID, userID).Updates(updates)
+	if result.Error != nil {
+		return fmt.Errorf("更新导入任务对象信息失败: %w", result.Error)
+	}
+	// RowsAffected 为 0 表示任务不存在或不属于该用户。
+	if result.RowsAffected == 0 {
+		return ErrImportTaskNotFound
+	}
+	return nil
+}
+
+// Delete 物理删除任务记录。
+func (r *importTaskRepository) Delete(ctx context.Context, userID, taskID string) error {
+	err := dbFromContext(ctx, r.db).WithContext(ctx).
+		Where("id = ? AND user_id = ?", taskID, userID).Delete(&entity.ImportTask{}).Error
+	if err != nil {
+		return fmt.Errorf("删除导入任务失败: %w", err)
+	}
+	return nil
+}
+
+// ListByKB 分页查询知识库导入任务。
+func (r *importTaskRepository) ListByKB(ctx context.Context, userID, kbID string, page, pageSize int) ([]*entity.ImportTask, int64, error) {
+	db := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.ImportTask{})
+	db = db.Where("user_id = ? AND knowledge_base_id = ?", userID, kbID)
+	// 先 Count 总数再 LIMIT/OFFSET 取当前页，保证列表分页元数据完整。
+	var total int64
+	if err := db.Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("统计导入任务失败: %w", err)
+	}
+	var items []*entity.ImportTask
+	if err := db.Order("created_at DESC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&items).Error; err != nil {
+		return nil, 0, fmt.Errorf("查询导入任务列表失败: %w", err)
+	}
+	return items, total, nil
+}
+
+// ReservePending 使用 FOR UPDATE SKIP LOCKED 领取一个 pending 任务。
+// 领取前先恢复卡在 running 且超过租约时间的任务（防运行中 Worker 崩溃导致任务卡死）。
+// 领取成功时：将任务置为 running 并写 started_at；无任务时返回 nil, nil。
+func (r *importTaskRepository) ReservePending(ctx context.Context) (*entity.ImportTask, error) {
+	db := dbFromContext(ctx, r.db)
+	if err := r.recoverStaleLocked(ctx, db); err != nil {
+		return nil, err
+	}
+	var task entity.ImportTask
+	// 事务内 SELECT ... FOR UPDATE SKIP LOCKED：跳过被其他 Worker 已锁定的行，天然避免并发重复领取。
+	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		err := tx.Raw(`
+			SELECT id, user_id, knowledge_base_id, target_directory_id, source_type,
+			       file_name, file_size, mime_type, source_url, source_hash,
+			       minio_bucket, minio_object_key, duplicate_policy, status,
+			       current_step, failure_reason, document_id, created_at, started_at, completed_at
+			FROM import_tasks
+			WHERE status = 'pending'
+			ORDER BY created_at ASC
+			LIMIT 1
+			FOR UPDATE SKIP LOCKED`).Scan(&task).Error
+		if err != nil {
+			return fmt.Errorf("领取导入任务失败: %w", err)
+		}
+		if task.ID == "" {
+			return nil
+		}
+		now := time.Now().UTC()
+		// 带 status='pending' 条件做状态迁移，防止行锁释放前被其他进程抢先改为 running。
+		result := tx.Model(&entity.ImportTask{}).
+			Where("id = ? AND status = 'pending'", task.ID).
+			Updates(map[string]any{"status": "running", "started_at": now})
+		if result.Error != nil {
+			return fmt.Errorf("领取导入任务失败: %w", result.Error)
+		}
+		// 0 行受影响说明状态已被抢占，返回冲突交由外层转为"无任务"。
+		if result.RowsAffected == 0 {
+			return ErrImportTaskConflict
+		}
+		task.Status = "running"
+		task.StartedAt = &now
+		return nil
+	})
+	if errors.Is(err, ErrImportTaskConflict) {
+		// 另一个 Worker 抢先领取，返回无任务。
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if task.ID == "" {
+		return nil, nil
+	}
+	return &task, nil
+}
+
+// recoverStaleLocked 将 running 且 started_at 超过租约的任务恢复为 pending。
+// 每次领取前执行，成本低（受 idx_import_tasks_worker 索引约束）。
+func (r *importTaskRepository) recoverStaleLocked(ctx context.Context, db *gorm.DB) error {
+	staleBefore := time.Now().UTC().Add(-importTaskLease).Unix()
+	result := db.WithContext(ctx).Model(&entity.ImportTask{}).
+		Where("status = 'running' AND started_at IS NOT NULL AND started_at < ?", time.Unix(staleBefore, 0).UTC()).
+		Updates(map[string]any{"status": "pending", "started_at": nil, "failure_reason": "worker 租约过期，任务恢复为待处理"})
+	if result.Error != nil {
+		return fmt.Errorf("恢复过期导入任务失败: %w", result.Error)
+	}
+	return nil
+}
+
+// RecoverStale 将卡在 running 且 started_at 早于 staleBefore 的任务恢复为 pending。
+func (r *importTaskRepository) RecoverStale(ctx context.Context, staleBefore int64) (int64, error) {
+	staleTime := time.Unix(staleBefore, 0).UTC()
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.ImportTask{}).
+		Where("status = 'running' AND started_at IS NOT NULL AND started_at < ?", staleTime).
+		Updates(map[string]any{"status": "pending", "started_at": nil, "failure_reason": "worker 租约过期，任务恢复为待处理"})
+	if result.Error != nil {
+		return 0, fmt.Errorf("恢复过期导入任务失败: %w", result.Error)
+	}
+	return result.RowsAffected, nil
+}
+
+// CompleteSucceeded 将任务标记为 succeeded 并记录完成时间与关联文档。
+// 幂等：允许 running 或已 succeeded 状态（Handler 编排与 Runner 完成回调可能重复调用）。
+func (r *importTaskRepository) CompleteSucceeded(ctx context.Context, taskID string, documentID *string) error {
+	updates := map[string]any{"status": "succeeded", "completed_at": time.Now().UTC(), "failure_reason": nil}
+	if documentID != nil {
+		updates["document_id"] = *documentID
+	}
+	// 允许 running 或已 succeeded：Handler 编排与 Runner 完成回调可能重复调用，保证幂等。
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.ImportTask{}).
+		Where("id = ? AND status IN ('running', 'succeeded')", taskID).Updates(updates)
+	if result.Error != nil {
+		return fmt.Errorf("完成导入任务失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrImportTaskNotFound
+	}
+	return nil
+}
+
+// FailTask 将任务标记为 failed 并记录失败原因。
+func (r *importTaskRepository) FailTask(ctx context.Context, taskID, failureReason string) error {
+	// 仅允许 running 状态标记失败，避免终态(succeeded/skipped)被意外覆盖。
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.ImportTask{}).
+		Where("id = ? AND status = 'running'", taskID).
+		Updates(map[string]any{"status": "failed", "failure_reason": failureReason, "completed_at": time.Now().UTC()})
+	if result.Error != nil {
+		return fmt.Errorf("标记导入任务失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrImportTaskNotFound
+	}
+	return nil
+}
+
+// RetryTask 将 failed 任务重置为 pending（显式重试）。
+func (r *importTaskRepository) RetryTask(ctx context.Context, taskID string) error {
+	// 仅允许 failed 状态重置，防止正在处理的任务被并发重试打回。
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.ImportTask{}).
+		Where("id = ? AND status = 'failed'", taskID).
+		Updates(map[string]any{"status": "pending", "failure_reason": nil, "completed_at": nil, "started_at": nil})
+	if result.Error != nil {
+		return fmt.Errorf("重试导入任务失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrImportTaskNotFound
+	}
+	return nil
+}
+
+// SetRunningStep 更新 running 任务的当前步骤。
+func (r *importTaskRepository) SetRunningStep(ctx context.Context, taskID, step string) error {
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.ImportTask{}).
+		Where("id = ? AND status = 'running'", taskID).Update("current_step", step)
+	if result.Error != nil {
+		return fmt.Errorf("更新导入任务步骤失败: %w", result.Error)
+	}
+	return nil
+}
+
+// SkipTask 将任务标记为 skipped。
+func (r *importTaskRepository) SkipTask(ctx context.Context, taskID string) error {
+	// 去重策略命中时跳过；不限状态直接置为终态 skipped 并记录完成时间。
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.ImportTask{}).
+		Where("id = ?", taskID).
+		Updates(map[string]any{"status": "skipped", "completed_at": time.Now().UTC()})
+	if result.Error != nil {
+		return fmt.Errorf("跳过导入任务失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrImportTaskNotFound
+	}
+	return nil
+}

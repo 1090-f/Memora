@@ -52,11 +52,13 @@ func (m *RetrievalMock) Retrieve(ctx context.Context, request contracts.Retrieva
 		ElapsedMS:       3,
 	}
 
+	// 命中 insufficient 关键词或强制开关时，返回知识不足状态以便联调该分支。
 	if m.options.AlwaysInsufficient || containsInsufficient(request.Query) {
 		result.KnowledgeStatus = "insufficient"
 		return result, nil
 	}
 
+	// 数量与分数支持覆盖；默认固定为 3 条、0.91 分，保证结果可预测。
 	count := m.options.ItemCount
 	if count <= 0 {
 		count = 3
@@ -66,6 +68,7 @@ func (m *RetrievalMock) Retrieve(ctx context.Context, request contracts.Retrieva
 		score = 0.91
 	}
 	result.Items = make([]contracts.RetrievalItem, 0, count)
+	// 逐条生成可预测结果：三种分数各自递减，模拟真实检索的分层排序。
 	for i := 0; i < count; i++ {
 		rank := i + 1
 		keywordRank := rank
@@ -107,10 +110,12 @@ func (m *RetrievalMock) Retrieve(ctx context.Context, request contracts.Retrieva
 	return result, nil
 }
 
+// containsInsufficient 大小写不敏感地判断查询是否包含 insufficient 关键词。
 func containsInsufficient(query string) bool {
 	return strings.Contains(strings.ToLower(query), "insufficient")
 }
 
+// contains 判断字符串 s 是否包含子串 substr。
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }

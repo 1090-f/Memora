@@ -30,12 +30,20 @@ func New(code contracts.ErrorCode, cause error) *AppError {
 	return &AppError{Code: code, Cause: cause}
 }
 
+// 预定义的应用级错误变量，供业务层直接返回。
+// 调用方可通过 AppError.Details 附加额外响应信息。
 var (
+	// ErrInvalidArgument 参数无效（HTTP 400）。
 	ErrInvalidArgument = New(contracts.ErrInvalidArgument, nil)
-	ErrUnauthorized    = New(contracts.ErrUnauthorized, nil)
-	ErrForbidden       = New(contracts.ErrForbidden, nil)
-	ErrNotFound        = New(contracts.ErrResourceNotFound, nil)
-	ErrConflict        = New(contracts.ErrDuplicateResource, nil)
-	ErrPayloadTooLarge = New(contracts.ErrPayloadTooLarge, nil)
+	// ErrUnauthorized 未授权，通常表示缺少或无效的认证凭证（HTTP 401）。
+	ErrUnauthorized = New(contracts.ErrUnauthorized, nil)
+	// ErrForbidden 无权访问，认证通过但权限不足（HTTP 403）。
+	ErrForbidden = New(contracts.ErrForbidden, nil)
+	// ErrNotFound 资源不存在（HTTP 404）。
+	ErrNotFound = New(contracts.ErrResourceNotFound, nil)
+	// ErrConflict 资源冲突，如重复创建（HTTP 409）。
+	ErrConflict = New(contracts.ErrDuplicateResource, nil)
+	// ErrInternal 服务器内部错误（HTTP 500）。
 	ErrInternal        = New(contracts.ErrInternal, nil)
+	ErrPayloadTooLarge = New(contracts.ErrPayloadTooLarge, nil)
 )

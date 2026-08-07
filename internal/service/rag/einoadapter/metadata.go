@@ -32,6 +32,10 @@ const (
 	MetaContentVersion  = "content_version"
 	MetaChunkVersion    = "chunk_version"
 	MetaQuery           = "query"
+	MetaFTSTokens       = "fts_tokens"
+	MetaCharCount       = "char_count"
+	MetaTokenCount      = "token_count"
+	MetaContextTitle    = "context_title"
 )
 
 // GetMetaString 读取 MetaData 中的字符串值并做类型校验；缺失或类型不符时返回零值。

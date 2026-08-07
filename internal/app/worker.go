@@ -6,12 +6,18 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/1090-f/Memora/internal/repository"
+	"github.com/1090-f/Memora/internal/service"
+	"github.com/1090-f/Memora/internal/service/rag/pipeline"
 	workerengine "github.com/1090-f/Memora/internal/worker"
+	documentworker "github.com/1090-f/Memora/internal/worker/document"
 	"github.com/1090-f/Memora/pkg/config"
 	"github.com/1090-f/Memora/pkg/database"
 	"github.com/1090-f/Memora/pkg/logger"
 	"github.com/1090-f/Memora/pkg/objectstore"
+	"github.com/cloudwego/eino/components/embedding"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -67,6 +73,12 @@ func (a *WorkerApp) Initialize(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	if err := a.registerDocumentJobs(ctx); err != nil {
+		_ = a.Close()
+		return err
+	}
+
 	a.runner, err = workerengine.NewRunner(workerengine.RunnerConfig{
 		Concurrency: cfg.Worker.Concurrency, PollInterval: cfg.Worker.PollInterval,
 		DefaultTimeout: cfg.Worker.DefaultTimeout, MaxRetryDelay: cfg.Worker.MaxRetryDelay,
@@ -82,6 +94,62 @@ func (a *WorkerApp) Initialize(ctx context.Context) error {
 	}
 	return err
 }
+
+// registerDocumentJobs 显式注册文档导入任务类型（不使用隐式 init()）。
+func (a *WorkerApp) registerDocumentJobs(ctx context.Context) error {
+	importTasks := repository.NewImportTaskRepository(a.db)
+	docs := repository.NewDocumentRepository(a.db)
+	chunks := repository.NewDocumentChunkRepository(a.db)
+	vectors := repository.NewVectorRepository(a.db)
+
+	// 构造并编译文档加工 Graph（初始化时 Compile 一次）。
+	// 向量索引依赖成员二的 ModelFactory EmbeddingModel；未接入时仅关键词索引。
+	embedder := a.embeddingProvider()
+	embeddingModelID := ""
+	pipelineConfig := pipeline.DocumentPipelineConfig{
+		Store:       a.store,
+		Chunks:      chunks,
+		ChunkConfig: defaultChunkConfig,
+		Vectors:     vectors,
+	}
+	if embedder != nil {
+		pipelineConfig.Embedder = embedder
+		pipelineConfig.EmbeddingModelID = embeddingModelID
+		logger.Info("文档加工流水线已启用向量索引")
+	} else {
+		logger.Warn("Embedding 模型未就绪，文档加工流水线仅启用关键词索引")
+	}
+	documentPipeline, err := pipeline.NewDocumentPipeline(pipelineConfig)
+	if err != nil {
+		return fmt.Errorf("构造文档加工流水线失败: %w", err)
+	}
+
+	processService := service.NewDocumentProcessService(importTasks, docs, chunks, vectors, documentPipeline)
+
+	source := documentworker.NewSource(importTasks)
+	handler := documentworker.NewHandler(processService)
+
+	// 恢复卡在 running 且超过租约的任务。
+	recovered, err := handler.RecoverStale(ctx)
+	if err != nil {
+		return fmt.Errorf("恢复过期导入任务失败: %w", err)
+	}
+	if recovered > 0 {
+		logger.Info("已恢复过期导入任务", zap.Int64("count", recovered))
+	}
+
+	return a.RegisterJob(documentworker.JobType, source, handler)
+}
+
+// embeddingProvider 返回 Eino Embedder；成员二的 ModelFactory 未接入时返回 nil。
+// 维度冻结并接入成员二实现后替换此方法。
+func (a *WorkerApp) embeddingProvider() embedding.Embedder {
+	return nil
+}
+
+// defaultChunkConfig 是分段配置的稳定描述，用于计算 chunk_config_hash。
+// 修改分段参数时必须同步更新此描述以触发重新索引。
+const defaultChunkConfig = `{"splitter":"markdown+recursive","chunk_size":1000,"overlap":100}`
 
 // Run 启动 Worker 运行器和心跳机制，阻塞等待直到上下文取消。
 func (a *WorkerApp) Run(ctx context.Context) error {

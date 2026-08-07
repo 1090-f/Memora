@@ -33,3 +33,19 @@ const (
 	// ProcessingFailed 处理失败。
 	ProcessingFailed DocumentProcessingStatus = "failed"
 )
+
+// ImportTaskStatus 表示导入任务状态，与 import_tasks.status 枚举一致。
+type ImportTaskStatus string
+
+const (
+	// TaskStatusPending 等待处理。
+	TaskStatusPending ImportTaskStatus = "pending"
+	// TaskStatusRunning 正在处理。
+	TaskStatusRunning ImportTaskStatus = "running"
+	// TaskStatusSucceeded 处理成功。
+	TaskStatusSucceeded ImportTaskStatus = "succeeded"
+	// TaskStatusFailed 处理失败。
+	TaskStatusFailed ImportTaskStatus = "failed"
+	// TaskStatusSkipped 已跳过（重复策略）。
+	TaskStatusSkipped ImportTaskStatus = "skipped"
+)

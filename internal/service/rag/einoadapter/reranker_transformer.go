@@ -30,6 +30,7 @@ func (t *ContractsRerankerTransformer) Transform(ctx context.Context, docs []*sc
 	if len(docs) == 0 {
 		return docs, nil
 	}
+	// 查询由检索 Graph 入口写入首份文档，集合内所有文档共享同一 query。
 	query := GetMetaString(docs[0].MetaData, MetaQuery)
 	if query == "" {
 		return nil, fmt.Errorf("reranker 缺少 query metadata，无法重排")
@@ -44,6 +45,7 @@ func (t *ContractsRerankerTransformer) Transform(ctx context.Context, docs []*sc
 		return nil, err
 	}
 
+	// 校验重排器返回的 index 无越界、无重复，保证结果顺序可重放。
 	seen := make(map[int]struct{}, len(items))
 	reordered := make([]*schema.Document, 0, len(items))
 	for _, item := range items {
@@ -58,6 +60,7 @@ func (t *ContractsRerankerTransformer) Transform(ctx context.Context, docs []*sc
 		if d.MetaData == nil {
 			d.MetaData = make(map[string]any)
 		}
+		// 重写重排分数并保留原有 MetaData，供后续融合排序阶段读取。
 		d.MetaData[MetaRerankerScore] = item.Score
 		reordered = append(reordered, d)
 	}

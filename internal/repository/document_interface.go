@@ -1,0 +1,78 @@
+package repository
+
+import (
+	"context"
+
+	"github.com/1090-f/Memora/internal/model/entity"
+)
+
+// DocumentFilter 定义文档列表查询条件，空值表示不过滤。
+type DocumentFilter struct {
+	Keyword          string
+	DirectoryID      *string
+	ProcessingStatus *string
+	SourceType       *string
+}
+
+// DocumentRepository 定义文档数据访问接口。
+// 所有查询必须组合 user_id + knowledge_base_id（适用时）+ 软删除过滤。
+type DocumentRepository interface {
+	// Create 创建文档。
+	Create(ctx context.Context, doc *entity.Document) error
+	// FindByID 按文档 ID 与用户查询文档（跨知识库详情）。
+	FindByID(ctx context.Context, userID, documentID string) (*entity.Document, error)
+	// FindByIDInKB 按文档 ID、用户与知识库查询文档。
+	FindByIDInKB(ctx context.Context, userID, kbID, documentID string) (*entity.Document, error)
+	// ListByKB 分页查询知识库文档列表。
+	ListByKB(ctx context.Context, userID, kbID string, page, pageSize int, filter DocumentFilter) ([]*entity.Document, int64, error)
+	// SoftDelete 软删除文档。
+	SoftDelete(ctx context.Context, userID, documentID string) error
+	// FindBySourceHash 按用户与源哈希查询未删除文档（duplicate_policy=skip 去重）。
+	FindBySourceHash(ctx context.Context, userID, kbID, sourceHash string) (*entity.Document, error)
+	// UpdateProcessing 更新文档处理状态、失败信息与活动索引版本。
+	UpdateProcessing(ctx context.Context, docID string, updates map[string]any) error
+	// FindByImportTask 查询导入任务关联的文档（任务包 03 创建文档后回填）。
+	FindByImportTask(ctx context.Context, taskID string) (*entity.Document, error)
+}
+
+// DocumentChunkRepository 定义文档分块数据访问接口。
+type DocumentChunkRepository interface {
+	// BatchInsert 在短事务中批量插入 document_chunks（同文档同版本）。
+	// 返回各 Chunk 的实际 ID（冲突跳过时为空字符串，顺序与输入一致）。
+	BatchInsert(ctx context.Context, chunks []*entity.DocumentChunk) ([]string, error)
+	// DeleteByVersion 删除文档指定索引版本的全部 Chunk。
+	DeleteByVersion(ctx context.Context, documentID string, indexVersion int) error
+}
+
+// ImportTaskRepository 定义导入任务数据访问接口。
+// Worker 领取必须使用 PostgreSQL 行锁（SKIP LOCKED），避免多 Worker 重复领取。
+type ImportTaskRepository interface {
+	// Create 创建导入任务。
+	Create(ctx context.Context, task *entity.ImportTask) error
+	// FindByID 按任务 ID 与用户查询任务。
+	FindByID(ctx context.Context, userID, taskID string) (*entity.ImportTask, error)
+	// FindByIDInternal 按任务 ID 查询任务，仅 Worker 内部使用（Worker 无用户上下文）。
+	FindByIDInternal(ctx context.Context, taskID string) (*entity.ImportTask, error)
+	// ListByKB 分页查询知识库导入任务。
+	ListByKB(ctx context.Context, userID, kbID string, page, pageSize int) ([]*entity.ImportTask, int64, error)
+	// UpdateObjectInfo 更新任务的 MinIO 对象信息与源哈希。
+	UpdateObjectInfo(ctx context.Context, userID, taskID string, bucket, objectKey string, sourceHash *string) error
+	// ReservePending 使用 FOR UPDATE SKIP LOCKED 领取一个 pending 任务并置为 running。
+	// 无可用任务时返回 nil, nil。
+	ReservePending(ctx context.Context) (*entity.ImportTask, error)
+	// RecoverStale 恢复卡在 running 且超过租约时间的任务为 pending。
+	// 返回恢复数量。
+	RecoverStale(ctx context.Context, staleBefore int64) (int64, error)
+	// CompleteSucceeded 将任务标记为 succeeded 并记录完成时间。
+	CompleteSucceeded(ctx context.Context, taskID string, documentID *string) error
+	// FailTask 将任务标记为 failed 并记录失败原因。
+	FailTask(ctx context.Context, taskID string, failureReason string) error
+	// RetryTask 将 failed 任务重置为 pending（显式重试），清空失败原因。
+	RetryTask(ctx context.Context, taskID string) error
+	// SetRunningStep 更新 running 任务的当前步骤（心跳式进度更新）。
+	SetRunningStep(ctx context.Context, taskID, step string) error
+	// SkipTask 将任务标记为 skipped（去重策略命中）。
+	SkipTask(ctx context.Context, taskID string) error
+	// Delete 物理删除任务记录（仅用于上传失败回滚）。
+	Delete(ctx context.Context, userID, taskID string) error
+}

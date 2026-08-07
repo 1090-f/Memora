@@ -35,6 +35,7 @@ func NewSearchConfigRepository(db *gorm.DB) SearchConfigRepository {
 func (r *searchConfigRepository) Create(ctx context.Context, cfg *entity.SearchConfig) error {
 	err := dbFromContext(ctx, r.db).WithContext(ctx).Create(cfg).Error
 	if err != nil {
+		// 唯一约束冲突说明配置已存在，转换为业务错误以便上层识别。
 		if isUniqueViolation(err) {
 			return ErrSearchConfigConflict
 		}
@@ -74,6 +75,7 @@ func (r *searchConfigRepository) Update(ctx context.Context, cfg *entity.SearchC
 	if result.Error != nil {
 		return nil, fmt.Errorf("更新搜索配置失败: %w", result.Error)
 	}
+	// RowsAffected 为 0 表示 WHERE 未命中目标行，按未找到处理。
 	if result.RowsAffected == 0 {
 		return nil, ErrSearchConfigNotFound
 	}
@@ -92,6 +94,7 @@ func NewAgentConfigRepository(db *gorm.DB) AgentConfigRepository {
 func (r *agentConfigRepository) Create(ctx context.Context, cfg *entity.AgentConfig) error {
 	err := dbFromContext(ctx, r.db).WithContext(ctx).Create(cfg).Error
 	if err != nil {
+		// 唯一约束冲突说明默认行已存在，转换为业务错误。
 		if isUniqueViolation(err) {
 			return ErrAgentConfigConflict
 		}
@@ -125,6 +128,7 @@ func NewModelConfigRepository(db *gorm.DB) ModelConfigRepository {
 // FindChatByID 查询指定用户的 Chat 模型配置。
 func (r *modelConfigRepository) FindChatByID(ctx context.Context, userID, modelID string) (*entity.ModelConfig, error) {
 	var cfg entity.ModelConfig
+	// 同时校验归属(user_id)、模型类型、启用状态，并排除软删除行，防止越权访问停用配置。
 	err := dbFromContext(ctx, r.db).WithContext(ctx).
 		Where("id = ? AND user_id = ? AND model_type = 'chat' AND enabled = true AND deleted_at IS NULL", modelID, userID).
 		First(&cfg).Error
@@ -155,6 +159,7 @@ func (r *modelConfigRepository) FindEnabledByID(ctx context.Context, userID, mod
 // FindDefaultChat 查询指定用户的默认 Chat 模型配置。
 func (r *modelConfigRepository) FindDefaultChat(ctx context.Context, userID string) (*entity.ModelConfig, error) {
 	var cfg entity.ModelConfig
+	// 取该用户最近更新的默认 Chat 模型，避免多行默认配置时结果不确定。
 	err := dbFromContext(ctx, r.db).WithContext(ctx).
 		Where("user_id = ? AND model_type = 'chat' AND is_default = true AND enabled = true AND deleted_at IS NULL", userID).
 		Order("updated_at DESC").First(&cfg).Error

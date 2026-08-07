@@ -4,6 +4,8 @@ go 1.25.0
 
 require (
 	github.com/cloudwego/eino v0.9.13
+	github.com/cloudwego/eino-ext/components/document/transformer/splitter/markdown v0.0.0-20260803030130-90a15623ddb6
+	github.com/cloudwego/eino-ext/components/document/transformer/splitter/recursive v0.0.0-20260803030130-90a15623ddb6
 	github.com/gin-gonic/gin v1.12.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/golang-migrate/migrate/v4 v4.19.1

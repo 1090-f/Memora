@@ -33,6 +33,13 @@ internal/model/entity/             数据库实体
 internal/model/dto/{request,response}/ HTTP DTO
 internal/service/                  业务接口与实现
 internal/repository/               数据访问接口与实现
+internal/service/rag/              Eino RAG 内核（einoadapter、pipeline、loader、transformer、indexing、retrieval、observability）
+internal/service/rag/einoadapter   contracts/Entity ↔ Eino schema.Document 的单一转换边界与 metadata 常量
+internal/service/rag/tokenizer     可替换的中文/英文 N-gram 分词内核（普通 Go 接口）
+internal/service/rag/indexing      PostgresIndexer 等 Eino Indexer 实现（向量写入 pgvector）
+internal/service/rag/retrieval     PostgresKeywordRetriever/PgVectorRetriever 等 Eino Retriever 实现
+internal/service/rag/mock          仅用于联调的确定性 RetrievalService Mock
+internal/worker/document/          文档处理任务 Source 与 Handler（后续任务包落位）
 pkg/config/                        Viper 配置
 pkg/database/                      PostgreSQL、Redis、Migration
 pkg/jwt/                           JWT v5 封装
@@ -77,3 +84,12 @@ RequestID → AccessLog → Recovery → CORS → Auth → Controller
 新增资源时使用 `internal/api/v1/<resource>` Controller，并在 `internal/service`、`internal/repository`、`internal/model` 增加对应实现。长耗时文档、索引、Agent 与 Memory 工作必须注册到 Worker，不得阻塞 HTTP 请求。
 
 跨模块调用必须依赖 `internal/contracts`，不得复制定义 Retrieval、AgentContext、ToolResult、Citation 或 AgentEvent。Worker 模块通过 `RegisterJob` 注册业务状态表对应的 Source 与 Handler；任务必须支持超时、幂等、重试和取消。
+
+### 6.1 RAG 与文档处理职责
+
+- `internal/service/rag` 承载 Eino 组件、Adapter、Compiled Graph、RAG 算法与 Callback；Eino `schema.Document` 只在本层与 `einoadapter` 之间交换，不得泄漏到 HTTP DTO、Entity 与跨成员 contracts。
+- `internal/service/rag/einoadapter` 是 contracts/Entity ↔ Eino 的唯一转换边界，集中定义 metadata 键常量，禁止在其他包重复转换。
+- `internal/service/rag/mock` 提供 `contracts.RetrievalService` 的确定性 Mock，仅供成员三联调，生产路径不得引用。
+- 数据访问（SQL、GORM、pgvector、全文检索、`SKIP LOCKED`）只允许在 `internal/repository`；自定义 Eino Indexer/Retriever 通过最小 Repository 接口访问数据，组件本身不持有 GORM 查询逻辑。
+- 文档处理长任务由 `internal/worker/document` 的 Source/Handler 驱动；Eino Compose 负责任务内部的确定性数据流，PostgreSQL 任务领取、状态持久化、重试、幂等与恢复仍由 `internal/worker` 通用 Runner/Registry 负责。
+- 长耗时解析、分段、Embedding 和索引必须进入 Worker，不能阻塞 HTTP 请求；数据库是业务事实来源，Redis 不保存唯一业务状态。
