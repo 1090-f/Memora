@@ -1,0 +1,342 @@
+package service
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"mime"
+	"path"
+	"strings"
+	"time"
+
+	apperrors "github.com/1090-f/Memora/internal/apperror"
+	"github.com/1090-f/Memora/internal/contracts"
+	"github.com/1090-f/Memora/internal/model/dto/request"
+	dto "github.com/1090-f/Memora/internal/model/dto/response"
+	"github.com/1090-f/Memora/internal/model/entity"
+	"github.com/1090-f/Memora/internal/repository"
+	"github.com/1090-f/Memora/pkg/logger"
+	"github.com/1090-f/Memora/pkg/objectstore"
+	"go.uber.org/zap"
+)
+
+// 文件上传限制（保守默认值，集中定义禁止散落魔法数字）。
+const (
+	// MaxUploadFileSize 单文件最大字节数（50MB）。
+	MaxUploadFileSize = 50 * 1024 * 1024
+	// MaxUploadFilesPerRequest 单次请求最大文件数。
+	MaxUploadFilesPerRequest = 20
+	// MaxManualContentBytes 手工文档正文最大字节数。
+	MaxManualContentBytes = 2 * 1024 * 1024
+	// minioUploadTimeout 单文件上传超时。
+	minioUploadTimeout = 5 * time.Minute
+)
+
+// 支持的文件扩展名。
+var supportedExtensions = map[string]bool{
+	".md": true, ".txt": true, ".pdf": true, ".docx": true,
+}
+
+// ObjectStore 是文档服务依赖的对象存储能力接口，便于测试注入。
+type ObjectStore interface {
+	// Bucket 返回对象存储的默认桶名。
+	Bucket() string
+	// PutObject 将 reader 流式上传到指定 key，超时由调用方控制。
+	PutObject(ctx context.Context, objectKey string, reader io.Reader, size int64, contentType string) error
+	// RemoveObject 删除指定对象，用于上传失败的补偿清理。
+	RemoveObject(ctx context.Context, objectKey string) error
+}
+
+// documentService 是 DocumentService 接口的实现。
+// 注意：上传流程不得使用数据库事务包裹 MinIO I/O（规范红线），
+// 因此本服务不持有 Transactor；补偿通过显式删除实现。
+type documentService struct {
+	docs  repository.DocumentRepository
+	tasks repository.ImportTaskRepository
+	kbs   repository.KnowledgeBaseRepository
+	dirs  repository.DocumentDirectoryRepository
+	store ObjectStore
+}
+
+// NewDocumentService 创建一个新的文档服务实例。
+func NewDocumentService(
+	docs repository.DocumentRepository,
+	tasks repository.ImportTaskRepository,
+	kbs repository.KnowledgeBaseRepository,
+	dirs repository.DocumentDirectoryRepository,
+	store ObjectStore,
+) DocumentService {
+	return &documentService{docs: docs, tasks: tasks, kbs: kbs, dirs: dirs, store: store}
+}
+
+// CreateManual 手工创建只读知识文档。
+func (s *documentService) CreateManual(ctx context.Context, userID, kbID string, req *request.CreateDocumentRequest) (*dto.DocumentResponse, error) {
+	if req == nil || strings.TrimSpace(req.Title) == "" {
+		return nil, apperrors.ErrInvalidArgument
+	}
+	if _, err := s.kbs.FindByID(ctx, userID, kbID); err != nil {
+		if errors.Is(err, repository.ErrKnowledgeBaseNotFound) {
+			return nil, apperrors.ErrNotFound
+		}
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	if req.DirectoryID != nil && *req.DirectoryID != "" {
+		if _, err := s.dirs.FindByIDInKB(ctx, userID, kbID, *req.DirectoryID); err != nil {
+			if errors.Is(err, repository.ErrDirectoryNotFound) {
+				return nil, apperrors.New(contracts.ErrInvalidArgument, err)
+			}
+			return nil, apperrors.New(contracts.ErrInternal, err)
+		}
+	}
+	content := ""
+	if req.Content != nil {
+		content = *req.Content
+	}
+	if len([]byte(content)) > MaxManualContentBytes {
+		return nil, apperrors.New(contracts.ErrPayloadTooLarge, nil)
+	}
+	doc := &entity.Document{
+		UserID: userID, KnowledgeBaseID: kbID, DirectoryID: req.DirectoryID,
+		Title: strings.TrimSpace(req.Title), Content: &content,
+		SourceType:       string(contracts.DocumentSourceManual),
+		SourceURL:        req.SourceURL,
+		ProcessingStatus: string(contracts.ProcessingPending),
+		ContentVersion:   1, ChunkVersion: 1,
+	}
+	if err := s.docs.Create(ctx, doc); err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	return documentResponse(doc), nil
+}
+
+// List 分页查询知识库文档列表。
+func (s *documentService) List(ctx context.Context, userID, kbID string, page, pageSize int, filter request.DocumentListFilter) (*dto.DocumentList, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+	items, total, err := s.docs.ListByKB(ctx, userID, kbID, page, pageSize, repository.DocumentFilter{
+		Keyword: filter.Keyword, DirectoryID: filter.DirectoryID,
+		ProcessingStatus: filter.ProcessingStatus, SourceType: filter.SourceType,
+	})
+	if err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	result := &dto.DocumentList{Page: page, PageSize: pageSize, Total: total, Items: make([]*dto.DocumentListItem, 0, len(items))}
+	for _, doc := range items {
+		result.Items = append(result.Items, &dto.DocumentListItem{
+			ID: doc.ID, Title: doc.Title, DirectoryID: doc.DirectoryID,
+			SourceType: doc.SourceType, ProcessingStatus: doc.ProcessingStatus,
+			FileSize: doc.FileSize, CreatedAt: doc.CreatedAt, UpdatedAt: doc.UpdatedAt,
+		})
+	}
+	return result, nil
+}
+
+// Get 查询文档详情。
+func (s *documentService) Get(ctx context.Context, userID, documentID string) (*dto.DocumentResponse, error) {
+	doc, err := s.docs.FindByID(ctx, userID, documentID)
+	if errors.Is(err, repository.ErrDocumentNotFound) {
+		return nil, apperrors.ErrNotFound
+	}
+	if err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	return documentResponse(doc), nil
+}
+
+// Delete 软删除文档。
+func (s *documentService) Delete(ctx context.Context, userID, documentID string) error {
+	err := s.docs.SoftDelete(ctx, userID, documentID)
+	if errors.Is(err, repository.ErrDocumentNotFound) {
+		return apperrors.ErrNotFound
+	}
+	if err != nil {
+		return apperrors.New(contracts.ErrInternal, err)
+	}
+	logger.Info("文档已删除", zap.String("user_id", userID), zap.String("document_id", documentID))
+	return nil
+}
+
+// UploadFiles 文件导入：先创建 import_tasks，再流式上传 MinIO，最后更新任务对象信息。
+// 校验阶段（扩展名/大小/数量/归属）全部通过后才开始创建任务；
+// 上传阶段任一文件失败时，补偿删除已创建但未完成的任务与已上传对象。
+func (s *documentService) UploadFiles(ctx context.Context, userID, kbID string, directoryID *string, duplicatePolicy string, files []UploadFileInput) (*dto.UploadFilesResponse, error) {
+	if len(files) == 0 {
+		return nil, apperrors.ErrInvalidArgument
+	}
+	if len(files) > MaxUploadFilesPerRequest {
+		return nil, apperrors.New(contracts.ErrInvalidArgument, nil)
+	}
+	if duplicatePolicy == "" {
+		duplicatePolicy = "skip"
+	}
+	if duplicatePolicy != "create_new" && duplicatePolicy != "skip" {
+		return nil, apperrors.ErrInvalidArgument
+	}
+	for _, file := range files {
+		if err := validateUploadFile(file); err != nil {
+			return nil, err
+		}
+	}
+	if directoryID != nil && *directoryID != "" {
+		if _, err := s.dirs.FindByIDInKB(ctx, userID, kbID, *directoryID); err != nil {
+			if errors.Is(err, repository.ErrDirectoryNotFound) {
+				return nil, apperrors.New(contracts.ErrInvalidArgument, err)
+			}
+			return nil, apperrors.New(contracts.ErrInternal, err)
+		}
+	}
+	if _, err := s.kbs.FindByID(ctx, userID, kbID); err != nil {
+		if errors.Is(err, repository.ErrKnowledgeBaseNotFound) {
+			return nil, apperrors.ErrNotFound
+		}
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+
+	result := &dto.UploadFilesResponse{Tasks: make([]dto.UploadTaskItem, 0, len(files))}
+	bucket := s.store.Bucket()
+	createdTaskIDs := make([]string, 0, len(files))
+	// 任务创建与对象上传之间不共享数据库事务：MinIO 属外部 I/O 无法纳入事务原子性，
+	// 任一步失败改走显式补偿删除（见 compensateUploads），避免长事务持锁与不可回滚的问题。
+	for _, file := range files {
+		item, objectKey, err := s.uploadOne(ctx, userID, kbID, directoryID, duplicatePolicy, file, bucket)
+		if err != nil {
+			// 补偿：删除本次请求中已创建的任务与已上传对象，避免残留半成品。
+			s.compensateUploads(ctx, userID, createdTaskIDs)
+			return nil, err
+		}
+		createdTaskIDs = append(createdTaskIDs, item.TaskID)
+		_ = objectKey
+		result.Tasks = append(result.Tasks, *item)
+	}
+	return result, nil
+}
+
+// compensateUploads 删除已创建但未成功返回的任务，并尝试删除对应 MinIO 对象。
+func (s *documentService) compensateUploads(ctx context.Context, userID string, taskIDs []string) {
+	for _, taskID := range taskIDs {
+		task, err := s.tasks.FindByID(ctx, userID, taskID)
+		if err != nil {
+			logger.Warn("补偿查找任务失败", zap.String("user_id", userID), zap.String("task_id", taskID), zap.Error(err))
+			continue
+		}
+		if task.MinIOObjectKey != nil && *task.MinIOObjectKey != "" {
+			if removeErr := s.store.RemoveObject(ctx, *task.MinIOObjectKey); removeErr != nil {
+				logger.Error("补偿删除 MinIO 对象失败",
+					zap.String("user_id", userID), zap.String("object_key", *task.MinIOObjectKey), zap.Error(removeErr))
+			}
+		}
+		if deleteErr := s.tasks.Delete(ctx, userID, taskID); deleteErr != nil {
+			logger.Error("补偿删除导入任务失败",
+				zap.String("user_id", userID), zap.String("task_id", taskID), zap.Error(deleteErr))
+		}
+	}
+}
+
+// validateUploadFile 校验单个文件的扩展名、大小与空文件。
+func validateUploadFile(file UploadFileInput) error {
+	ext := strings.ToLower(path.Ext(file.FileName))
+	if !supportedExtensions[ext] {
+		return apperrors.New(contracts.ErrUnsupportedFileType, fmt.Errorf("不支持的文件类型 %q", file.FileName))
+	}
+	if file.Size <= 0 {
+		return apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("空文件 %q", file.FileName))
+	}
+	if file.Size > MaxUploadFileSize {
+		return apperrors.New(contracts.ErrPayloadTooLarge, nil)
+	}
+	return nil
+}
+
+// uploadOne 处理单个文件：先建 pending 任务，再流式上传 MinIO，最后回写对象信息。
+// 三个失败点逐层补偿，避免留下孤儿任务或孤岛对象。
+func (s *documentService) uploadOne(ctx context.Context, userID, kbID string, directoryID *string, duplicatePolicy string, file UploadFileInput, bucket string) (*dto.UploadTaskItem, string, error) {
+	ext := strings.ToLower(path.Ext(file.FileName))
+	mimeType := mimeTypeOf(ext)
+	task := &entity.ImportTask{
+		UserID: userID, KnowledgeBaseID: kbID, TargetDirectoryID: directoryID,
+		SourceType:      string(contracts.DocumentSourceFile),
+		FileName:        &file.FileName,
+		FileSize:        &file.Size,
+		MIMEType:        &mimeType,
+		DuplicatePolicy: duplicatePolicy,
+		Status:          string(contracts.TaskStatusPending),
+	}
+	// 失败点 1：任务先落库以拿到稳定 task_id，用其构造对象 key（唯一且可追溯）。
+	if err := s.tasks.Create(ctx, task); err != nil {
+		return nil, "", apperrors.New(contracts.ErrInternal, err)
+	}
+
+	objectKey := objectstore.BuildObjectKey(userID, kbID, task.ID, file.FileName)
+	hash, err := s.putObjectWithHash(ctx, objectKey, file.Reader, file.Size, mimeType)
+	if err != nil {
+		// 失败点 2：对象上传失败 → 删除刚创建的任务记录，避免残留 pending 孤儿任务。
+		if deleteErr := s.tasks.Delete(ctx, userID, task.ID); deleteErr != nil {
+			logger.Error("上传失败后删除任务记录失败",
+				zap.String("user_id", userID), zap.String("task_id", task.ID), zap.Error(deleteErr))
+		}
+		return nil, "", apperrors.New(contracts.ErrServiceUnavailable, err)
+	}
+
+	if err := s.tasks.UpdateObjectInfo(ctx, userID, task.ID, bucket, objectKey, &hash); err != nil {
+		// 失败点 3：对象已上传但元信息回写失败 → 删除 MinIO 对象，避免孤岛对象。
+		// MinIO 上传成功但数据库更新失败：补偿删除对象。
+		if removeErr := s.store.RemoveObject(ctx, objectKey); removeErr != nil {
+			logger.Error("补偿删除 MinIO 对象失败",
+				zap.String("user_id", userID), zap.String("object_key", objectKey), zap.Error(removeErr))
+		}
+		return nil, "", apperrors.New(contracts.ErrInternal, err)
+	}
+	logger.Info("文件上传完成", zap.String("user_id", userID), zap.String("task_id", task.ID), zap.String("object_key", objectKey))
+	return &dto.UploadTaskItem{TaskID: task.ID, FileName: file.FileName, Status: task.Status}, objectKey, nil
+}
+
+// putObjectWithHash 流式上传并计算 SHA-256，不把完整文件读入内存。
+// 上传设置显式超时，避免大文件或网络故障导致请求无限挂起。
+func (s *documentService) putObjectWithHash(ctx context.Context, objectKey string, reader io.Reader, size int64, contentType string) (string, error) {
+	uploadCtx, cancel := context.WithTimeout(ctx, minioUploadTimeout)
+	defer cancel()
+	// TeeReader 在数据流经时同步喂给 SHA-256，实现边上传边计算，无需二次读取。
+	hash := sha256.New()
+	tee := io.TeeReader(reader, hash)
+	if err := s.store.PutObject(uploadCtx, objectKey, tee, size, contentType); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// mimeTypeOf 由扩展名推断 Content-Type：Go 标准库不认识的扩展名补常用类型，最后兜底 octet-stream。
+func mimeTypeOf(ext string) string {
+	contentType := mime.TypeByExtension(ext)
+	if contentType == "" {
+		switch ext {
+		case ".md":
+			contentType = "text/markdown"
+		case ".txt":
+			contentType = "text/plain"
+		}
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return contentType
+}
+
+// documentResponse 将文档实体转换为响应 DTO，隐藏内部存储结构。
+func documentResponse(doc *entity.Document) *dto.DocumentResponse {
+	return &dto.DocumentResponse{
+		ID: doc.ID, KnowledgeBaseID: doc.KnowledgeBaseID, DirectoryID: doc.DirectoryID,
+		Title: doc.Title, Content: doc.Content, SourceType: doc.SourceType,
+		SourceURL: doc.SourceURL, OriginalFileName: doc.OriginalFileName,
+		FileSize: doc.FileSize, MIMEType: doc.MIMEType,
+		ProcessingStatus: doc.ProcessingStatus, FailureStep: doc.FailureStep, FailureReason: doc.FailureReason,
+		ContentVersion: doc.ContentVersion, ChunkVersion: doc.ChunkVersion,
+		ActiveIndexVersion: doc.ActiveIndexVersion, CreatedAt: doc.CreatedAt, UpdatedAt: doc.UpdatedAt,
+	}
+}
