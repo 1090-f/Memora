@@ -1,62 +1,47 @@
 package tools
 
 import (
-	"errors"
+	"context"
+	"encoding/json"
+	"fmt"
 	"sort"
 	"sync"
 
 	"github.com/1090-f/Memora/internal/contracts"
+	"github.com/cloudwego/eino/schema"
 )
 
-// Registry 是工具的注册表，集中管理所有可用的工具。
-// 通过互斥锁保证并发安全，供 Executor 按名称查找工具。
+// Registry 是进程内显式构造的工具注册表，保证工具发现不依赖全局状态。
 type Registry struct {
 	mu    sync.RWMutex
 	tools map[string]Tool
 }
 
-// NewRegistry 创建并返回一个空的工具注册表。
-func NewRegistry() *Registry {
-	return &Registry{tools: map[string]Tool{}}
-}
+// NewRegistry 创建空工具注册表。
+func NewRegistry() *Registry { return &Registry{tools: make(map[string]Tool)} }
 
-// Register 将工具注册进注册表。
-// 工具名为空会报错；同名工具重复注册也会报错。
-func (r *Registry) Register(tool Tool) error {
-	spec := tool.Spec()
-	if spec.Name == "" {
-		return errors.New("tool name is required")
+// Register 注册一个名称唯一的工具。
+func (r *Registry) Register(value Tool) error {
+	if value == nil {
+		return fmt.Errorf("tool is nil")
 	}
-
+	spec := value.Spec()
+	if spec.Name == "" {
+		return fmt.Errorf("tool name is empty")
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.tools[spec.Name]; ok {
-		return errors.New("tool already registered")
+	if _, exists := r.tools[spec.Name]; exists {
+		return fmt.Errorf("tool %q already registered", spec.Name)
 	}
-	r.tools[spec.Name] = tool
+	r.tools[spec.Name] = value
 	return nil
 }
 
-// Has 判断指定名称的工具是否已注册。
-func (r *Registry) Has(name string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	_, ok := r.tools[name]
-	return ok
-}
+// Has 检查工具是否已注册。
+func (r *Registry) Has(name string) bool { _, ok := r.find(name); return ok }
 
-// Get 返回指定名称工具的规格描述；工具不存在时返回第二个参数 false。
-func (r *Registry) Get(name string) (contracts.ToolSpec, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	tool, ok := r.tools[name]
-	if !ok {
-		return contracts.ToolSpec{}, false
-	}
-	return tool.Spec(), true
-}
-
-// Names 返回全部已注册工具的名称，按字典序排序。
+// Names 返回稳定排序的工具名称快照。
 func (r *Registry) Names() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -68,22 +53,52 @@ func (r *Registry) Names() []string {
 	return names
 }
 
-// Specs 返回全部已注册工具的规格描述，按名称排序。
+// Specs 返回稳定排序的工具规格快照。
 func (r *Registry) Specs() []contracts.ToolSpec {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	specs := make([]contracts.ToolSpec, 0, len(r.tools))
-	for _, tool := range r.tools {
-		specs = append(specs, tool.Spec())
+	for _, value := range r.tools {
+		specs = append(specs, value.Spec())
 	}
 	sort.Slice(specs, func(i, j int) bool { return specs[i].Name < specs[j].Name })
 	return specs
 }
 
-// Tool 返回指定名称的工具实例及其是否存在。
-func (r *Registry) Tool(name string) (Tool, bool) {
+// EinoTools 返回白名单工具的模型可见信息。
+func (r *Registry) EinoTools(ctx context.Context, allowed []string) ([]schema.ToolInfo, error) {
+	result := make([]schema.ToolInfo, 0, len(allowed))
+	for _, name := range allowed {
+		value, ok := r.find(name)
+		if !ok {
+			return nil, fmt.Errorf("tool %q is not registered", name)
+		}
+		item, err := value.Info(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("tool %q info: %w", name, err)
+		}
+		if item == nil {
+			return nil, fmt.Errorf("tool %q info is nil", name)
+		}
+		result = append(result, *item)
+	}
+	return result, nil
+}
+
+func (r *Registry) find(name string) (Tool, bool) {
+	if r == nil {
+		return nil, false
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	tool, ok := r.tools[name]
-	return tool, ok
+	value, ok := r.tools[name]
+	return value, ok
+}
+
+func decodeResult(text string) (contracts.ToolResult, error) {
+	var result contracts.ToolResult
+	if err := json.Unmarshal([]byte(text), &result); err != nil {
+		return contracts.ToolResult{}, err
+	}
+	return result, nil
 }

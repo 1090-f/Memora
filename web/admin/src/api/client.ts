@@ -9,7 +9,7 @@ let unauthorizedHandler: UnauthorizedHandler;
 
 const service = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api/v1',
-  timeout: 30_000,
+  timeout: 120_000,
   validateStatus: () => true,
 });
 

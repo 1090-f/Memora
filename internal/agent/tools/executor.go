@@ -3,208 +3,117 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"strings"
-	"time"
+	"fmt"
 
 	"github.com/1090-f/Memora/internal/contracts"
-	"github.com/1090-f/Memora/pkg/logger"
-	"github.com/1090-f/Memora/pkg/utils"
-	"go.uber.org/zap"
 )
 
-// Executor 负责执行一次工具调用。
-// 它会做一系列前置校验（参数、权限、只读、网络等），
-// 调用注册表中的工具，并对返回结果做清洗、限长与日志记录。
-type Executor struct {
-	registry *Registry
-}
+const maxToolArgumentBytes = 64 * 1024
 
-// NewExecutor 基于给定的工具注册表创建执行器。
-func NewExecutor(registry *Registry) *Executor {
-	return &Executor{registry: registry}
-}
+// Executor 是 contracts.ToolExecutor 的唯一安全执行入口。
+type Executor struct{ registry *Registry }
 
-// Execute 执行一次工具调用并返回归一化的 ToolResult。
-// 所有的校验失败都不会以 error 返回，而是通过 ToolResult 的错误码表达，
-// 这样上层可以统一按返回值处理。
+// NewExecutor 创建绑定指定注册表的执行器。
+func NewExecutor(registry *Registry) *Executor { return &Executor{registry: registry} }
+
+// Execute 统一执行前置授权、参数大小/合法性、超时和结果归一化检查。
 func (e *Executor) Execute(ctx context.Context, toolContext contracts.ToolContext, call contracts.ToolCall) (contracts.ToolResult, error) {
-	startedAt := time.Now()
-	result := contracts.ToolResult{CallID: call.CallID, ToolName: call.ToolName}
-
-	// 校验调用上下文中的必填字段。
-	if err := validateToolContext(toolContext); err != nil {
-		return failedResult(result, contracts.ErrInvalidArgument, err.Error()), nil
+	if e == nil || e.registry == nil {
+		return failure(call, contracts.ErrInvalidState, "tool registry is unavailable")
 	}
-
-	// 工具名与调用 ID 均不可为空。
-	if call.ToolName == "" || call.CallID == "" {
-		return failedResult(result, contracts.ErrInvalidArgument, "tool_name and call_id are required"), nil
-	}
-
-	// 从注册表查找目标工具。
-	tool, ok := e.registry.Tool(call.ToolName)
+	value, ok := e.registry.find(call.ToolName)
 	if !ok {
-		return failedResult(result, contracts.ErrResourceNotFound, "tool not found"), nil
+		return failure(call, contracts.ErrResourceNotFound, "tool is not registered")
 	}
-	spec := tool.Spec()
-	// 非 MCP 工具必须是已启用的；MCP 工具在 Run 中实时查询数据库状态。
-	if spec.Type != contracts.ToolTypeMCP && !spec.Enabled {
-		return failedResult(result, contracts.ErrForbidden, "tool is disabled"), nil
-	}
-
-	// 工具必须在被明确允许的名单中。
-	if !isAllowedTool(toolContext.AllowedToolNames, call.ToolName) {
-		return failedResult(result, contracts.ErrForbidden, "tool is not allowed"), nil
-	}
-
-	// MCP 类型的写工具被禁止，且非只读工具一律被拒绝。
-	if spec.Type == contracts.ToolTypeMCP && !spec.ReadOnly {
-		return failedResult(result, contracts.ErrWriteMCPToolForbidden, "write mcp tool is forbidden"), nil
+	spec := value.Spec()
+	if !spec.Enabled {
+		return failure(call, contracts.ErrInvalidState, "tool is disabled")
 	}
 	if !spec.ReadOnly {
-		return failedResult(result, contracts.ErrForbidden, "tool is not read-only"), nil
+		return failure(call, contracts.ErrWriteMCPToolForbidden, "write tool is forbidden")
 	}
-
-	// 需要联网的工具必须在联网开启时才能调用。
+	if !contains(toolContext.AllowedToolNames, call.ToolName) {
+		return failure(call, contracts.ErrForbidden, "tool is not allowed")
+	}
 	if spec.NetworkRequired && !toolContext.NetworkEnabled {
-		return failedResult(result, contracts.ErrNetworkDisabled, "network is disabled"), nil
+		return failure(call, contracts.ErrNetworkDisabled, "network tool is disabled")
+	}
+	if len(call.Arguments) > maxToolArgumentBytes {
+		return failure(call, contracts.ErrPayloadTooLarge, "tool arguments are too large")
+	}
+	if !json.Valid(call.Arguments) {
+		return failure(call, contracts.ErrInvalidArgument, "tool arguments must be valid JSON")
 	}
 
-	// 记录调用开始日志。
-	log := logger.GetLogger()
-	if log != nil {
-		log.Info("tool call started",
-			zap.String("tool_name", call.ToolName),
-			zap.String("tool_call_id", string(call.CallID)),
-			zap.String("agent_run_id", string(toolContext.AgentRunID)),
-			zap.String("user_id", string(toolContext.UserID)),
-			zap.String("knowledge_base_id", string(toolContext.KnowledgeBaseID)),
-			zap.String("arguments", utils.SummarizeAndRedact(call.Arguments)),
-		)
-	}
-
-	// 若工具定义了超时，则给执行上下文加上超时限制。
-	execCtx := ctx
-	cancel := func() {}
+	callContext := ctx
 	if spec.Timeout > 0 {
-		execCtx, cancel = context.WithTimeout(ctx, spec.Timeout)
+		var cancel context.CancelFunc
+		callContext, cancel = context.WithTimeout(ctx, spec.Timeout)
+		defer cancel()
 	}
-	defer cancel()
-
-	toolRes, err := tool.Run(execCtx, toolContext, call.Arguments)
+	result, err := value.Execute(callContext, toolContext, call)
 	if err != nil {
-		// 超时或取消统一映射为上游超时错误。
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(execCtx.Err(), context.DeadlineExceeded) {
-			return failedResult(result, contracts.ErrUpstreamTimeout, "tool execution timeout"), nil
+		if result.CallID == "" {
+			result.CallID = call.CallID
 		}
-		return failedResult(result, contracts.ErrInternal, "tool execution failed"), nil
+		if result.ToolName == "" {
+			result.ToolName = call.ToolName
+		}
+		if result.ErrorCode == "" {
+			result.ErrorCode = contracts.ErrInternal
+		}
+		result.Success = false
+		return result, err
 	}
-
-	// 拷贝工具返回的各个字段到统一结果对象。
-	result.Text = toolRes.Text
-	result.StructuredData = toolRes.StructuredData
-	result.Citations = toolRes.Citations
-	result.Truncated = toolRes.Truncated
-	result.Success = toolRes.Success
-	result.ErrorCode = toolRes.ErrorCode
-	result.ErrorMessage = toolRes.ErrorMessage
-
-	// 对最终文本做控制字符等内容的清洗。
-	result.Text = utils.SanitizeText(result.Text)
-
-	// 若设置了结果大小上限，则压缩结果到该范围内。
-	if toolContext.MaxResultBytes > 0 {
-		enforceResultSizeLimit(&result, toolContext.MaxResultBytes)
-	}
-
-	// 记录调用结束日志。
-	if log != nil {
-		log.Info("tool call finished",
-			zap.String("tool_name", call.ToolName),
-			zap.String("tool_call_id", string(call.CallID)),
-			zap.Duration("duration", time.Since(startedAt)),
-			zap.Bool("success", result.Success),
-			zap.Bool("truncated", result.Truncated),
-			zap.String("error_code", string(result.ErrorCode)),
-			zap.String("output", utils.SummarizeAndRedactResult(result)),
-		)
-	}
-
-	return result, nil
+	return truncateResult(result, toolContext.MaxResultBytes), nil
 }
 
-// validateToolContext 检查 ToolContext 中的必填字段（用户、知识库、运行 ID），
-// 缺失字段会以逗号拼接后统一返回错误。
-func validateToolContext(toolContext contracts.ToolContext) error {
-	var missing []string
-	if toolContext.UserID == "" {
-		missing = append(missing, "user_id")
+// InvokeEino 将标准 ToolResult 序列化为模型工具调用需要的 JSON 字符串。
+func (e *Executor) InvokeEino(ctx context.Context, toolContext contracts.ToolContext, call contracts.ToolCall) (string, error) {
+	result, err := e.Execute(ctx, toolContext, call)
+	data, marshalErr := json.Marshal(result)
+	if marshalErr != nil {
+		return "", fmt.Errorf("marshal tool result: %w", marshalErr)
 	}
-	if toolContext.KnowledgeBaseID == "" {
-		missing = append(missing, "knowledge_base_id")
+	if err != nil {
+		return string(data), err
 	}
-	if toolContext.AgentRunID == "" {
-		missing = append(missing, "agent_run_id")
-	}
-	if toolContext.MaxResultBytes < 0 {
-		missing = append(missing, "max_result_bytes")
-	}
-	if len(missing) > 0 {
-		return errors.New("invalid tool_context: " + strings.Join(missing, ", "))
-	}
-	return nil
+	return string(data), nil
 }
 
-// failedResult 在基础结果上写入失败状态与错误码、错误信息。
-func failedResult(base contracts.ToolResult, code contracts.ErrorCode, message string) contracts.ToolResult {
-	base.Success = false
-	base.ErrorCode = code
-	base.ErrorMessage = message
-	return base
+// InvokeContext 是将服务端 ToolContext 注入 Eino 上下文的便捷入口。
+func (e *Executor) InvokeContext(ctx context.Context, toolContext contracts.ToolContext, call contracts.ToolCall) (string, error) {
+	return e.InvokeEino(withToolContext(ctx, toolContext), toolContext, call)
 }
 
-// isAllowedTool 判断指定工具名是否在允许名单中；名单为空则一律不允许。
-func isAllowedTool(allowed []string, name string) bool {
-	if len(allowed) == 0 {
-		return false
+func failure(call contracts.ToolCall, code contracts.ErrorCode, message string) (contracts.ToolResult, error) {
+	result := contracts.ToolResult{CallID: call.CallID, ToolName: call.ToolName, Success: false, ErrorCode: code, ErrorMessage: message}
+	return result, fmt.Errorf("%s: %s", code, message)
+}
+
+// truncateResult 同时限制 Text 和 StructuredData，不能只限制模型看到的文本字段。
+func truncateResult(result contracts.ToolResult, maxBytes int) contracts.ToolResult {
+	if maxBytes <= 0 {
+		return result
 	}
-	for _, n := range allowed {
-		if n == name {
+	if len(result.Text) > maxBytes {
+		result.Text = result.Text[:maxBytes]
+		result.Truncated = true
+	}
+	if len(result.StructuredData) > maxBytes {
+		result.StructuredData = append(json.RawMessage(nil), result.StructuredData[:maxBytes]...)
+		result.Truncated = true
+	}
+	return result
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
 			return true
 		}
 	}
 	return false
 }
 
-// enforceResultSizeLimit 将结果压缩到指定字节范围内。
-// 优先丢弃结构化数据与引用，然后反复截断文本直到体积达标。
-func enforceResultSizeLimit(result *contracts.ToolResult, maxBytes int) {
-	b, err := json.Marshal(result)
-	if err == nil && len(b) <= maxBytes {
-		return
-	}
-
-	// 超出大小时先清除结构化数据与引用以尽快达标。
-	if len(result.StructuredData) > 0 {
-		result.StructuredData = nil
-		result.Truncated = true
-	}
-	if len(result.Citations) > 0 {
-		result.Citations = nil
-		result.Truncated = true
-	}
-
-	// 最多进行 4 轮文本截断。
-	for i := 0; i < 4; i++ {
-		b, err = json.Marshal(result)
-		if err == nil && len(b) <= maxBytes {
-			return
-		}
-		if result.Text == "" {
-			return
-		}
-		result.Text = utils.TruncateUTF8ByBytes(result.Text, maxBytes/2)
-		result.Truncated = true
-	}
-}
+var _ contracts.ToolExecutor = (*Executor)(nil)

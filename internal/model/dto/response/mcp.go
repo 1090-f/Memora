@@ -41,6 +41,7 @@ type MCPServerSummary struct {
 	URL              *string            `json:"url,omitempty"`
 	HeadersMasked    *map[string]string `json:"headers_masked,omitempty"`
 	Command          *string            `json:"command,omitempty"`
+	CWD              *string            `json:"cwd,omitempty"`
 	Args             []string           `json:"args,omitempty"`
 	EnvMasked        *map[string]string `json:"env_masked,omitempty"`
 	AuthMasked       *string            `json:"auth_masked,omitempty"`
@@ -126,6 +127,7 @@ func ConvertToServerSummary(server *entity.MCPServer, tools []MCPToolSummary, wa
 		URL:              server.URL,
 		HeadersMasked:    &maskedHeaders,
 		Command:          server.Command,
+		CWD:              server.CWD,
 		Args:             nil,
 		EnvMasked:        &maskedEnv,
 		AuthMasked:       server.AuthMasked,

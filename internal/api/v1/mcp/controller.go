@@ -182,5 +182,8 @@ func mapServiceError(err error) error {
 	if errors.Is(err, repository.ErrDuplicateResource) {
 		return apperror.ErrConflict
 	}
+	if errors.Is(err, repository.ErrMCPConnectionFailed) {
+		return apperror.New(contracts.ErrMCPConnectionFailed, err)
+	}
 	return apperror.New(contracts.ErrInternal, err)
 }

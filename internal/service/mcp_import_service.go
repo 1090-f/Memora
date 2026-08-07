@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/1090-f/Memora/internal/contracts"
@@ -40,7 +41,7 @@ func NewImportService(servers repository.MCPServerRepository, tools repository.M
 	}
 }
 
-// Import 执行 MCP Server 导入流程。
+// Import 执行 MCP Server 导入流程。使用并发工作池加速导入。
 func (s *importService) Import(ctx context.Context, userID string, req *request.MCPImportRequest) (*response.MCPImportResponse, error) {
 	if req == nil || len(req.MCPServers) == 0 {
 		return nil, repository.ErrInvalidArgument
@@ -49,32 +50,56 @@ func (s *importService) Import(ctx context.Context, userID string, req *request.
 		return nil, repository.ErrInvalidArgument
 	}
 
-	imported := make([]response.ImportedServer, 0, len(req.MCPServers))
-	failed := make([]response.FailedServer, 0)
+	type jobResult struct {
+		name   string
+		server response.ImportedServer
+		err    error
+	}
+
+	var (
+		mu       sync.Mutex
+		imported = make([]response.ImportedServer, 0, len(req.MCPServers))
+		failed   = make([]response.FailedServer, 0)
+		wg       sync.WaitGroup
+		sem      = make(chan struct{}, 3) // 最多 3 个并发
+	)
 
 	for name, serverConfig := range req.MCPServers {
-		name = strings.TrimSpace(name)
+		name := strings.TrimSpace(name)
 		if name == "" {
+			mu.Lock()
 			failed = append(failed, response.FailedServer{
 				Name:    name,
 				Error:   "INVALID_ARGUMENT",
 				Message: "server name is empty",
 			})
+			mu.Unlock()
 			continue
 		}
 
-		server, err := s.importSingleServer(ctx, userID, name, serverConfig)
-		if err != nil {
-			failed = append(failed, response.FailedServer{
-				Name:    name,
-				Error:   mapErrorToCode(err),
-				Message: err.Error(),
-			})
-			continue
-		}
+		wg.Add(1)
+		go func(n string, cfg request.MCPServerConfig) {
+			defer wg.Done()
+			sem <- struct{}{}        // 获取信号量
+			defer func() { <-sem }() // 释放信号量
 
-		imported = append(imported, server)
+			server, err := s.importSingleServer(ctx, userID, n, cfg)
+
+			mu.Lock()
+			if err != nil {
+				failed = append(failed, response.FailedServer{
+					Name:    n,
+					Error:   mapErrorToCode(err),
+					Message: err.Error(),
+				})
+			} else {
+				imported = append(imported, server)
+			}
+			mu.Unlock()
+		}(name, serverConfig)
 	}
+
+	wg.Wait()
 
 	return &response.MCPImportResponse{
 		Imported: imported,
@@ -115,10 +140,19 @@ func (s *importService) importSingleServer(ctx context.Context, userID string, n
 	// 连接测试必须通过后才允许写入数据库，避免不可用的 server 出现在 MCP 列表。
 	target := s.buildTarget(serverEntity)
 	client := s.clientProvider()
+
+	// 打开一个 MCP 会话，连接测试和工具发现共用同一会话，避免 stdio 重复冷启动
 	connCtx, connCancel := context.WithTimeout(ctx, time.Duration(serverEntity.ConnectTimeoutMs)*time.Millisecond)
 	defer connCancel()
-	if err := mcp.TestConnection(connCtx, client, target, 0); err != nil {
-		return response.ImportedServer{}, fmt.Errorf("%w: %v", repository.ErrMCPConnectionFailed, err)
+	session, sessionErr := client.OpenSession(connCtx, target, time.Duration(serverEntity.ConnectTimeoutMs)*time.Millisecond)
+	if sessionErr != nil {
+		return response.ImportedServer{}, fmt.Errorf("%w: open MCP session: %v", repository.ErrMCPConnectionFailed, sessionErr)
+	}
+	defer session.Close()
+
+	// 连接测试（Initialize 握手）
+	if initErr := session.Initialize(connCtx); initErr != nil {
+		return response.ImportedServer{}, fmt.Errorf("%w: %v", repository.ErrMCPConnectionFailed, initErr)
 	}
 
 	serverEntity.ConnectionStatus = "available"
@@ -133,10 +167,55 @@ func (s *importService) importSingleServer(ctx context.Context, userID string, n
 		return response.ImportedServer{}, err
 	}
 
-	tools, warnings := s.discoverAndImportTools(ctx, serverEntity.ID, target)
+	// 在同一会话上进行工具发现
+	discoverCtx, discoverCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer discoverCancel()
+	discoveredTools, listErr := session.ListTools(discoverCtx)
+	if listErr != nil {
+		return response.ImportedServer{
+			Server:   response.ConvertToServerSummary(serverEntity, nil, nil),
+			Warnings: []string{fmt.Sprintf("工具发现失败: %s", listErr.Error())},
+		}, nil
+	}
+
+	// 处理并保存发现的工具
+	toolEntities := make([]entity.MCPTool, 0, len(discoveredTools))
+	toolSummaries := make([]response.MCPToolSummary, 0, len(discoveredTools))
+	now := time.Now().UTC()
+	for _, t := range discoveredTools {
+		schemaHash := computeSchemaHash(t.InputSchema)
+		toolEntity := entity.MCPTool{
+			ID:            uuid.New().String(),
+			ServerID:      serverEntity.ID,
+			ToolName:      t.Name,
+			Description:   &t.Description,
+			InputSchema:   t.InputSchema,
+			SchemaHash:    schemaHash,
+			ReadOnly:      true,
+			Enabled:       false,
+			DiscoveredAt:  now,
+			LastCheckedAt: now,
+		}
+		toolEntities = append(toolEntities, toolEntity)
+		toolSummaries = append(toolSummaries, response.MCPToolSummary{
+			ID:          "",
+			ToolName:    t.Name,
+			Description: &t.Description,
+			ReadOnly:    true,
+			Enabled:     false,
+		})
+	}
+	var warnings []string
+	if batchErr := s.tools.BatchCreate(ctx, toolEntities); batchErr != nil {
+		if errors.Is(batchErr, repository.ErrDuplicateResource) {
+			warnings = []string{"工具已导入，不能重复导入"}
+		} else {
+			warnings = []string{fmt.Sprintf("工具导入失败: %s", batchErr.Error())}
+		}
+	}
 
 	return response.ImportedServer{
-		Server:   response.ConvertToServerSummary(serverEntity, tools, warnings),
+		Server:   response.ConvertToServerSummary(serverEntity, toolSummaries, warnings),
 		Warnings: warnings,
 	}, nil
 }
@@ -159,8 +238,8 @@ func (s *importService) importHTTPServer(ctx context.Context, userID string, nam
 	masked := mcp.MaskStringMap(config.Headers)
 	authMasked := extractAuthMasked(masked)
 
-	connectTimeoutMs := 5000
-	callTimeoutMs := 30000
+	connectTimeoutMs := 15000 // HTTP 连接通常较快，15 秒足够
+	callTimeoutMs := 120000   // 工具调用可能耗时较长，默认 2 分钟
 	maxResponseBytes := 1024 * 1024
 	enabled := true
 
@@ -228,8 +307,8 @@ func (s *importService) importStdioServer(ctx context.Context, userID string, na
 	masked := mcp.MaskStringMap(env)
 	authMasked := extractAuthMasked(masked)
 
-	connectTimeoutMs := 5000
-	callTimeoutMs := 30000
+	connectTimeoutMs := 45000 // stdio 需启动子进程（npx/pip 等），45 秒保证首次安装不超时
+	callTimeoutMs := 120000   // 工具调用可能耗时较长，默认 2 分钟
 	maxResponseBytes := 1024 * 1024
 	enabled := true
 
@@ -250,6 +329,7 @@ func (s *importService) importStdioServer(ctx context.Context, userID string, na
 		Description:      config.Description,
 		Transport:        "stdio",
 		Command:          config.Command,
+		CWD:              config.CWD,
 		ArgsCiphertext:   argsCiphertext,
 		EnvCiphertext:    envCiphertext,
 		AuthMasked:       authMasked,
@@ -263,7 +343,7 @@ func (s *importService) importStdioServer(ctx context.Context, userID string, na
 
 func (s *importService) discoverAndImportTools(ctx context.Context, serverID string, target mcp.MCPServerTarget) ([]response.MCPToolSummary, []string) {
 	client := s.clientProvider()
-	timeout := 10 * time.Second
+	timeout := 30 * time.Second
 	discoverCtx, discoverCancel := context.WithTimeout(ctx, timeout)
 	defer discoverCancel()
 
@@ -301,14 +381,38 @@ func (s *importService) discoverAndImportTools(ctx context.Context, serverID str
 	}
 
 	if err := s.tools.BatchCreate(ctx, toolEntities); err != nil {
+		if errors.Is(err, repository.ErrDuplicateResource) {
+			return toolSummaries, []string{buildDuplicateToolWarning(ctx, s, serverID, toolEntities)}
+		}
 		return toolSummaries, []string{fmt.Sprintf("工具导入失败: %s", err.Error())}
 	}
 
 	return toolSummaries, nil
 }
 
+// buildDuplicateToolWarning 生成"工具已导入，不能重复导入"的警告信息，并列出已存在的工具名。
+func buildDuplicateToolWarning(ctx context.Context, s *importService, serverID string, toolEntities []entity.MCPTool) string {
+	existing, findErr := s.tools.FindByServer(ctx, serverID)
+	if findErr == nil {
+		existingSet := make(map[string]struct{}, len(existing))
+		for _, e := range existing {
+			existingSet[e.ToolName] = struct{}{}
+		}
+		var duplicates []string
+		for _, t := range toolEntities {
+			if _, ok := existingSet[t.ToolName]; ok {
+				duplicates = append(duplicates, t.ToolName)
+			}
+		}
+		if len(duplicates) > 0 {
+			return fmt.Sprintf("工具已导入，不能重复导入: %s", strings.Join(duplicates, ", "))
+		}
+	}
+	return "工具已导入，不能重复导入"
+}
+
 func (s *importService) buildTarget(server *entity.MCPServer) mcp.MCPServerTarget {
-	target := mcp.MCPServerTarget{Transport: server.Transport}
+	target := mcp.MCPServerTarget{Transport: server.Transport, MaxResponseBytes: server.MaxResponseBytes}
 
 	if server.Transport == "streamable_http" {
 		if server.URL != nil {
@@ -318,9 +422,12 @@ func (s *importService) buildTarget(server *entity.MCPServer) mcp.MCPServerTarge
 			headers, _ := mcp.DecryptStringMap(server.HeadersCiphertext, mcp.DeriveKey(s.cfg.MCP.EncryptionKey))
 			target.Headers = headers
 		}
-	} else {
+	} else if server.Transport == "stdio" {
 		if server.Command != nil {
 			target.Command = *server.Command
+		}
+		if server.CWD != nil {
+			target.CWD = *server.CWD
 		}
 		if server.ArgsCiphertext != nil {
 			args, _ := mcp.DecryptStringSlice(server.ArgsCiphertext, mcp.DeriveKey(s.cfg.MCP.EncryptionKey))

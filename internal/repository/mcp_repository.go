@@ -156,6 +156,10 @@ func (r *mcpToolRepository) BatchCreate(ctx context.Context, tools []entity.MCPT
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for i := range tools {
 			if err := tx.Create(&tools[i]).Error; err != nil {
+				var postgresError *pgconn.PgError
+				if errors.As(err, &postgresError) && postgresError.Code == "23505" {
+					return ErrDuplicateResource
+				}
 				return err
 			}
 		}
