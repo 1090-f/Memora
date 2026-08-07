@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 
@@ -41,7 +42,7 @@ type MCPClient interface {
 	Initialize(ctx context.Context, target MCPServerTarget, timeout time.Duration) error
 	ListTools(ctx context.Context, target MCPServerTarget, timeout time.Duration) ([]MCPServerTool, error)
 	CallTool(ctx context.Context, target MCPServerTarget, toolName string, arguments json.RawMessage, timeout time.Duration) (json.RawMessage, error)
-	OpenSession(ctx context.Context, target MCPServerTarget) (MCPSession, error)
+	OpenSession(ctx context.Context, target MCPServerTarget, timeout time.Duration) (MCPSession, error)
 }
 
 // MCPSession 表示一个已建立的 MCP 连接，支持在同一连接上执行多个操作。
@@ -52,7 +53,8 @@ type MCPSession interface {
 }
 
 type mcpSession struct {
-	cli *client.Client
+	cli    *client.Client
+	cancel context.CancelFunc
 }
 
 func (s *mcpSession) Initialize(ctx context.Context) error {
@@ -155,12 +157,14 @@ func (c *mcpClient) CallTool(ctx context.Context, target MCPServerTarget, toolNa
 	return data, nil
 }
 
-func (c *mcpClient) OpenSession(ctx context.Context, target MCPServerTarget) (MCPSession, error) {
-	cli, err := c.open(ctx, target)
+func (c *mcpClient) OpenSession(ctx context.Context, target MCPServerTarget, timeout time.Duration) (MCPSession, error) {
+	sessionCtx, cancel := withTimeout(ctx, timeout, 60*time.Second)
+	cli, err := c.open(sessionCtx, target)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
-	return &mcpSession{cli: cli}, nil
+	return &mcpSession{cli: cli, cancel: cancel}, nil
 }
 
 func (c *mcpClient) open(ctx context.Context, target MCPServerTarget) (*client.Client, error) {
@@ -180,7 +184,8 @@ func (c *mcpClient) open(ctx context.Context, target MCPServerTarget) (*client.C
 		}
 		tr := transport.NewStdioWithOptions(target.Command, env, target.Args, transport.WithCommandFunc(func(commandCtx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 			cmd := exec.CommandContext(commandCtx, command, args...)
-			cmd.Env = append([]string{}, env...)
+			// 继承系统环境变量，然后追加 MCP 自定义环境变量
+			cmd.Env = append(os.Environ(), env...)
 			cmd.Dir = target.CWD
 			return cmd, nil
 		}))

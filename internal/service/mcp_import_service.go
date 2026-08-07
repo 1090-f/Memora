@@ -142,15 +142,15 @@ func (s *importService) importSingleServer(ctx context.Context, userID string, n
 	client := s.clientProvider()
 
 	// 打开一个 MCP 会话，连接测试和工具发现共用同一会话，避免 stdio 重复冷启动
-	session, sessionErr := client.OpenSession(ctx, target)
+	connCtx, connCancel := context.WithTimeout(ctx, time.Duration(serverEntity.ConnectTimeoutMs)*time.Millisecond)
+	defer connCancel()
+	session, sessionErr := client.OpenSession(connCtx, target, time.Duration(serverEntity.ConnectTimeoutMs)*time.Millisecond)
 	if sessionErr != nil {
-		return response.ImportedServer{}, fmt.Errorf("open MCP session: %w", sessionErr)
+		return response.ImportedServer{}, fmt.Errorf("%w: open MCP session: %v", repository.ErrMCPConnectionFailed, sessionErr)
 	}
 	defer session.Close()
 
 	// 连接测试（Initialize 握手）
-	connCtx, connCancel := context.WithTimeout(ctx, time.Duration(serverEntity.ConnectTimeoutMs)*time.Millisecond)
-	defer connCancel()
 	if initErr := session.Initialize(connCtx); initErr != nil {
 		return response.ImportedServer{}, fmt.Errorf("%w: %v", repository.ErrMCPConnectionFailed, initErr)
 	}

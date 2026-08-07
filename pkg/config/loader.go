@@ -86,7 +86,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("app.mode", "debug")
 	v.SetDefault("app.address", ":8080")
 	v.SetDefault("app.read_timeout", "15s")
-	v.SetDefault("app.write_timeout", "15s")
+	v.SetDefault("app.write_timeout", "2m")
 	v.SetDefault("app.shutdown_timeout", "10s")
 	v.SetDefault("database.max_idle_conns", 5)
 	v.SetDefault("database.max_open_conns", 25)
