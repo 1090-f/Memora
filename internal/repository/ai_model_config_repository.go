@@ -9,9 +9,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// ErrModelConfigNotFound 表示未找到指定的模型配置。
-var ErrModelConfigNotFound = errors.New("model config not found")
-
 // aiModelConfigRepository 是 AIModelConfigRepository 接口的 GORM 实现。
 type aiModelConfigRepository struct{ db *gorm.DB }
 
