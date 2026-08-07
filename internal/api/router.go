@@ -38,7 +38,7 @@ type Dependencies struct {
 	Directories     service.DirectoryService
 	Documents       service.DocumentService
 	DocumentProcess service.DocumentProcessService
-	MCP            service.ImportService
+	MCP             service.ImportService
 	PostgresHealth  HealthCheck
 	RedisHealth     HealthCheck
 	MinIOHealth     HealthCheck

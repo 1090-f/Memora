@@ -44,6 +44,6 @@ var (
 	// ErrConflict 资源冲突，如重复创建（HTTP 409）。
 	ErrConflict = New(contracts.ErrDuplicateResource, nil)
 	// ErrInternal 服务器内部错误（HTTP 500）。
-	ErrInternal = New(contracts.ErrInternal, nil)
+	ErrInternal        = New(contracts.ErrInternal, nil)
 	ErrPayloadTooLarge = New(contracts.ErrPayloadTooLarge, nil)
 )
