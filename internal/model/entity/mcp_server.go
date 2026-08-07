@@ -12,6 +12,7 @@ type MCPServer struct {
 	Transport         string     `gorm:"column:transport;not null;default:streamable_http" json:"transport"`
 	URL               *string    `gorm:"column:url" json:"url"`
 	Command           *string    `gorm:"column:command" json:"command"`
+	CWD               *string    `gorm:"column:cwd" json:"cwd,omitempty"`
 	HeadersCiphertext []byte     `gorm:"column:headers_ciphertext" json:"-"`
 	ArgsCiphertext    []byte     `gorm:"column:args_ciphertext" json:"-"`
 	EnvCiphertext     []byte     `gorm:"column:env_ciphertext" json:"-"`

@@ -1,18 +1,23 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
+	"os/exec"
 	"time"
+
+	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// MCPServerTarget 统一描述两种传输的目标：
-// - HTTP：URL + Headers
-// - stdio：Command + Args + Env
+const (
+	TransportStreamableHTTP = "streamable_http"
+	TransportStdio          = "stdio"
+)
+
+// MCPServerTarget 统一描述两种传输的目标：HTTP 使用 URL/Headers，stdio 使用 Command/Args/Env/CWD。
 type MCPServerTarget struct {
 	Transport        string            `json:"transport"`
 	URL              string            `json:"url,omitempty"`
@@ -20,335 +25,150 @@ type MCPServerTarget struct {
 	Command          string            `json:"command,omitempty"`
 	Args             []string          `json:"args,omitempty"`
 	Env              map[string]string `json:"env,omitempty"`
+	CWD              string            `json:"cwd,omitempty"`
 	MaxResponseBytes int               `json:"-"`
 }
 
-// MCPServerTool 是从 MCP Server 发现的工具元数据。
+// MCPServerTool 是从 MCP Server 发现的工具元数据，InputSchema 可直接转换为 Eino JSON Schema。
 type MCPServerTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
 }
 
-// MCPClient 定义了与 MCP Server Server 的交互抽象，
-// 支持 Streamable HTTP 与 stdio 两种传输。
+// MCPClient 定义 MCP 连接、发现和调用能力；底层协议由 mcp-go 负责。
 type MCPClient interface {
-	// Initialize 发送 initialize 请求，建立会话。
 	Initialize(ctx context.Context, target MCPServerTarget, timeout time.Duration) error
-	// ListTools 发送 tools/list 请求，返回可用工具列表。
 	ListTools(ctx context.Context, target MCPServerTarget, timeout time.Duration) ([]MCPServerTool, error)
-	// CallTool 发送 tools/call 请求，执行指定工具。
 	CallTool(ctx context.Context, target MCPServerTarget, toolName string, arguments json.RawMessage, timeout time.Duration) (json.RawMessage, error)
 }
 
-// mcpClient 是 MCPClient 的实现。
-type mcpClient struct {
-	httpClient *http.Client
-}
+type mcpClient struct{}
 
-// NewMCPClient 创建一个新的 MCP 客户端实例。
-func NewMCPClient() MCPClient {
-	return &mcpClient{
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				MaxIdleConns:        10,
-				IdleConnTimeout:     90 * time.Second,
-				DisableCompression:  false,
-				DisableKeepAlives:   false,
-				MaxIdleConnsPerHost: 10,
-			},
-		},
-	}
-}
+// NewMCPClient 创建无状态客户端。每次操作建立并关闭独立 MCP 会话，避免进程和会话泄漏。
+func NewMCPClient() MCPClient { return &mcpClient{} }
 
-// Initialize 向 MCP Server 发送 initialize 请求。
 func (c *mcpClient) Initialize(ctx context.Context, target MCPServerTarget, timeout time.Duration) error {
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
-	initCtx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := withTimeout(ctx, timeout, 5*time.Second)
 	defer cancel()
-
-	switch target.Transport {
-	case "streamable_http":
-		return c.initializeHTTP(initCtx, target)
-	case "stdio":
-		return c.initializeStdio(initCtx, target)
-	default:
-		return fmt.Errorf("unsupported transport: %s", target.Transport)
-	}
-}
-
-func (c *mcpClient) initializeHTTP(ctx context.Context, target MCPServerTarget) error {
-	req := mcpRequest{
-		JSONRPC: "2.0",
-		ID:      1,
-		Method:  "initialize",
-		Params: map[string]any{
-			"protocolVersion": "2024-11-05",
-			"capabilities": map[string]any{
-				"roots": map[string]any{"listChanged": true},
-			},
-			"clientInfo": map[string]string{
-				"name":    "Memora",
-				"version": "1.0.0",
-			},
-		},
-	}
-	_, err := c.sendHTTPRequest(ctx, target, req)
-	return err
-}
-
-func (c *mcpClient) initializeStdio(ctx context.Context, target MCPServerTarget) error {
-	proc, err := StartStdioProcess(target, StdioProcessConfig{
-		StartTimeout:   5 * time.Second,
-		MaxOutputBytes: 1024 * 1024,
-		KillTimeout:    2 * time.Second,
-	})
+	cli, err := c.open(ctx, target)
 	if err != nil {
-		return fmt.Errorf("start stdio process: %w", err)
+		return err
 	}
-	defer proc.Close()
-
-	req := map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities": map[string]any{
-			"roots": map[string]any{"listChanged": true},
-		},
-		"clientInfo": map[string]string{
-			"name":    "Memora",
-			"version": "1.0.0",
-		},
-	}
-	_, err = proc.Request(ctx, "initialize", req)
+	defer cli.Close()
+	_, err = cli.Initialize(ctx, initializeRequest())
 	return err
 }
 
-// ListTools 向 MCP Server 发送 tools/list 请求。
 func (c *mcpClient) ListTools(ctx context.Context, target MCPServerTarget, timeout time.Duration) ([]MCPServerTool, error) {
-	if timeout <= 0 {
-		timeout = 10 * time.Second
-	}
-	listCtx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := withTimeout(ctx, timeout, 10*time.Second)
 	defer cancel()
-
-	switch target.Transport {
-	case "streamable_http":
-		return c.listToolsHTTP(listCtx, target)
-	case "stdio":
-		return c.listToolsStdio(listCtx, target)
-	default:
-		return nil, fmt.Errorf("unsupported transport: %s", target.Transport)
-	}
-}
-
-func (c *mcpClient) listToolsHTTP(ctx context.Context, target MCPServerTarget) ([]MCPServerTool, error) {
-	if err := c.initializeHTTP(ctx, target); err != nil {
-		return nil, fmt.Errorf("initialize http server: %w", err)
-	}
-	req := mcpRequest{
-		JSONRPC: "2.0",
-		ID:      2,
-		Method:  "tools/list",
-		Params:  nil,
-	}
-	result, err := c.sendHTTPRequest(ctx, target, req)
+	cli, err := c.open(ctx, target)
 	if err != nil {
 		return nil, err
 	}
-	var listResponse struct {
-		Tools []MCPServerTool `json:"tools"`
+	defer cli.Close()
+	if _, err = cli.Initialize(ctx, initializeRequest()); err != nil {
+		return nil, fmt.Errorf("initialize MCP server: %w", err)
 	}
-	if err := json.Unmarshal(result, &listResponse); err != nil {
-		return nil, fmt.Errorf("unmarshal tools list: %w", err)
+	result, err := cli.ListTools(ctx, mcp.ListToolsRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("list MCP tools: %w", err)
 	}
-	return listResponse.Tools, nil
+	tools := make([]MCPServerTool, 0, len(result.Tools))
+	for _, item := range result.Tools {
+		schema, err := json.Marshal(item.InputSchema)
+		if err != nil {
+			return nil, fmt.Errorf("marshal input schema for %q: %w", item.Name, err)
+		}
+		tools = append(tools, MCPServerTool{Name: item.Name, Description: item.Description, InputSchema: schema})
+	}
+	return tools, nil
 }
 
-func (c *mcpClient) listToolsStdio(ctx context.Context, target MCPServerTarget) ([]MCPServerTool, error) {
-	proc, err := StartStdioProcess(target, StdioProcessConfig{
-		StartTimeout:   5 * time.Second,
-		MaxOutputBytes: 1024 * 1024,
-		KillTimeout:    2 * time.Second,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("start stdio process: %w", err)
-	}
-	defer proc.Close()
-
-	initializeParams := map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities": map[string]any{
-			"roots": map[string]any{"listChanged": true},
-		},
-		"clientInfo": map[string]string{
-			"name":    "Memora",
-			"version": "1.0.0",
-		},
-	}
-	if _, err := proc.Request(ctx, "initialize", initializeParams); err != nil {
-		return nil, fmt.Errorf("initialize stdio process: %w", err)
-	}
-
-	result, err := proc.Request(ctx, "tools/list", nil)
-	if err != nil {
-		return nil, err
-	}
-	var listResponse struct {
-		Tools []MCPServerTool `json:"tools"`
-	}
-	if err := json.Unmarshal(result, &listResponse); err != nil {
-		return nil, fmt.Errorf("unmarshal tools list: %w", err)
-	}
-	return listResponse.Tools, nil
-}
-
-// CallTool 向 MCP Server 发送 tools/call 请求。
 func (c *mcpClient) CallTool(ctx context.Context, target MCPServerTarget, toolName string, arguments json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := withTimeout(ctx, timeout, 30*time.Second)
 	defer cancel()
+	cli, err := c.open(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	defer cli.Close()
+	if _, err = cli.Initialize(ctx, initializeRequest()); err != nil {
+		return nil, fmt.Errorf("initialize MCP server: %w", err)
+	}
+	result, err := cli.CallTool(ctx, mcp.CallToolRequest{Params: mcp.CallToolParams{Name: toolName, Arguments: json.RawMessage(arguments)}})
+	if err != nil {
+		return nil, fmt.Errorf("call MCP tool: %w", err)
+	}
+	if result.IsError {
+		return nil, fmt.Errorf("MCP tool returned an error")
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("marshal MCP tool result: %w", err)
+	}
+	if target.MaxResponseBytes > 0 && len(data) > target.MaxResponseBytes {
+		return nil, fmt.Errorf("response exceeds maximum size of %d bytes", target.MaxResponseBytes)
+	}
+	return data, nil
+}
 
+func (c *mcpClient) open(ctx context.Context, target MCPServerTarget) (*client.Client, error) {
+	var cli *client.Client
+	var err error
 	switch target.Transport {
-	case "streamable_http":
-		return c.callToolHTTP(callCtx, target, toolName, arguments)
-	case "stdio":
-		return c.callToolStdio(callCtx, target, toolName, arguments)
+	case TransportStreamableHTTP:
+		tr, trErr := transport.NewStreamableHTTP(target.URL, transport.WithHTTPHeaders(target.Headers))
+		if trErr != nil {
+			return nil, fmt.Errorf("create HTTP MCP transport: %w", trErr)
+		}
+		cli = client.NewClient(tr)
+	case TransportStdio:
+		env := make([]string, 0, len(target.Env))
+		for key, value := range target.Env {
+			env = append(env, key+"="+value)
+		}
+		tr := transport.NewStdioWithOptions(target.Command, env, target.Args, transport.WithCommandFunc(func(commandCtx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
+			cmd := exec.CommandContext(commandCtx, command, args...)
+			cmd.Env = append([]string{}, env...)
+			cmd.Dir = target.CWD
+			return cmd, nil
+		}))
+		cli = client.NewClient(tr)
 	default:
 		return nil, fmt.Errorf("unsupported transport: %s", target.Transport)
 	}
+	if err = cli.Start(ctx); err != nil {
+		_ = cli.Close()
+		return nil, fmt.Errorf("start MCP client: %w", err)
+	}
+	return cli, nil
 }
 
-func (c *mcpClient) callToolHTTP(ctx context.Context, target MCPServerTarget, toolName string, arguments json.RawMessage) (json.RawMessage, error) {
-	if err := c.initializeHTTP(ctx, target); err != nil {
-		return nil, fmt.Errorf("initialize http server: %w", err)
-	}
-	req := mcpRequest{
-		JSONRPC: "2.0",
-		ID:      3,
-		Method:  "tools/call",
-		Params: map[string]any{
-			"name":      toolName,
-			"arguments": json.RawMessage(arguments),
-		},
-	}
-	return c.sendHTTPRequest(ctx, target, req)
+func initializeRequest() mcp.InitializeRequest {
+	request := mcp.InitializeRequest{}
+	request.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	request.Params.ClientInfo = mcp.Implementation{Name: "Memora", Version: "1.0.0"}
+	request.Params.Capabilities.Roots = &struct {
+		ListChanged bool `json:"listChanged,omitempty"`
+	}{ListChanged: true}
+	return request
 }
 
-func (c *mcpClient) callToolStdio(ctx context.Context, target MCPServerTarget, toolName string, arguments json.RawMessage) (json.RawMessage, error) {
-	proc, err := StartStdioProcess(target, StdioProcessConfig{
-		StartTimeout:   5 * time.Second,
-		MaxOutputBytes: 1024 * 1024,
-		KillTimeout:    2 * time.Second,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("start stdio process: %w", err)
+func withTimeout(ctx context.Context, timeout, fallback time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		timeout = fallback
 	}
-	defer proc.Close()
-
-	initializeParams := map[string]any{
-		"protocolVersion": "2024-11-05",
-		"capabilities": map[string]any{
-			"roots": map[string]any{"listChanged": true},
-		},
-		"clientInfo": map[string]string{
-			"name":    "Memora",
-			"version": "1.0.0",
-		},
-	}
-	if _, err := proc.Request(ctx, "initialize", initializeParams); err != nil {
-		return nil, fmt.Errorf("initialize stdio process: %w", err)
-	}
-
-	params := map[string]any{
-		"name":      toolName,
-		"arguments": json.RawMessage(arguments),
-	}
-	return proc.Request(ctx, "tools/call", params)
+	return context.WithTimeout(ctx, timeout)
 }
 
-func (c *mcpClient) sendHTTPRequest(ctx context.Context, target MCPServerTarget, req mcpRequest) (json.RawMessage, error) {
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
-	}
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", target.URL, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("create http request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	for k, v := range target.Headers {
-		httpReq.Header.Set(k, v)
-	}
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("http request: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("http status %d", resp.StatusCode)
-	}
-	maxResponseBytes := target.MaxResponseBytes
-	if maxResponseBytes <= 0 {
-		maxResponseBytes = 1024 * 1024
-	}
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxResponseBytes)+1))
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
-	if len(respBody) > maxResponseBytes {
-		return nil, fmt.Errorf("response exceeds maximum size of %d bytes", maxResponseBytes)
-	}
-	var mcpResp mcpResponse
-	if err := json.Unmarshal(respBody, &mcpResp); err != nil {
-		return nil, fmt.Errorf("unmarshal response: %w", err)
-	}
-	if mcpResp.Error != nil {
-		return nil, fmt.Errorf("rpc error %d: %s", mcpResp.Error.Code, mcpResp.Error.Message)
-	}
-	return mcpResp.Result, nil
-}
-
-// JSON-RPC 2.0 类型
-
-type mcpRequest struct {
-	JSONRPC string `json:"jsonrpc"`
-	ID      int    `json:"id"`
-	Method  string `json:"method"`
-	Params  any    `json:"params,omitempty"`
-}
-
-type mcpResponse struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      int             `json:"id"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   *mcpError       `json:"error,omitempty"`
-}
-
-type mcpError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-// TestConnection 测试与 MCP Server 的连接是否可用。
+// TestConnection 测试 MCP Server 是否可以完成 initialize 握手。
 func TestConnection(ctx context.Context, client MCPClient, target MCPServerTarget, timeout time.Duration) error {
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
-	testCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	return client.Initialize(testCtx, target, timeout)
+	return client.Initialize(ctx, target, timeout)
 }
 
-// DiscoverTools 从 MCP Server 发现可用工具列表。
+// DiscoverTools 发现 MCP 工具，返回的 InputSchema 供 Eino 工具适配器使用。
 func DiscoverTools(ctx context.Context, client MCPClient, target MCPServerTarget, timeout time.Duration) ([]MCPServerTool, error) {
-	if timeout <= 0 {
-		timeout = 10 * time.Second
-	}
-	discoverCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	return client.ListTools(discoverCtx, target, timeout)
+	return client.ListTools(ctx, target, timeout)
 }

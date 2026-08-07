@@ -250,6 +250,7 @@ func (s *importService) importStdioServer(ctx context.Context, userID string, na
 		Description:      config.Description,
 		Transport:        "stdio",
 		Command:          config.Command,
+		CWD:              config.CWD,
 		ArgsCiphertext:   argsCiphertext,
 		EnvCiphertext:    envCiphertext,
 		AuthMasked:       authMasked,
@@ -308,7 +309,7 @@ func (s *importService) discoverAndImportTools(ctx context.Context, serverID str
 }
 
 func (s *importService) buildTarget(server *entity.MCPServer) mcp.MCPServerTarget {
-	target := mcp.MCPServerTarget{Transport: server.Transport}
+	target := mcp.MCPServerTarget{Transport: server.Transport, MaxResponseBytes: server.MaxResponseBytes}
 
 	if server.Transport == "streamable_http" {
 		if server.URL != nil {
@@ -318,9 +319,12 @@ func (s *importService) buildTarget(server *entity.MCPServer) mcp.MCPServerTarge
 			headers, _ := mcp.DecryptStringMap(server.HeadersCiphertext, mcp.DeriveKey(s.cfg.MCP.EncryptionKey))
 			target.Headers = headers
 		}
-	} else {
+	} else if server.Transport == "stdio" {
 		if server.Command != nil {
 			target.Command = *server.Command
+		}
+		if server.CWD != nil {
+			target.CWD = *server.CWD
 		}
 		if server.ArgsCiphertext != nil {
 			args, _ := mcp.DecryptStringSlice(server.ArgsCiphertext, mcp.DeriveKey(s.cfg.MCP.EncryptionKey))
