@@ -9,6 +9,7 @@ import (
 // EventType 表示 Agent 事件的类型。
 type EventType string
 
+// Agent 运行过程发布的事件类型常量。
 const (
 	// EventRunQueued 表示 Agent 运行已排队等待执行。
 	EventRunQueued EventType = "agent.run.queued"
@@ -36,12 +37,12 @@ const (
 
 // AgentEvent 表示在 Agent 执行运行期间发出的事件。
 type AgentEvent struct {
-	EventID   ID              `json:"event_id"`
-	RunID     ID              `json:"run_id"`
-	EventType EventType       `json:"event_type"`
-	Sequence  int64           `json:"sequence"`
-	Timestamp time.Time       `json:"timestamp"`
-	Data      json.RawMessage `json:"data"`
+	EventID   ID              `json:"event_id"`   // 事件唯一 ID
+	RunID     ID              `json:"run_id"`     // 所属运行 ID
+	EventType EventType       `json:"event_type"` // 事件类型
+	Sequence  int64           `json:"sequence"`   // 事件序号，用于顺序消费
+	Timestamp time.Time       `json:"timestamp"`  // 事件发生时间
+	Data      json.RawMessage `json:"data"`       // 事件附加数据（原始 JSON）
 }
 
 // EventPublisher 发布 Agent 事件以供实时消费。

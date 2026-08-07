@@ -86,7 +86,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("app.mode", "debug")
 	v.SetDefault("app.address", ":8080")
 	v.SetDefault("app.read_timeout", "15s")
-	v.SetDefault("app.write_timeout", "15s")
+	v.SetDefault("app.write_timeout", "2m")
 	v.SetDefault("app.shutdown_timeout", "10s")
 	v.SetDefault("database.max_idle_conns", 5)
 	v.SetDefault("database.max_open_conns", 25)
@@ -99,6 +99,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("worker.default_timeout", "5m")
 	v.SetDefault("worker.max_retry_delay", "1m")
 	v.SetDefault("worker.idempotency_ttl", "24h")
+	v.SetDefault("mcp.encryption_key", "")
+	v.SetDefault("mcp.stdio_command_whitelist", []string{"npx", "python", "python3", "uvx", "node"})
+	v.SetDefault("mcp.allow_local_http", false)
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.filename", "")
 	v.SetDefault("log.max_size", 100)
@@ -130,6 +133,7 @@ func bindEnvironment(v *viper.Viper) {
 		"log.level":              "MEMORA_LOG_LEVEL", "log.filename": "MEMORA_LOG_FILENAME",
 		"log.max_size": "MEMORA_LOG_MAX_SIZE", "log.max_backups": "MEMORA_LOG_MAX_BACKUPS",
 		"log.max_age": "MEMORA_LOG_MAX_AGE", "log.compress": "MEMORA_LOG_COMPRESS",
+		"mcp.encryption_key": "MEMORA_MCP_ENCRYPTION_KEY", "mcp.allow_local_http": "MEMORA_MCP_ALLOW_LOCAL_HTTP",
 	}
 	for key, environment := range bindings {
 		_ = v.BindEnv(key, environment)

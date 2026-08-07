@@ -95,6 +95,10 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	kbService := service.NewKnowledgeBaseService(kbs, dirs, searchConfigs, agentConfigs, modelConfigs, transactor)
 	directoryService := service.NewDirectoryService(kbs, dirs)
 
+	mcpServers := repository.NewMCPServerRepository(a.db)
+	mcpTools := repository.NewMCPToolRepository(a.db)
+	mcpService := service.NewImportService(mcpServers, mcpTools, cfg)
+
 	docs := repository.NewDocumentRepository(a.db)
 	importTasks := repository.NewImportTaskRepository(a.db)
 	chunks := repository.NewDocumentChunkRepository(a.db)
@@ -103,7 +107,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	documentProcessService := service.NewDocumentProcessService(importTasks, docs, chunks, vectors, nil)
 
 	router := api.NewRouter(api.Dependencies{
-		Config: cfg.CORS, Auth: authService, Users: userService,
+		Config: cfg.CORS, Auth: authService, Users: userService, MCP: mcpService,
 		KnowledgeBases: kbService, Directories: directoryService,
 		Documents: documentService, DocumentProcess: documentProcessService,
 		PostgresHealth: func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },

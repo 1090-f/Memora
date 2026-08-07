@@ -22,5 +22,6 @@ const (
 	ErrInternal              ErrorCode = "INTERNAL_ERROR"
 	ErrModelCallFailed       ErrorCode = "MODEL_CALL_FAILED"
 	ErrMCPCallFailed         ErrorCode = "MCP_CALL_FAILED"
+	ErrMCPConnectionFailed   ErrorCode = "MCP_CONNECTION_FAILED"
 	ErrUpstreamTimeout       ErrorCode = "UPSTREAM_TIMEOUT"
 )

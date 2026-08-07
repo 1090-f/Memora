@@ -12,6 +12,7 @@ import (
 	"github.com/1090-f/Memora/internal/api/v1/document"
 	"github.com/1090-f/Memora/internal/api/v1/importtask"
 	"github.com/1090-f/Memora/internal/api/v1/knowledgebase"
+	mcpapi "github.com/1090-f/Memora/internal/api/v1/mcp"
 	"github.com/1090-f/Memora/internal/api/v1/user"
 	apperrors "github.com/1090-f/Memora/internal/apperror"
 	"github.com/1090-f/Memora/internal/contracts"
@@ -37,6 +38,7 @@ type Dependencies struct {
 	Directories     service.DirectoryService
 	Documents       service.DocumentService
 	DocumentProcess service.DocumentProcessService
+	MCP            service.ImportService
 	PostgresHealth  HealthCheck
 	RedisHealth     HealthCheck
 	MinIOHealth     HealthCheck
@@ -57,6 +59,9 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	user.NewController(deps.Users).RegisterRoutes(v1, authRequired)
 	knowledgebase.NewController(deps.KnowledgeBases).RegisterRoutes(v1, authRequired)
 	directory.NewController(deps.Directories).RegisterRoutes(v1, authRequired)
+	if deps.MCP != nil {
+		mcpapi.NewController(deps.MCP).RegisterRoutes(v1, authRequired)
+	}
 	document.NewController(deps.Documents).RegisterRoutes(v1, authRequired)
 	importtask.NewController(deps.DocumentProcess).RegisterRoutes(v1, authRequired)
 	return engine

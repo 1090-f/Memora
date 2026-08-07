@@ -8,6 +8,7 @@ import (
 // RetrievalMode 表示文档检索使用的搜索策略。
 type RetrievalMode string
 
+// 检索模式常量。
 const (
 	// RetrievalKeyword 使用基于关键词的搜索进行文档检索。
 	RetrievalKeyword RetrievalMode = "keyword"
@@ -36,13 +37,13 @@ func DefaultSearchConfig() SearchConfig {
 
 // RetrievalRequest 表示检索相关文档的请求。
 type RetrievalRequest struct {
-	UserID          ID            `json:"user_id"`
-	KnowledgeBaseID ID            `json:"knowledge_base_id"`
-	Query           string        `json:"query"`
-	Mode            RetrievalMode `json:"mode"`
-	DocumentIDs     []ID          `json:"document_ids,omitempty"`
-	TopK            int           `json:"top_k"`
-	Config          SearchConfig  `json:"config"`
+	UserID          ID            `json:"user_id"`                // 用户标识
+	KnowledgeBaseID ID            `json:"knowledge_base_id"`      // 知识库标识
+	Query           string        `json:"query"`                  // 查询文本
+	Mode            RetrievalMode `json:"mode"`                   // 检索模式
+	DocumentIDs     []ID          `json:"document_ids,omitempty"` // 可选：限定检索的文档集合
+	TopK            int           `json:"top_k"`                  // 最终返回条数
+	Config          SearchConfig  `json:"config"`                 // 检索参数
 }
 
 // RetrievalItem 表示带有相关性分数的单个检索文档块。

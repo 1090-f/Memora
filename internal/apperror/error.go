@@ -45,4 +45,5 @@ var (
 	ErrConflict = New(contracts.ErrDuplicateResource, nil)
 	// ErrInternal 服务器内部错误（HTTP 500）。
 	ErrInternal = New(contracts.ErrInternal, nil)
+	ErrPayloadTooLarge = New(contracts.ErrPayloadTooLarge, nil)
 )

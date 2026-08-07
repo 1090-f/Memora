@@ -11,6 +11,7 @@ type MemoryType string
 // MemoryScope 表示记忆条目存在的作用域。
 type MemoryScope string
 
+// 预定义的记忆类型与作用域常量。
 const (
 	// MemoryPreference 存储用户偏好和设置。
 	MemoryPreference MemoryType = "preference"
@@ -32,22 +33,22 @@ const (
 
 // MemoryQuery 表示检索相关记忆的查询。
 type MemoryQuery struct {
-	UserID          ID     `json:"user_id"`
-	KnowledgeBaseID ID     `json:"knowledge_base_id,omitempty"`
-	Query           string `json:"query"`
-	TopK            int    `json:"top_k"`
+	UserID          ID     `json:"user_id"`                     // 用户标识
+	KnowledgeBaseID ID     `json:"knowledge_base_id,omitempty"` // 可选：限定知识库
+	Query           string `json:"query"`                       // 语义检索查询文本
+	TopK            int    `json:"top_k"`                       // 返回条数上限
 }
 
 // MemoryQueryResult 表示从查询返回的单个记忆条目。
 type MemoryQueryResult struct {
-	MemoryID   ID          `json:"memory_id"`
-	MemoryType MemoryType  `json:"memory_type"`
-	ScopeType  MemoryScope `json:"scope_type"`
-	ScopeID    ID          `json:"scope_id,omitempty"`
-	Content    string      `json:"content"`
-	Similarity float64     `json:"similarity"`
-	Importance float64     `json:"importance"`
-	UpdatedAt  time.Time   `json:"updated_at"`
+	MemoryID   ID          `json:"memory_id"`          // 记忆 ID
+	MemoryType MemoryType  `json:"memory_type"`        // 记忆类型
+	ScopeType  MemoryScope `json:"scope_type"`         // 作用域类型
+	ScopeID    ID          `json:"scope_id,omitempty"` // 可选：作用域内对应的实体 ID
+	Content    string      `json:"content"`            // 记忆内容
+	Similarity float64     `json:"similarity"`         // 相似度得分
+	Importance float64     `json:"importance"`         // 重要程度
+	UpdatedAt  time.Time   `json:"updated_at"`         // 更新时间
 }
 
 // MemoryRetriever 基于查询检索相关记忆。

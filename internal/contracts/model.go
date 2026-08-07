@@ -7,31 +7,31 @@ import (
 
 // ChatMessage 表示聊天对话中的单条消息。
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string `json:"role"`    // 角色：system / user / assistant / tool
+	Content string `json:"content"` // 消息内容
 }
 
 // ChatRequest 表示从 AI 模型生成聊天响应的请求。
 type ChatRequest struct {
-	Messages    []ChatMessage   `json:"messages"`
-	Tools       json.RawMessage `json:"tools,omitempty"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Temperature float64         `json:"temperature,omitempty"`
+	Messages    []ChatMessage   `json:"messages"`              // 对话历史
+	Tools       json.RawMessage `json:"tools,omitempty"`       // 可选：工具定义（原始 JSON）
+	MaxTokens   int             `json:"max_tokens,omitempty"`  // 可选：输出最大 token
+	Temperature float64         `json:"temperature,omitempty"` // 可选：采样温度
 }
 
 // ChatResponse 表示 AI 模型聊天生成的响应。
 type ChatResponse struct {
-	Content   string     `json:"content"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
-	Usage     TokenUsage `json:"usage"`
+	Content   string     `json:"content"`              // 生成的文本内容
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"` // 可选：模型请求调用的工具
+	Usage     TokenUsage `json:"usage"`                // token 消耗
 }
 
 // ChatStreamEvent 表示流式聊天响应中的单个事件。
 type ChatStreamEvent struct {
-	Delta    string      `json:"delta,omitempty"`
-	ToolCall *ToolCall   `json:"tool_call,omitempty"`
-	Usage    *TokenUsage `json:"usage,omitempty"`
-	Done     bool        `json:"done"`
+	Delta    string      `json:"delta,omitempty"`     // 文本增量
+	ToolCall *ToolCall   `json:"tool_call,omitempty"` // 可选：工具调用
+	Usage    *TokenUsage `json:"usage,omitempty"`     // 可选：结束时 token 消耗
+	Done     bool        `json:"done"`                // 是否结束
 }
 
 // ChatModel 定义 AI 聊天模型生成文本响应的接口。
@@ -52,8 +52,8 @@ type EmbeddingModel interface {
 
 // RerankItem 表示重排序后带有相关性分数的文档。
 type RerankItem struct {
-	Index int     `json:"index"`
-	Score float64 `json:"score"`
+	Index int     `json:"index"` // 原始文档的索引位置
+	Score float64 `json:"score"` // 重排后的相关度评分
 }
 
 // Reranker 定义 AI 模型按相关性对文档进行重排序的接口。

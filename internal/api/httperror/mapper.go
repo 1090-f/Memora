@@ -25,6 +25,7 @@ var statusByCode = map[contracts.ErrorCode]int{
 	contracts.ErrInternal:              http.StatusInternalServerError,
 	contracts.ErrModelCallFailed:       http.StatusBadGateway,
 	contracts.ErrMCPCallFailed:         http.StatusBadGateway,
+	contracts.ErrMCPConnectionFailed:   http.StatusBadGateway,
 	contracts.ErrUpstreamTimeout:       http.StatusGatewayTimeout,
 }
 
@@ -47,6 +48,7 @@ var messageByCode = map[contracts.ErrorCode]string{
 	contracts.ErrInternal:              "服务器内部错误",
 	contracts.ErrModelCallFailed:       "模型调用失败",
 	contracts.ErrMCPCallFailed:         "MCP 工具调用失败",
+	contracts.ErrMCPConnectionFailed:   "MCP 服务连接失败",
 	contracts.ErrUpstreamTimeout:       "上游服务超时",
 }
 
