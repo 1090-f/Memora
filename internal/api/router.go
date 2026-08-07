@@ -9,6 +9,8 @@ import (
 	"github.com/1090-f/Memora/internal/api/response"
 	"github.com/1090-f/Memora/internal/api/v1/auth"
 	"github.com/1090-f/Memora/internal/api/v1/directory"
+	"github.com/1090-f/Memora/internal/api/v1/document"
+	"github.com/1090-f/Memora/internal/api/v1/importtask"
 	"github.com/1090-f/Memora/internal/api/v1/knowledgebase"
 	"github.com/1090-f/Memora/internal/api/v1/user"
 	apperrors "github.com/1090-f/Memora/internal/apperror"
@@ -28,15 +30,17 @@ type WorkerCount func(context.Context) (int64, error)
 
 // Dependencies 持有 API 路由所需的所有外部依赖。
 type Dependencies struct {
-	Config         config.CORSConfig
-	Auth           service.AuthService
-	Users          service.UserService
-	KnowledgeBases service.KnowledgeBaseService
-	Directories    service.DirectoryService
-	PostgresHealth HealthCheck
-	RedisHealth    HealthCheck
-	MinIOHealth    HealthCheck
-	WorkerCount    WorkerCount
+	Config          config.CORSConfig
+	Auth            service.AuthService
+	Users           service.UserService
+	KnowledgeBases  service.KnowledgeBaseService
+	Directories     service.DirectoryService
+	Documents       service.DocumentService
+	DocumentProcess service.DocumentProcessService
+	PostgresHealth  HealthCheck
+	RedisHealth     HealthCheck
+	MinIOHealth     HealthCheck
+	WorkerCount     WorkerCount
 }
 
 // NewRouter 创建一个新的 Gin 引擎，注册所有中间件、健康检查端点和 v1 路由组。
@@ -53,6 +57,8 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	user.NewController(deps.Users).RegisterRoutes(v1, authRequired)
 	knowledgebase.NewController(deps.KnowledgeBases).RegisterRoutes(v1, authRequired)
 	directory.NewController(deps.Directories).RegisterRoutes(v1, authRequired)
+	document.NewController(deps.Documents).RegisterRoutes(v1, authRequired)
+	importtask.NewController(deps.DocumentProcess).RegisterRoutes(v1, authRequired)
 	return engine
 }
 
