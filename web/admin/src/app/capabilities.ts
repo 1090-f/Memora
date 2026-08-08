@@ -22,5 +22,5 @@ export const capabilities: Record<CapabilityKey, CapabilityStatus> = {
   memory: 'backend_pending',
   mcp: 'available',
   search: 'backend_pending',
-  model: 'backend_pending',
+  model: 'available',
 };

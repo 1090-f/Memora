@@ -99,6 +99,8 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	mcpTools := repository.NewMCPToolRepository(a.db)
 	mcpService := service.NewImportService(mcpServers, mcpTools, cfg)
 
+	aiModelConfigs := repository.NewAIModelConfigRepository(a.db)
+
 	docs := repository.NewDocumentRepository(a.db)
 	importTasks := repository.NewImportTaskRepository(a.db)
 	chunks := repository.NewDocumentChunkRepository(a.db)
@@ -108,7 +110,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 
 	router := api.NewRouter(api.Dependencies{
 		Config: cfg.CORS, Auth: authService, Users: userService, MCP: mcpService,
-		KnowledgeBases: kbService, Directories: directoryService,
+		KnowledgeBases: kbService, Directories: directoryService, AIModelConfigs: aiModelConfigs,
 		Documents: documentService, DocumentProcess: documentProcessService,
 		PostgresHealth: func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
 		RedisHealth:    func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },

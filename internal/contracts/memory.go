@@ -44,7 +44,7 @@ type MemoryQueryResult struct {
 	MemoryID   ID          `json:"memory_id"`          // 记忆 ID
 	MemoryType MemoryType  `json:"memory_type"`        // 记忆类型
 	ScopeType  MemoryScope `json:"scope_type"`         // 作用域类型
-	ScopeID    ID          `json:"scope_id,omitempty"` // 可选：作用域内对应的实体 ID
+	ScopeID    *ID         `json:"scope_id,omitempty"` // 可选：作用域内对应的实体 ID
 	Content    string      `json:"content"`            // 记忆内容
 	Similarity float64     `json:"similarity"`         // 相似度得分
 	Importance float64     `json:"importance"`         // 重要程度
@@ -55,6 +55,12 @@ type MemoryQueryResult struct {
 type MemoryRetriever interface {
 	// Retrieve 搜索与查询匹配的记忆并返回排序后的结果。
 	Retrieve(ctx context.Context, query MemoryQuery) ([]MemoryQueryResult, error)
+}
+
+// EmbeddingService 定义将文本转换为向量的服务接口。
+type EmbeddingService interface {
+	// Embed 将文本转换为向量。
+	Embed(ctx context.Context, text string) ([]float64, error)
 }
 
 // MemoryExtractor 从 Agent 响应中提取并存储记忆。
