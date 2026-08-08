@@ -73,6 +73,23 @@ services:
       MEMORA_WORKER_DEFAULT_TIMEOUT: ${MEMORA_WORKER_DEFAULT_TIMEOUT:-5m}
       MEMORA_WORKER_MAX_RETRY_DELAY: ${MEMORA_WORKER_MAX_RETRY_DELAY:-1m}
       MEMORA_WORKER_IDEMPOTENCY_TTL: ${MEMORA_WORKER_IDEMPOTENCY_TTL:-24h}
+      MEMORA_DOCUMENT_PARSER_BASE_URL: "http://document-parser:5001"
+      MEMORA_DOCUMENT_PARSER_TIMEOUT: ${MEMORA_DOCUMENT_PARSER_TIMEOUT:-8m}
+      MEMORA_DOCUMENT_PARSER_MAX_RESPONSE_SIZE: ${MEMORA_DOCUMENT_PARSER_MAX_RESPONSE_SIZE:-134217728}
+      MEMORA_DOCUMENT_PARSER_MAX_FILE_BYTES: ${MEMORA_DOCUMENT_PARSER_MAX_FILE_BYTES:-67108864}
+      MEMORA_DOCUMENT_PARSER_MAX_ASSET_BYTES: ${MEMORA_DOCUMENT_PARSER_MAX_ASSET_BYTES:-33554432}
+      MEMORA_DOCUMENT_PARSER_OCR_LANGUAGES: ${MEMORA_DOCUMENT_PARSER_OCR_LANGUAGES:-zh,en}
+      MEMORA_DOCUMENT_PARSER_DO_OCR: ${MEMORA_DOCUMENT_PARSER_DO_OCR:-true}
+      MEMORA_DOCUMENT_PARSER_TABLE_STRUCTURE: ${MEMORA_DOCUMENT_PARSER_TABLE_STRUCTURE:-true}
+      MEMORA_DOCUMENT_PARSER_EXTRACT_PICTURES: ${MEMORA_DOCUMENT_PARSER_EXTRACT_PICTURES:-true}
+      MEMORA_DOCUMENT_PARSER_INCLUDE_BBOXES: ${MEMORA_DOCUMENT_PARSER_INCLUDE_BBOXES:-true}
+      MEMORA_CHUNKING_STRATEGY_VERSION: ${MEMORA_CHUNKING_STRATEGY_VERSION:-structure-v1}
+      MEMORA_CHUNKING_MAX_TOKENS: ${MEMORA_CHUNKING_MAX_TOKENS:-1000}
+      MEMORA_CHUNKING_MIN_TOKENS: ${MEMORA_CHUNKING_MIN_TOKENS:-100}
+      MEMORA_CHUNKING_OVERLAP_TOKENS: ${MEMORA_CHUNKING_OVERLAP_TOKENS:-100}
+      MEMORA_CHUNKING_REPEAT_TABLE_HEADER: ${MEMORA_CHUNKING_REPEAT_TABLE_HEADER:-true}
+      MEMORA_ASSET_ENRICHMENT_MODE: ${MEMORA_ASSET_ENRICHMENT_MODE:-none}
+      MEMORA_ASSET_ENRICHMENT_TIMEOUT: ${MEMORA_ASSET_ENRICHMENT_TIMEOUT:-2m}
       MEMORA_BOOTSTRAP_ADMIN_USERNAME: ${MEMORA_BOOTSTRAP_ADMIN_USERNAME:-admin}
       MEMORA_BOOTSTRAP_ADMIN_EMAIL: ${MEMORA_BOOTSTRAP_ADMIN_EMAIL:-admin@example.com}
       MEMORA_BOOTSTRAP_ADMIN_PASSWORD: ${MEMORA_BOOTSTRAP_ADMIN_PASSWORD:-}
@@ -107,11 +124,36 @@ services:
       default:
         aliases: [memora-server]
 
+  document-parser:
+    build: {context: ../services/document-parser, dockerfile: Dockerfile}
+    environment:
+      DOCUMENT_PARSER_LOG_LEVEL: info
+      DOCUMENT_PARSER_MAX_CONCURRENCY: ${DOCUMENT_PARSER_MAX_CONCURRENCY:-2}
+      HF_HOME: /models/huggingface
+    volumes:
+      - docling-models:/models/huggingface
+    ports: ["5001:5001"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5001/health/ready', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 300s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+
   worker:
     build: {context: .., dockerfile: Dockerfile}
     command: ["memora-worker"]
     environment: *memora-environment
-    depends_on: *application-dependencies
+    depends_on:
+      bootstrap-admin: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+      document-parser: {condition: service_healthy}
     restart: unless-stopped
 
   web:
@@ -125,3 +167,4 @@ volumes:
   memora-postgres:
   memora-redis:
   memora-minio:
+  docling-models:

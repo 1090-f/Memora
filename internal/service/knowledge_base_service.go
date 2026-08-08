@@ -100,6 +100,9 @@ func (s *knowledgeBaseService) Create(ctx context.Context, userID string, req *r
 	}
 
 	var created *entity.KnowledgeBase
+	// 用短事务原子写 4 张表（知识库 + 默认目录 + 搜索配置 + Agent 配置）：
+	// 任一步失败整体回滚，避免产生“孤儿”知识库或缺失默认配置的知识库；
+	// 事务内不做外部 I/O，持锁时间极短。
 	err = s.tx.WithTx(ctx, func(txCtx context.Context) error {
 		kb := &entity.KnowledgeBase{
 			UserID:          userID,
@@ -144,6 +147,7 @@ func (s *knowledgeBaseService) Create(ctx context.Context, userID string, req *r
 			return err
 		}
 
+		// 四张表全部成功后，把新知识库实体暴露给事务外层用于构造响应。
 		created = kb
 		return nil
 	})
@@ -175,7 +179,13 @@ func (s *knowledgeBaseService) resolveChatModel(ctx context.Context, userID stri
 	}
 	model, err := s.modelConfigs.FindDefaultChat(ctx, userID)
 	if errors.Is(err, repository.ErrModelConfigNotFound) {
-		return "", apperrors.New(contracts.ErrInvalidArgument, errors.New("未找到可用的默认 Chat 模型，请先配置 Chat 模型"))
+		return "", &apperrors.AppError{
+			Code: contracts.ErrInvalidArgument,
+			Details: map[string]string{
+				"reason": "当前用户未配置默认 Chat 模型，无法为知识库创建默认 Agent 配置。请先配置一个启用的 Chat 模型并设为默认。",
+			},
+			Cause: errors.New("no default chat model configured"),
+		}
 	}
 	if err != nil {
 		return "", apperrors.New(contracts.ErrInternal, err)
@@ -202,6 +212,7 @@ func (s *knowledgeBaseService) List(ctx context.Context, userID string, page, pa
 			AgentEnabled: kb.AgentEnabled, NetworkEnabled: kb.NetworkEnabled,
 			UpdatedAt: kb.UpdatedAt, CreatedAt: kb.CreatedAt,
 		}
+		// 逐个补充文档计数：分页量级小，直查更简单；计数失败静默降级为 0，不影响列表返回。
 		if count, countErr := s.kbs.CountDocuments(ctx, userID, kb.ID); countErr == nil {
 			item.DocumentCount = count
 		}
@@ -312,6 +323,7 @@ func (s *knowledgeBaseService) UpdateSearchConfig(ctx context.Context, userID, k
 	if req == nil {
 		return nil, apperrors.ErrInvalidArgument
 	}
+	// 先校验归属与配置存在性，再逐字段做上限/下限校验，避免读到不存在的配置。
 	if _, err := s.kbs.FindByID(ctx, userID, kbID); err != nil {
 		if errors.Is(err, repository.ErrKnowledgeBaseNotFound) {
 			return nil, apperrors.ErrNotFound
@@ -380,6 +392,7 @@ func (s *knowledgeBaseService) UpdateSearchConfig(ctx context.Context, userID, k
 	return searchConfigResponse(updated), nil
 }
 
+// defaultSearchConfigEntity 从 contracts 默认配置构造搜索配置实体（值与 API 6.x 对齐）。
 func defaultSearchConfigEntity(kbID string) *entity.SearchConfig {
 	config := contracts.DefaultSearchConfig()
 	return &entity.SearchConfig{
@@ -394,6 +407,7 @@ func defaultSearchConfigEntity(kbID string) *entity.SearchConfig {
 	}
 }
 
+// defaultAgentConfigEntity 从 contracts 默认配置构造 Agent 配置实体，网络功能默认关闭。
 func defaultAgentConfigEntity(userID, kbID, chatModelID string) *entity.AgentConfig {
 	config := contracts.DefaultAgentConfig()
 	networkEnabled := false
@@ -410,6 +424,7 @@ func defaultAgentConfigEntity(userID, kbID, chatModelID string) *entity.AgentCon
 	return agentConfig
 }
 
+// boolValue 安全解引用布尔指针，nil 时返回传入的默认值。
 func boolValue(value *bool, defaultValue bool) bool {
 	if value == nil {
 		return defaultValue
@@ -417,6 +432,7 @@ func boolValue(value *bool, defaultValue bool) bool {
 	return *value
 }
 
+// knowledgeBaseResponse 将知识库实体转换为响应 DTO。
 func knowledgeBaseResponse(kb *entity.KnowledgeBase) *dto.KnowledgeBaseResponse {
 	return &dto.KnowledgeBaseResponse{
 		ID: kb.ID, Name: kb.Name, Description: kb.Description, Icon: kb.Icon,
@@ -428,6 +444,7 @@ func knowledgeBaseResponse(kb *entity.KnowledgeBase) *dto.KnowledgeBaseResponse 
 	}
 }
 
+// searchConfigResponse 将搜索配置实体转换为响应 DTO。
 func searchConfigResponse(cfg *entity.SearchConfig) *dto.SearchConfigResponse {
 	return &dto.SearchConfigResponse{
 		KeywordTopK: cfg.KeywordTopK, VectorTopK: cfg.VectorTopK, RRFK: cfg.RRFK,

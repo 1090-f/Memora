@@ -1,0 +1,7 @@
+# Python 虚拟环境（docling-parse 在 Windows 中文路径下不可用，见 README）
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

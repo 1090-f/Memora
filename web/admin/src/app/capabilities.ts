@@ -15,12 +15,12 @@ export type CapabilityStatus = 'available' | 'backend_pending';
 export const capabilities: Record<CapabilityKey, CapabilityStatus> = {
   auth: 'available',
   user: 'available',
-  knowledgeBase: 'backend_pending',
-  document: 'backend_pending',
+  knowledgeBase: 'available',
+  document: 'available',
   conversation: 'backend_pending',
   agentRun: 'backend_pending',
   memory: 'backend_pending',
   mcp: 'available',
   search: 'backend_pending',
-  model: 'backend_pending',
+  model: 'available',
 };

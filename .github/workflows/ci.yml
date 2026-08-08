@@ -1,22 +1,39 @@
 name: CI
 
-on: [push, pull_request]
+# 触发策略：
+# - push 到主干分支（main/develop）时运行
+# - 所有 pull_request 时运行
+# 特性分支的推送通过 PR 触发，避免 push + PR 双跑浪费资源
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
 
 permissions:
   contents: read
 
+# 同一分支/PR 的新提交会取消正在运行的旧任务，避免排队浪费
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: 1.25.0
           cache: true
-      - run: go mod download
+      - name: Download modules
+        run: go mod download
       - name: Check formatting
         run: test -z "$(gofmt -l ./cmd ./internal ./pkg)"
-      - run: go vet ./...
-      - run: go test -race ./...
-      - run: go build ./cmd/...
+      - name: Vet
+        run: go vet ./...
+      - name: Test (race detector)
+        run: go test -race ./...
+      - name: Build entrypoints
+        run: go build ./cmd/...

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"time"
 
 	"github.com/1090-f/Memora/internal/contracts"
 )
@@ -16,8 +17,16 @@ type DocumentProcessService interface {
 	Retry(ctx context.Context, userID, taskID contracts.ID) error
 	// Reindex 触发文档重新索引，生成新的 index_version。
 	Reindex(ctx context.Context, userID, knowledgeBaseID, documentID contracts.ID) error
-	// GetProcessingStatus 查询文档处理状态。
-	GetProcessingStatus(ctx context.Context, userID, knowledgeBaseID, documentID contracts.ID) (DocumentProcessingStatus, error)
+	// GetProcessingStatus 查询文档处理状态（按文档 ID 与用户，无需知识库 ID）。
+	GetProcessingStatus(ctx context.Context, userID, documentID contracts.ID) (DocumentProcessingStatus, error)
+	// ListImportTasks 分页查询知识库导入任务。
+	ListImportTasks(ctx context.Context, userID, knowledgeBaseID contracts.ID, page, pageSize int) ([]ImportTaskView, int64, error)
+	// GetImportTask 查询导入任务详情。
+	GetImportTask(ctx context.Context, userID, taskID contracts.ID) (ImportTaskView, error)
+	// ProcessImportTask 由 Worker 调用：领取后的任务编排（创建文档行并执行文档加工流水线）。
+	ProcessImportTask(ctx context.Context, taskID contracts.ID) error
+	// RecoverStaleTasks 恢复卡在 running 且超过租约的任务，返回恢复数量。
+	RecoverStaleTasks(ctx context.Context) (int64, error)
 }
 
 // DocumentImportTask 描述一次导入任务所需的最小信息。
@@ -35,10 +44,27 @@ type DocumentImportTask struct {
 
 // DocumentProcessingStatus 描述文档处理当前状态。
 type DocumentProcessingStatus struct {
-	DocumentID    contracts.ID
-	Status        contracts.DocumentProcessingStatus
-	CurrentStep   string
-	FailureReason string
-	IndexVersion  int
-	ActiveVersion int
+	DocumentID      contracts.ID
+	KnowledgeBaseID contracts.ID
+	Status          contracts.DocumentProcessingStatus
+	CurrentStep     string
+	FailureReason   string
+	IndexVersion    int
+	ActiveVersion   int
+}
+
+// ImportTaskView 描述导入任务的对外视图。
+type ImportTaskView struct {
+	ID            contracts.ID
+	SourceType    contracts.DocumentSourceType
+	FileName      *string
+	FileSize      *int64
+	MIMEType      *string
+	SourceURL     *string
+	Status        contracts.ImportTaskStatus
+	CurrentStep   *string
+	FailureReason *string
+	DocumentID    *contracts.ID
+	CreatedAt     time.Time
+	CompletedAt   *time.Time
 }

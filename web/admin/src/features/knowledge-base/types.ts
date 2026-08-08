@@ -8,7 +8,7 @@ export interface PageResult<T> {
 export interface KnowledgeBase {
   id: string;
   name: string;
-  icon: string;
+  icon: string | null;
   description: string | null;
   document_count: number;
   agent_enabled: boolean;
@@ -17,8 +17,37 @@ export interface KnowledgeBase {
   created_at: string;
 }
 
+export interface KnowledgeBaseDetail {
+  id: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  default_language: string;
+  qa_enabled: boolean;
+  agent_enabled: boolean;
+  network_enabled: boolean;
+  default_chat_model_id: string | null;
+  default_embedding_model_id: string | null;
+  default_reranker_model_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface KnowledgeBaseInput {
   name: string;
+  description?: string;
+  icon?: string;
+  default_language?: string;
+  qa_enabled?: boolean;
+  agent_enabled?: boolean;
+  network_enabled?: boolean;
+  default_chat_model_id?: string;
+  default_embedding_model_id?: string;
+  default_reranker_model_id?: string;
+}
+
+export interface KnowledgeBaseUpdateInput {
+  name?: string;
   description?: string;
   icon?: string;
   default_language?: string;
@@ -35,4 +64,26 @@ export interface KnowledgeBaseListParams {
   page_size?: number;
   keyword?: string;
   sort?: string;
+}
+
+export interface SearchConfig {
+  keyword_top_k: number;
+  vector_top_k: number;
+  rrf_k: number;
+  rrf_top_k: number;
+  reranker_top_k: number;
+  reranker_threshold: number | null;
+  minimum_effective_results: number;
+  reranker_model_id: string | null;
+}
+
+export interface SearchConfigUpdateInput {
+  keyword_top_k?: number;
+  vector_top_k?: number;
+  rrf_k?: number;
+  rrf_top_k?: number;
+  reranker_top_k?: number;
+  reranker_threshold?: number;
+  minimum_effective_results?: number;
+  reranker_model_id?: string;
 }

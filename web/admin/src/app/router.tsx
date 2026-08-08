@@ -7,6 +7,7 @@ import { KnowledgeBaseListPage } from '@/features/knowledge-base/pages/Knowledge
 import { KnowledgeBaseSettingsPage } from '@/features/knowledge-base/pages/KnowledgeBaseSettingsPage';
 import { DocumentWorkspacePage } from '@/features/document/pages/DocumentWorkspacePage';
 import { ChatPage } from '@/features/conversation/pages/ChatPage';
+import { ChatEntryPage } from '@/features/conversation/pages/ChatEntryPage';
 import { AgentRunListPage } from '@/features/agent-run/pages/AgentRunListPage';
 import { MemoryPage } from '@/features/memory/pages/MemoryPage';
 import { McpPage } from '@/features/mcp/pages/McpPage';
@@ -27,6 +28,7 @@ const routeObjects: RouteObject[] = [
         children: [
           { path: '/knowledge-bases', element: <KnowledgeBaseListPage /> },
           { path: '/kb/:kbId/docs/:documentId?', element: <DocumentWorkspacePage /> },
+          { path: '/chat', element: <ChatEntryPage /> },
           { path: '/chat/:kbId/:conversationId?', element: <ChatPage /> },
           { path: '/runs/:runId?', element: <AgentRunListPage /> },
           { path: '/memories', element: <MemoryPage /> },

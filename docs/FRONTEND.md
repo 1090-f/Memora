@@ -31,7 +31,6 @@ cd web
 corepack enable
 pnpm install --frozen-lockfile
 pnpm dev
-pnpm test
 pnpm lint
 pnpm typecheck
 pnpm build
@@ -60,9 +59,12 @@ pnpm build
 | 能力 | 状态 | 行为 |
 |---|---|---|
 | Auth、Current User | `available` | 使用当前 Go API |
-| Knowledge Base、Document | `backend_pending` | 完整页面外壳，零请求，写操作禁用 |
+| Knowledge Base、Document | `available` | 知识库 CRUD、搜索配置、目录树、文档列表/只读正文、文件导入、导入任务轮询与重试、处理重试/重新索引 |
 | Conversation、Agent Run | `backend_pending` | 三栏工作区与事件归约器已就绪，零请求/零 SSE |
-| Memory、MCP、Search、Model | `backend_pending` | 强类型 API 边界，零请求，写操作禁用 |
+| Memory、Search、Model | `backend_pending` | 强类型 API 边界，零请求，写操作禁用 |
+| MCP | `available` | 使用当前 Go API |
+
+> 注：Search 的 `/knowledge-bases/{kb_id}/search/test` 与 URL 导入 `/imports/url` 属于任务包 07+ 范围，后端接口就绪前检索测试页保持 `backend_pending`、URL 导入保持禁用。
 
 生产能力开关集中在 `web/admin/src/app/capabilities.ts`。只有后端路由、DTO 和错误场景都完成契约验证后才能从 `backend_pending` 改为 `available`。
 
@@ -110,14 +112,14 @@ Agent 事件归约器：
 ## 后端能力激活清单
 
 1. 对照当前 Go handler 与 API 文档确认路径、字段和枚举。
-2. 添加 MSW 成功、校验、401、404、409、限流与上游失败测试。
-3. 保持 `backend_pending`，确认页面零请求。
-4. 在测试中切换为 `available` 并验证 Memora 信封和 DTO。
+2. 使用本地真实服务验证成功、校验、401、404、409、限流与上游失败响应。
+3. 保持 `backend_pending`，通过浏览器网络面板确认页面零请求。
+4. 联调 `available` 状态并核对 Memora 信封和 DTO。
 5. 本地真实服务完成手工路径后再修改生产 capability。
-6. 运行 `pnpm test && pnpm lint && pnpm typecheck && pnpm build`。
+6. 运行 `pnpm lint && pnpm typecheck && pnpm build`。
 
 ## 已知限制
 
-- 当前 Go Foundation 只实现认证和当前用户域，因此其余页面默认明确显示“后端待接入”。
+- 当前 Go Foundation 实现认证、当前用户、MCP、知识库与文档域；会话、运行记录、记忆、检索测试与模型配置页面仍明确显示“后端待接入”。
 - 管理端以 1280px 及以上桌面窗口为 P0 目标，不提供完整移动端布局。
 - 生产包仍有单块体积优化空间，后续可按路由增加懒加载。

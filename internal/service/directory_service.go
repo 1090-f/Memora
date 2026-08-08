@@ -39,6 +39,7 @@ func (s *directoryService) GetTree(ctx context.Context, userID, kbID string) ([]
 	if err != nil {
 		return nil, apperrors.New(contracts.ErrInternal, err)
 	}
+	// 先按 ID 建立节点索引，再统一挂载子节点：单次遍历组装树，避免逐节点递归查询。
 	nodes := make(map[string]*dto.DirectoryNode, len(items))
 	roots := make([]*dto.DirectoryNode, 0)
 	for _, dir := range items {
@@ -70,6 +71,7 @@ func (s *directoryService) Create(ctx context.Context, userID, kbID string, req 
 	}
 	depth := 1
 	var parentID *string
+	// 指定父目录时必须校验：父目录属于同一知识库，且不能超过最大深度（与 DB CHECK 对齐）。
 	if req.ParentID != nil && *req.ParentID != "" {
 		parent, err := s.dirs.FindByIDInKB(ctx, userID, kbID, *req.ParentID)
 		if errors.Is(err, repository.ErrDirectoryNotFound) {
@@ -85,6 +87,7 @@ func (s *directoryService) Create(ctx context.Context, userID, kbID string, req 
 		id := parent.ID
 		parentID = &id
 	}
+	// 排序字段缺省为 0（排最前），避免 NULL 参与排序导致顺序不稳定。
 	sortOrder := 0
 	if req.SortOrder != nil {
 		sortOrder = *req.SortOrder
@@ -102,6 +105,7 @@ func (s *directoryService) Create(ctx context.Context, userID, kbID string, req 
 	return directoryNode(dir), nil
 }
 
+// directoryNode 将目录实体转换为树节点 DTO，并预置空子节点切片便于后续挂载。
 func directoryNode(dir *entity.DocumentDirectory) *dto.DirectoryNode {
 	return &dto.DirectoryNode{
 		ID: dir.ID, Name: dir.Name, ParentID: dir.ParentID,
