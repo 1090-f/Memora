@@ -24,3 +24,4 @@ web/.pnpm-store
 
 # personal data
 docs/zxp
+/internal/agent/react/agent_test.go
