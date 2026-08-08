@@ -13,10 +13,12 @@ import (
 	"github.com/1090-f/Memora/internal/api/v1/importtask"
 	"github.com/1090-f/Memora/internal/api/v1/knowledgebase"
 	mcpapi "github.com/1090-f/Memora/internal/api/v1/mcp"
+	modelconfigapi "github.com/1090-f/Memora/internal/api/v1/modelconfig"
 	"github.com/1090-f/Memora/internal/api/v1/user"
 	apperrors "github.com/1090-f/Memora/internal/apperror"
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/middleware"
+	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service"
 	"github.com/1090-f/Memora/pkg/config"
 	"github.com/1090-f/Memora/pkg/metrics"
@@ -39,6 +41,7 @@ type Dependencies struct {
 	Documents       service.DocumentService
 	DocumentProcess service.DocumentProcessService
 	MCP             service.ImportService
+	AIModelConfigs  repository.AIModelConfigRepository
 	PostgresHealth  HealthCheck
 	RedisHealth     HealthCheck
 	MinIOHealth     HealthCheck
@@ -61,6 +64,9 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	directory.NewController(deps.Directories).RegisterRoutes(v1, authRequired)
 	if deps.MCP != nil {
 		mcpapi.NewController(deps.MCP).RegisterRoutes(v1, authRequired)
+	}
+	if deps.AIModelConfigs != nil {
+		modelconfigapi.NewController(deps.AIModelConfigs).RegisterRoutes(v1, authRequired)
 	}
 	document.NewController(deps.Documents).RegisterRoutes(v1, authRequired)
 	importtask.NewController(deps.DocumentProcess).RegisterRoutes(v1, authRequired)

@@ -26,3 +26,9 @@ type ConversationContextService interface {
 	// Build 为指定的用户、知识库和对话构建 ConversationContext。
 	Build(ctx context.Context, userID, knowledgeBaseID, conversationID ID) (ConversationContext, error)
 }
+
+// CoreferenceResolver 定义指代消解的接口。
+type CoreferenceResolver interface {
+	// Resolve 对消息列表进行指代消解，返回改写后的消息。
+	Resolve(ctx context.Context, messages []ConversationMessage) ([]ConversationMessage, error)
+}
