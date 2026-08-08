@@ -4,6 +4,7 @@ import BuildOutlined from '@mui/icons-material/BuildOutlined';
 import LogoutOutlined from '@mui/icons-material/LogoutOutlined';
 import MemoryOutlined from '@mui/icons-material/MemoryOutlined';
 import MenuBookOutlined from '@mui/icons-material/MenuBookOutlined';
+import QuestionAnswerOutlined from '@mui/icons-material/QuestionAnswerOutlined';
 import SettingsOutlined from '@mui/icons-material/SettingsOutlined';
 import TimelineOutlined from '@mui/icons-material/TimelineOutlined';
 import {
@@ -25,6 +26,7 @@ import { clearAuth } from '@/store/authSlice';
 
 const navigation: Array<{ label: string; path: string; icon: ReactNode }> = [
   { label: '知识库', path: '/knowledge-bases', icon: <MenuBookOutlined /> },
+  { label: '智能问答', path: '/chat', icon: <QuestionAnswerOutlined /> },
   { label: '运行记录', path: '/runs', icon: <TimelineOutlined /> },
   { label: '长期记忆', path: '/memories', icon: <MemoryOutlined /> },
   { label: 'MCP 工具', path: '/mcp', icon: <BuildOutlined /> },
@@ -86,7 +88,9 @@ export function AppShell() {
               key={item.path}
               component={NavLink}
               to={item.path}
-              selected={location.pathname === item.path}
+              selected={item.path === '/chat'
+                ? location.pathname.startsWith('/chat')
+                : location.pathname === item.path}
               sx={{
                 borderRadius: 2,
                 color: '#c7c9cf',
