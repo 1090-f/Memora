@@ -9,15 +9,18 @@ import (
 
 // Config 是应用程序的完整配置结构，包含所有子模块的配置项
 type Config struct {
-	App      AppConfig      `mapstructure:"app"`
-	Database DatabaseConfig `mapstructure:"database"`
-	Redis    RedisConfig    `mapstructure:"redis"`
-	MinIO    MinIOConfig    `mapstructure:"minio"`
-	JWT      JWTConfig      `mapstructure:"jwt"`
-	Worker   WorkerConfig   `mapstructure:"worker"`
-	MCP      MCPConfig      `mapstructure:"mcp"`
-	Log      LogConfig      `mapstructure:"log"`
-	CORS     CORSConfig     `mapstructure:"cors"`
+	App             AppConfig             `mapstructure:"app"`
+	Database        DatabaseConfig        `mapstructure:"database"`
+	Redis           RedisConfig           `mapstructure:"redis"`
+	MinIO           MinIOConfig           `mapstructure:"minio"`
+	JWT             JWTConfig             `mapstructure:"jwt"`
+	Worker          WorkerConfig          `mapstructure:"worker"`
+	MCP             MCPConfig             `mapstructure:"mcp"`
+	Log             LogConfig             `mapstructure:"log"`
+	CORS            CORSConfig            `mapstructure:"cors"`
+	DocumentParser  DocumentParserConfig  `mapstructure:"document_parser"`
+	Chunking        ChunkingConfig        `mapstructure:"chunking"`
+	AssetEnrichment AssetEnrichmentConfig `mapstructure:"asset_enrichment"`
 }
 
 // AppConfig 定义应用程序基础配置，包括名称、版本、运行模式和超时设置
@@ -98,6 +101,53 @@ type CORSConfig struct {
 	MaxAge           int      `mapstructure:"max_age"`
 }
 
+// DocumentParserConfig 定义 Python document-parser 客户端与解析选项。
+// 注意：本段配置不包含任何 Chunk 参数。
+type DocumentParserConfig struct {
+	// BaseURL 是 Python 服务地址；空表示未配置（PDF/DOCX 解析报错，TXT/MD 不受影响）。
+	BaseURL string `mapstructure:"base_url"`
+	// Timeout 是单次解析请求超时（必须小于 Worker 总超时）。
+	Timeout time.Duration `mapstructure:"timeout"`
+	// MaxResponseBytes 是解析响应体大小上限。
+	MaxResponseBytes int64 `mapstructure:"max_response_size"`
+	// MaxFileBytes 是原始文件大小上限（Python 侧限制一致或更严格）。
+	MaxFileBytes int64 `mapstructure:"max_file_bytes"`
+	// MaxAssetBytes 是单张图片大小上限。
+	MaxAssetBytes int64 `mapstructure:"max_asset_bytes"`
+	// OCRLanguages 是 OCR 语言列表。
+	OCRLanguages []string `mapstructure:"ocr_languages"`
+	// DoOCR 是否启用 OCR。
+	DoOCR bool `mapstructure:"do_ocr"`
+	// TableStructure 是否启用表格结构识别。
+	TableStructure bool `mapstructure:"table_structure"`
+	// ExtractPictures 是否提取图片。
+	ExtractPictures bool `mapstructure:"extract_pictures"`
+	// IncludeBBoxes 是否返回 bbox。
+	IncludeBBoxes bool `mapstructure:"include_bboxes"`
+}
+
+// ChunkingConfig 定义 Go 分块策略配置（进入 chunk_config_hash，不进入 parse_config_hash）。
+type ChunkingConfig struct {
+	// StrategyVersion 是分块策略版本。
+	StrategyVersion string `mapstructure:"strategy_version"`
+	// MaxTokens 是单个 Chunk 的 token 上限。
+	MaxTokens int `mapstructure:"max_tokens"`
+	// MinTokens 是过短合并阈值。
+	MinTokens int `mapstructure:"min_tokens"`
+	// OverlapTokens 是长文本内部拆分重叠 token 数。
+	OverlapTokens int `mapstructure:"overlap_tokens"`
+	// RepeatTableHead 是大表子 Chunk 是否重复表头。
+	RepeatTableHead bool `mapstructure:"repeat_table_header"`
+}
+
+// AssetEnrichmentConfig 定义图片资产增强配置（独立 config hash，不触发重新解析）。
+type AssetEnrichmentConfig struct {
+	// Mode 是增强模式：none（默认）/ 未来可扩展。
+	Mode string `mapstructure:"mode"`
+	// Timeout 是单次增强调用超时。
+	Timeout time.Duration `mapstructure:"timeout"`
+}
+
 // Validate 校验所有配置项，收集所有错误后返回合并的错误信息
 func (c Config) Validate() error {
 	var errs []error
@@ -135,6 +185,21 @@ func (c Config) Validate() error {
 		if c.CORS.AllowCredentials && origin == "*" {
 			errs = append(errs, errors.New("CORS 通配符来源不能与凭据模式同时使用"))
 		}
+	}
+	if c.Chunking.MaxTokens <= 0 || c.Chunking.MinTokens < 0 || c.Chunking.OverlapTokens < 0 {
+		errs = append(errs, errors.New("chunking.max_tokens 必须为正数，min/overlap 不能为负"))
+	}
+	if c.Chunking.MinTokens > c.Chunking.MaxTokens {
+		errs = append(errs, errors.New("chunking.min_tokens 不能大于 max_tokens"))
+	}
+	if c.DocumentParser.MaxFileBytes <= 0 || c.DocumentParser.MaxResponseBytes <= 0 || c.DocumentParser.MaxAssetBytes <= 0 {
+		errs = append(errs, errors.New("document_parser 大小限制必须为正数"))
+	}
+	if c.DocumentParser.Timeout <= 0 {
+		errs = append(errs, errors.New("document_parser.timeout 必须为正数"))
+	}
+	if c.AssetEnrichment.Mode != "" && c.AssetEnrichment.Mode != "none" {
+		errs = append(errs, errors.New("asset_enrichment.mode 仅支持 none"))
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("配置无效: %w", errors.Join(errs...))
