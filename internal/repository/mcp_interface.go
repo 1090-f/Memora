@@ -36,6 +36,9 @@ type MCPToolRepository interface {
 	UpdateEnabledByUser(ctx context.Context, userID, toolID string, enabled bool) error
 	// IsEnabled 查询用户拥有的 MCP Server 及其工具是否均处于启用状态。
 	IsEnabled(ctx context.Context, userID, serverID, toolName string) (bool, error)
+	// ListEnabledByUser 返回用户拥有的、Server 与 Tool 均启用的工具列表（含所属 Server ID），
+	// 供 Agent 准备阶段过滤模型可见工具集合（第一层拦截）。
+	ListEnabledByUser(ctx context.Context, userID string) ([]entity.MCPTool, error)
 	// UpdateSchema 更新工具 Schema（Schema 变更时）。
 	UpdateSchema(ctx context.Context, toolID, schemaHash string, schema []byte) error
 }
