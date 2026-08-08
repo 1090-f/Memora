@@ -270,10 +270,14 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 		}
 	}
 
-	// 执行 Eino 文档加工 Graph：load → clean → split → enrich → tokenize → persist（可选 → index）。
+	// 执行 Eino 文档加工 Graph：
+	// resolve_artifact → parse_if_missing → validate → persist_artifact → normalize
+	// → enrich → structure_chunk → clean → token_count → persist → index。
 	// 节点顺序由 pipeline 编译期固定，此处仅传入对象与元数据触发整条流水线。
 	out, err := s.processor.Run(ctx, pipeline.ProcessInput{
 		ObjectKey: *task.MinIOObjectKey,
+		FileName:  valueOrEmpty(task.FileName),
+		MIMEType:  valueOrEmpty(task.MIMEType),
 		DocMeta: transformer.DocMeta{
 			UserID:          task.UserID,
 			KnowledgeBaseID: task.KnowledgeBaseID,
@@ -282,6 +286,7 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 			ContentVersion:  doc.ContentVersion,
 			ChunkVersion:    doc.ChunkVersion,
 			DocumentTitle:   doc.Title,
+			SourceHash:      valueOrEmpty(task.SourceHash),
 			SourceLocation: map[string]any{
 				"source_type": task.SourceType,
 				"file_name":   valueOrEmpty(task.FileName),

@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service"
+	"github.com/1090-f/Memora/internal/service/rag/asset"
+	"github.com/1090-f/Memora/internal/service/rag/chunking"
+	"github.com/1090-f/Memora/internal/service/rag/parser"
 	"github.com/1090-f/Memora/internal/service/rag/pipeline"
 	workerengine "github.com/1090-f/Memora/internal/worker"
 	documentworker "github.com/1090-f/Memora/internal/worker/document"
@@ -74,7 +78,7 @@ func (a *WorkerApp) Initialize(ctx context.Context) error {
 		return err
 	}
 
-	if err := a.registerDocumentJobs(ctx); err != nil {
+	if err := a.registerDocumentJobs(ctx, cfg); err != nil {
 		_ = a.Close()
 		return err
 	}
@@ -96,21 +100,46 @@ func (a *WorkerApp) Initialize(ctx context.Context) error {
 }
 
 // registerDocumentJobs 显式注册文档导入任务类型（不使用隐式 init()）。
-func (a *WorkerApp) registerDocumentJobs(ctx context.Context) error {
+func (a *WorkerApp) registerDocumentJobs(ctx context.Context, cfg *config.Config) error {
 	importTasks := repository.NewImportTaskRepository(a.db)
 	docs := repository.NewDocumentRepository(a.db)
 	chunks := repository.NewDocumentChunkRepository(a.db)
 	vectors := repository.NewVectorRepository(a.db)
 
+	// 解析与分块配置来自统一 Config。
+	parseOptions := parser.ParseOptions{
+		SchemaVersion:   parser.SchemaVersion,
+		OCRLanguages:    cfg.DocumentParser.OCRLanguages,
+		DoOCR:           cfg.DocumentParser.DoOCR,
+		TableStructure:  cfg.DocumentParser.TableStructure,
+		ExtractPictures: cfg.DocumentParser.ExtractPictures,
+		IncludeBBoxes:   cfg.DocumentParser.IncludeBBoxes,
+	}
+	chunkOptions := chunking.ChunkOptions{
+		MaxTokens:       cfg.Chunking.MaxTokens,
+		MinTokens:       cfg.Chunking.MinTokens,
+		OverlapTokens:   cfg.Chunking.OverlapTokens,
+		RepeatTableHead: cfg.Chunking.RepeatTableHead,
+		StrategyVersion: cfg.Chunking.StrategyVersion,
+	}
+
 	// 构造并编译文档加工 Graph（初始化时 Compile 一次）。
-	// 向量索引依赖成员二的 ModelFactory EmbeddingModel；未接入时仅关键词索引。
 	embedder := a.embeddingProvider()
 	embeddingModelID := ""
 	pipelineConfig := pipeline.DocumentPipelineConfig{
-		Store:       a.store,
-		Chunks:      chunks,
-		ChunkConfig: defaultChunkConfig,
-		Vectors:     vectors,
+		Store:        &parserObjectStore{inner: a.store},
+		Chunks:       chunks,
+		ChunkConfig:  defaultChunkConfig,
+		ChunkOptions: chunkOptions,
+		Tokenizer:    chunking.NewHeuristicTokenizer(),
+		ParseOptions: parseOptions,
+		ParserConfig: parser.PythonParserConfig{
+			BaseURL:          cfg.DocumentParser.BaseURL,
+			Timeout:          cfg.DocumentParser.Timeout,
+			MaxResponseBytes: cfg.DocumentParser.MaxResponseBytes,
+		},
+		ValidateLimits: parser.DefaultValidateLimits(),
+		Vectors:        vectors,
 	}
 	if embedder != nil {
 		pipelineConfig.Embedder = embedder
@@ -118,6 +147,12 @@ func (a *WorkerApp) registerDocumentJobs(ctx context.Context) error {
 		logger.Info("文档加工流水线已启用向量索引")
 	} else {
 		logger.Warn("Embedding 模型未就绪，文档加工流水线仅启用关键词索引")
+	}
+	switch cfg.AssetEnrichment.Mode {
+	case "none", "":
+		pipelineConfig.AssetEnricher = asset.NewNoopEnricher()
+	default:
+		return fmt.Errorf("不支持的 asset_enrichment.mode %q（当前仅支持 none）", cfg.AssetEnrichment.Mode)
 	}
 	documentPipeline, err := pipeline.NewDocumentPipeline(pipelineConfig)
 	if err != nil {
@@ -142,14 +177,14 @@ func (a *WorkerApp) registerDocumentJobs(ctx context.Context) error {
 }
 
 // embeddingProvider 返回 Eino Embedder；成员二的 ModelFactory 未接入时返回 nil。
-// 维度冻结并接入成员二实现后替换此方法。
+// 维度冻结并接入成员二实现后替换此方法，并同步替换 pipeline 的 Tokenizer。
 func (a *WorkerApp) embeddingProvider() embedding.Embedder {
 	return nil
 }
 
 // defaultChunkConfig 是分段配置的稳定描述，用于计算 chunk_config_hash。
 // 修改分段参数时必须同步更新此描述以触发重新索引。
-const defaultChunkConfig = `{"splitter":"markdown+recursive","chunk_size":1000,"overlap":100}`
+const defaultChunkConfig = `{"splitter":"structure-aware","chunk_size_tokens":1000,"overlap_tokens":100,"min_tokens":100,"repeat_table_header":true}`
 
 // Run 启动 Worker 运行器和心跳机制，阻塞等待直到上下文取消。
 func (a *WorkerApp) Run(ctx context.Context) error {
@@ -172,3 +207,35 @@ func (a *WorkerApp) Close() error {
 	}
 	return closeErr
 }
+
+// parserObjectStore 将 pkg/objectstore.Client 适配为 parser.ObjectStore。
+type parserObjectStore struct {
+	inner *objectstore.Client
+}
+
+func (p *parserObjectStore) OpenObject(ctx context.Context, objectKey string) (io.ReadCloser, error) {
+	return p.inner.OpenObject(ctx, objectKey)
+}
+
+func (p *parserObjectStore) PutObject(ctx context.Context, objectKey string, reader io.Reader, size int64, contentType string) error {
+	return p.inner.PutObject(ctx, objectKey, reader, size, contentType)
+}
+
+func (p *parserObjectStore) StatObject(ctx context.Context, objectKey string) (*parser.ObjectInfo, error) {
+	info, err := p.inner.StatObject(ctx, objectKey)
+	if err != nil {
+		if errors.Is(err, objectstore.ErrObjectNotFound) {
+			return nil, parser.ErrObjectNotFound
+		}
+		return nil, err
+	}
+	return &parser.ObjectInfo{
+		Key: info.Key, Size: info.Size, ContentType: info.ContentType, ETag: info.ETag,
+	}, nil
+}
+
+func (p *parserObjectStore) RemoveObject(ctx context.Context, objectKey string) error {
+	return p.inner.RemoveObject(ctx, objectKey)
+}
+
+func (p *parserObjectStore) Bucket() string { return p.inner.Bucket() }

@@ -10,7 +10,19 @@ export interface DirectoryNode {
   parent_id: string | null;
   depth: number;
   sort_order: number;
+  is_default: boolean;
   children: DirectoryNode[];
+}
+
+export interface DocumentListItem {
+  id: string;
+  title: string;
+  directory_id: string | null;
+  source_type: DocumentSourceType;
+  processing_status: DocumentProcessingStatus;
+  file_size: number | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Document {
@@ -21,11 +33,26 @@ export interface Document {
   content: string;
   source_type: DocumentSourceType;
   source_url: string | null;
+  original_file_name: string | null;
+  file_size: number | null;
+  mime_type: string | null;
   processing_status: DocumentProcessingStatus;
+  failure_step: string | null;
+  failure_reason: string | null;
   content_version: number;
+  chunk_version: number;
   active_index_version: number | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface DocumentProcessing {
+  document_id: string;
+  processing_status: DocumentProcessingStatus;
+  current_index_version: number;
+  active_index_version: number;
+  failure_step: string | null;
+  failure_reason: string | null;
 }
 
 export interface ImportTask {
@@ -41,4 +68,10 @@ export interface ImportTask {
   document_id: string | null;
   created_at: string;
   completed_at: string | null;
+}
+
+export interface CreateDirectoryInput {
+  name: string;
+  parent_id?: string;
+  sort_order?: number;
 }
