@@ -179,7 +179,13 @@ func (s *knowledgeBaseService) resolveChatModel(ctx context.Context, userID stri
 	}
 	model, err := s.modelConfigs.FindDefaultChat(ctx, userID)
 	if errors.Is(err, repository.ErrModelConfigNotFound) {
-		return "", apperrors.New(contracts.ErrInvalidArgument, errors.New("未找到可用的默认 Chat 模型，请先配置 Chat 模型"))
+		return "", &apperrors.AppError{
+			Code: contracts.ErrInvalidArgument,
+			Details: map[string]string{
+				"reason": "当前用户未配置默认 Chat 模型，无法为知识库创建默认 Agent 配置。请先配置一个启用的 Chat 模型并设为默认。",
+			},
+			Cause: errors.New("no default chat model configured"),
+		}
 	}
 	if err != nil {
 		return "", apperrors.New(contracts.ErrInternal, err)

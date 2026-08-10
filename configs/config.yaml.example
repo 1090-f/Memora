@@ -88,3 +88,29 @@ cors:
     - "X-Trace-ID"
   allow_credentials: true
   max_age: 86400
+
+# 文档解析（Python document-parser 客户端；只含解析选项，不含 Chunk 参数）
+document_parser:
+  base_url: "http://localhost:5001"
+  timeout: 8m
+  max_response_size: 134217728
+  max_file_bytes: 67108864
+  max_asset_bytes: 33554432
+  ocr_languages: ["zh", "en"]
+  do_ocr: true
+  table_structure: true
+  extract_pictures: true
+  include_bboxes: true
+
+# Go 分块策略（进入 chunk_config_hash）
+chunking:
+  strategy_version: "structure-v1"
+  max_tokens: 1000
+  min_tokens: 100
+  overlap_tokens: 100
+  repeat_table_header: true
+
+# 图片资产增强（独立 config hash）
+asset_enrichment:
+  mode: "none"
+  timeout: 2m

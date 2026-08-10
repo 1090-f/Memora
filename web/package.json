@@ -8,8 +8,7 @@
     "build": "pnpm --filter memora-admin build",
     "dev": "pnpm --filter memora-admin dev",
     "lint": "pnpm --filter memora-admin lint",
-    "typecheck": "pnpm --filter memora-admin typecheck",
-    "test": "pnpm --filter memora-admin test"
+    "typecheck": "pnpm --filter memora-admin typecheck"
   },
   "keywords": [],
   "author": "",

@@ -102,6 +102,23 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("mcp.encryption_key", "")
 	v.SetDefault("mcp.stdio_command_whitelist", []string{"npx", "python", "python3", "uvx", "node"})
 	v.SetDefault("mcp.allow_local_http", false)
+	v.SetDefault("document_parser.base_url", "http://localhost:5001")
+	v.SetDefault("document_parser.timeout", "8m")
+	v.SetDefault("document_parser.max_response_size", 134217728)
+	v.SetDefault("document_parser.max_file_bytes", 67108864)
+	v.SetDefault("document_parser.max_asset_bytes", 33554432)
+	v.SetDefault("document_parser.ocr_languages", []string{"zh", "en"})
+	v.SetDefault("document_parser.do_ocr", true)
+	v.SetDefault("document_parser.table_structure", true)
+	v.SetDefault("document_parser.extract_pictures", true)
+	v.SetDefault("document_parser.include_bboxes", true)
+	v.SetDefault("chunking.strategy_version", "structure-v1")
+	v.SetDefault("chunking.max_tokens", 1000)
+	v.SetDefault("chunking.min_tokens", 100)
+	v.SetDefault("chunking.overlap_tokens", 100)
+	v.SetDefault("chunking.repeat_table_header", true)
+	v.SetDefault("asset_enrichment.mode", "none")
+	v.SetDefault("asset_enrichment.timeout", "2m")
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.filename", "")
 	v.SetDefault("log.max_size", 100)
@@ -129,8 +146,25 @@ func bindEnvironment(v *viper.Viper) {
 		"minio.use_ssl": "MEMORA_MINIO_USE_SSL", "jwt.secret": "MEMORA_JWT_SECRET", "jwt.access_ttl": "MEMORA_ACCESS_TTL",
 		"worker.concurrency": "MEMORA_WORKER_CONCURRENCY", "worker.poll_interval": "MEMORA_WORKER_POLL_INTERVAL",
 		"worker.default_timeout": "MEMORA_WORKER_DEFAULT_TIMEOUT", "worker.max_retry_delay": "MEMORA_WORKER_MAX_RETRY_DELAY",
-		"worker.idempotency_ttl": "MEMORA_WORKER_IDEMPOTENCY_TTL",
-		"log.level":              "MEMORA_LOG_LEVEL", "log.filename": "MEMORA_LOG_FILENAME",
+		"worker.idempotency_ttl":            "MEMORA_WORKER_IDEMPOTENCY_TTL",
+		"document_parser.base_url":          "MEMORA_DOCUMENT_PARSER_BASE_URL",
+		"document_parser.timeout":           "MEMORA_DOCUMENT_PARSER_TIMEOUT",
+		"document_parser.max_response_size": "MEMORA_DOCUMENT_PARSER_MAX_RESPONSE_SIZE",
+		"document_parser.max_file_bytes":    "MEMORA_DOCUMENT_PARSER_MAX_FILE_BYTES",
+		"document_parser.max_asset_bytes":   "MEMORA_DOCUMENT_PARSER_MAX_ASSET_BYTES",
+		"document_parser.ocr_languages":     "MEMORA_DOCUMENT_PARSER_OCR_LANGUAGES",
+		"document_parser.do_ocr":            "MEMORA_DOCUMENT_PARSER_DO_OCR",
+		"document_parser.table_structure":   "MEMORA_DOCUMENT_PARSER_TABLE_STRUCTURE",
+		"document_parser.extract_pictures":  "MEMORA_DOCUMENT_PARSER_EXTRACT_PICTURES",
+		"document_parser.include_bboxes":    "MEMORA_DOCUMENT_PARSER_INCLUDE_BBOXES",
+		"chunking.strategy_version":         "MEMORA_CHUNKING_STRATEGY_VERSION",
+		"chunking.max_tokens":               "MEMORA_CHUNKING_MAX_TOKENS",
+		"chunking.min_tokens":               "MEMORA_CHUNKING_MIN_TOKENS",
+		"chunking.overlap_tokens":           "MEMORA_CHUNKING_OVERLAP_TOKENS",
+		"chunking.repeat_table_header":      "MEMORA_CHUNKING_REPEAT_TABLE_HEADER",
+		"asset_enrichment.mode":             "MEMORA_ASSET_ENRICHMENT_MODE",
+		"asset_enrichment.timeout":          "MEMORA_ASSET_ENRICHMENT_TIMEOUT",
+		"log.level":                         "MEMORA_LOG_LEVEL", "log.filename": "MEMORA_LOG_FILENAME",
 		"log.max_size": "MEMORA_LOG_MAX_SIZE", "log.max_backups": "MEMORA_LOG_MAX_BACKUPS",
 		"log.max_age": "MEMORA_LOG_MAX_AGE", "log.compress": "MEMORA_LOG_COMPRESS",
 		"mcp.encryption_key": "MEMORA_MCP_ENCRYPTION_KEY", "mcp.allow_local_http": "MEMORA_MCP_ALLOW_LOCAL_HTTP",
