@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/1090-f/Memora/internal/agent/tools"
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/mcp"
 	"github.com/1090-f/Memora/internal/model/dto/request"
@@ -556,6 +557,42 @@ func (s *importService) UpdateServerEnabled(ctx context.Context, userID string, 
 	}
 	return nil
 }
+
+// ListEnabledTools 返回当前用户已启用（Server 与 Tool 均启用）的 MCP 工具。
+// 供 Agent 准备阶段的第一层拦截使用：只把已启用的 MCP 工具加入模型可见的工具集合。
+func (s *importService) ListEnabledTools(ctx context.Context, userID string) ([]response.MCPEnabledTool, error) {
+	tools, err := s.tools.ListEnabledByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]response.MCPEnabledTool, 0, len(tools))
+	for i := range tools {
+		result = append(result, response.MCPEnabledTool{
+			ServerID: tools[i].ServerID,
+			ToolName: tools[i].ToolName,
+			ReadOnly: tools[i].ReadOnly,
+		})
+	}
+	return result, nil
+}
+
+// CheckToolAvailable 实现 tools.ToolAvailabilityChecker。
+// 这是第二层拦截：在 MCP 工具真正执行前，向数据层动态复核 Server 与 Tool 的启用状态，
+// 从而捕捉运行过程中前端动态禁用工具的情况（注册时的快照已经不可信）。
+func (s *importService) CheckToolAvailable(ctx context.Context, userID contracts.ID, spec contracts.ToolSpec) (bool, error) {
+	// 仅对 MCP 工具做动态复核；内置工具 SourceID 为空，直接放行。
+	if spec.Type != contracts.ToolTypeMCP || spec.SourceID == "" {
+		return true, nil
+	}
+	enabled, err := s.tools.IsEnabled(ctx, string(userID), spec.SourceID, spec.Name)
+	if err != nil {
+		return false, fmt.Errorf("check mcp tool availability: %w", err)
+	}
+	return enabled, nil
+}
+
+// 编译期断言：importService 满足 tools.ToolAvailabilityChecker，可供 Executor 注入。
+var _ tools.ToolAvailabilityChecker = (*importService)(nil)
 
 // determineTransport 根据 config 判定传输类型。
 func determineTransport(config *request.MCPServerConfig) string {

@@ -84,7 +84,7 @@ function ToolRow({ tool, onToggle }: { tool: NonNullable<McpServer['tools']>[num
 }
 
 function ImportDialog({ open, onClose, onImported }: { open: boolean; onClose: () => void; onImported: (message: string) => void }) {
-  const [json, setJson] = useState('{\n  "mcpServers": {\n    "example": {\n      "transport": "streamable_http",\n      "url": "https://example.com/mcp"\n    }\n  }\n}');
+  const [json, setJson] = useState('{\n  "mcpServers": {\n    "baidu-search": {\n      "command": "npx",\n      "args": ["-y", "baidu-search-mcp"]\n    }\n  }\n}');
   const [failedServers, setFailedServers] = useState<McpImportResponse['failed']>([]);
   const mutation = useMutation({ mutationFn: importMcpServers });
 
