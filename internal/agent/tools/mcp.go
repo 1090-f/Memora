@@ -18,18 +18,21 @@ type MCPReadOnlyTool struct {
 	client   internalmcp.MCPClient
 	target   internalmcp.MCPServerTarget
 	metadata internalmcp.MCPServerTool
+	serverID string // 所属 MCP Server ID，用于调用前的动态可用性检查（第一层/第二层拦截）
 	enabled  bool
 	timeout  time.Duration
 }
 
-// NewMCPReadOnlyTool 创建 MCP 只读适配器。enabled 由服务端授权/配置传入，模型不能改变它。
-func NewMCPReadOnlyTool(client internalmcp.MCPClient, target internalmcp.MCPServerTarget, metadata internalmcp.MCPServerTool, enabled bool, timeout time.Duration) *MCPReadOnlyTool {
-	return &MCPReadOnlyTool{client: client, target: target, metadata: metadata, enabled: enabled, timeout: timeout}
+// NewMCPReadOnlyTool 创建 MCP 只读适配器。enabled 由服务端授权/配置传入，模型不能改变它；
+// serverID 为工具所属 MCP Server 的唯一标识，供 Executor 在调用前动态复核启用状态。
+func NewMCPReadOnlyTool(client internalmcp.MCPClient, target internalmcp.MCPServerTarget, metadata internalmcp.MCPServerTool, serverID string, enabled bool, timeout time.Duration) *MCPReadOnlyTool {
+	return &MCPReadOnlyTool{client: client, target: target, metadata: metadata, serverID: serverID, enabled: enabled, timeout: timeout}
 }
 
 // Spec 固化 MCP 工具的只读、联网和启用边界，不包含服务端地址或凭证。
+// SourceID 携带所属 Server ID，供 Executor 在调用前做动态可用性检查。
 func (t *MCPReadOnlyTool) Spec() contracts.ToolSpec {
-	return contracts.ToolSpec{Name: t.metadata.Name, Description: t.metadata.Description, InputSchema: t.metadata.InputSchema, Type: contracts.ToolTypeMCP, ReadOnly: true, Enabled: t.enabled, NetworkRequired: true, Timeout: t.timeout, MaxCalls: 10}
+	return contracts.ToolSpec{Name: t.metadata.Name, Description: t.metadata.Description, InputSchema: t.metadata.InputSchema, Type: contracts.ToolTypeMCP, ReadOnly: true, Enabled: t.enabled, SourceID: t.serverID, NetworkRequired: true, Timeout: t.timeout, MaxCalls: 10}
 }
 
 // Info 将 MCP 的 JSON Schema 转为 Eino schema，模型参数只代表 MCP arguments。

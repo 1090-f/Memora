@@ -199,6 +199,20 @@ func (r *mcpToolRepository) IsEnabled(ctx context.Context, userID, serverID, too
 	return enabled, nil
 }
 
+// ListEnabledByUser 返回用户拥有的、Server 与 Tool 均启用的 MCP 工具列表。
+// 用于 Agent 准备阶段的第一层拦截：只把已启用的 MCP 工具暴露给模型，避免模型调用被禁用的工具。
+func (r *mcpToolRepository) ListEnabledByUser(ctx context.Context, userID string) ([]entity.MCPTool, error) {
+	var tools []entity.MCPTool
+	err := r.db.WithContext(ctx).
+		Table("mcp_tools AS t").
+		Select("t.*").
+		Joins("JOIN mcp_servers AS s ON s.id = t.server_id").
+		Where("t.enabled = ? AND s.enabled = ? AND s.user_id = ? AND s.deleted_at IS NULL", true, true, userID).
+		Order("t.tool_name ASC").
+		Scan(&tools).Error
+	return tools, err
+}
+
 func (r *mcpToolRepository) UpdateSchema(ctx context.Context, toolID, schemaHash string, schema []byte) error {
 	result := r.db.WithContext(ctx).Model(&entity.MCPTool{}).
 		Where("id = ?", toolID).
