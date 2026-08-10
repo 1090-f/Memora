@@ -11,6 +11,10 @@ export const queryKeys = {
   document: (documentId: string) => ['documents', documentId] as const,
   documentProcessing: (documentId: string) =>
     ['documents', documentId, 'processing'] as const,
+  documentContent: (documentId: string) =>
+    ['documents', documentId, 'content'] as const,
+  documentIndexVersions: (documentId: string) =>
+    ['documents', documentId, 'index-versions'] as const,
   importTasks: (knowledgeBaseId: string) =>
     ['knowledge-bases', knowledgeBaseId, 'import-tasks'] as const,
   conversations: (knowledgeBaseId: string) =>

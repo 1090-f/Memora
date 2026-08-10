@@ -41,6 +41,7 @@ type Dependencies struct {
 	KnowledgeBases  service.KnowledgeBaseService
 	Directories     service.DirectoryService
 	Documents       service.DocumentService
+	DocumentReader  contracts.DocumentService
 	DocumentProcess service.DocumentProcessService
 	Retrieval       contracts.RetrievalService
 	MCP             service.ImportService
@@ -72,7 +73,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	if deps.AIModelConfigs != nil {
 		modelconfigapi.NewController(deps.AIModelConfigs, deps.AIEncryption).RegisterRoutes(v1, authRequired)
 	}
-	document.NewController(deps.Documents).RegisterRoutes(v1, authRequired)
+	document.NewController(deps.Documents, deps.DocumentReader).RegisterRoutes(v1, authRequired)
 	importtask.NewController(deps.DocumentProcess).RegisterRoutes(v1, authRequired)
 	if deps.Retrieval != nil {
 		searchapi.NewController(deps.Retrieval).RegisterRoutes(v1, authRequired)

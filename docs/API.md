@@ -28,6 +28,7 @@ POST /api/v1/knowledge-bases/:kb_id/directories
 
 POST   /api/v1/knowledge-bases/:kb_id/documents
 GET    /api/v1/knowledge-bases/:kb_id/documents
+GET    /api/v1/knowledge-bases/:kb_id/documents/:document_id/content
 GET    /api/v1/documents/:document_id
 DELETE /api/v1/documents/:document_id
 GET    /api/v1/documents/:document_id/processing

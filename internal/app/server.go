@@ -129,7 +129,8 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	vectors := repository.NewVectorRepository(a.db)
 	documentService := service.NewDocumentService(docs, importTasks, kbs, dirs, a.store)
 	citationService := service.NewCitationService()
-	if _, err := service.NewDocumentReader(chunks, citationService, cfg.JWT.Secret); err != nil {
+	documentReader, err := service.NewDocumentReader(chunks, citationService, cfg.JWT.Secret)
+	if err != nil {
 		_ = a.Close()
 		return fmt.Errorf("初始化文档读取服务失败: %w", err)
 	}
@@ -168,7 +169,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	router := api.NewRouter(api.Dependencies{
 		Config: cfg.CORS, Auth: authService, Users: userService, MCP: mcpService,
 		KnowledgeBases: kbService, Directories: directoryService, AIModelConfigs: aiModelConfigs, AIEncryption: aiEncryption,
-		Documents: documentService, DocumentProcess: documentProcessService,
+		Documents: documentService, DocumentReader: documentReader, DocumentProcess: documentProcessService,
 		Retrieval:      retrievalService,
 		PostgresHealth: func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
 		RedisHealth:    func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },

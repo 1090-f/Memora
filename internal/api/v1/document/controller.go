@@ -15,10 +15,15 @@ import (
 )
 
 // Controller 处理文档管理相关的 HTTP 请求。
-type Controller struct{ docs service.DocumentService }
+type Controller struct {
+	docs   service.DocumentService
+	reader contracts.DocumentService
+}
 
 // NewController 创建一个新的文档控制器实例。
-func NewController(docs service.DocumentService) *Controller { return &Controller{docs: docs} }
+func NewController(docs service.DocumentService, reader contracts.DocumentService) *Controller {
+	return &Controller{docs: docs, reader: reader}
+}
 
 // CreateManual 手工创建只读知识文档。
 func (ctrl *Controller) CreateManual(c *gin.Context) {
@@ -75,6 +80,32 @@ func (ctrl *Controller) Get(c *gin.Context) {
 		return
 	}
 	result, err := ctrl.docs.Get(c.Request.Context(), user.ID, c.Param("document_id"))
+	if err != nil {
+		response.Failure(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
+}
+
+// ReadContent 使用受限正文读取服务按 token 分页返回已索引文档内容和引用。
+func (ctrl *Controller) ReadContent(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	if ctrl.reader == nil {
+		response.Failure(c, apperrors.New(contracts.ErrServiceUnavailable, nil))
+		return
+	}
+	result, err := ctrl.reader.Read(c.Request.Context(), contracts.DocumentReadRequest{
+		UserID:          contracts.ID(user.ID),
+		KnowledgeBaseID: contracts.ID(c.Param("kb_id")),
+		DocumentID:      contracts.ID(c.Param("document_id")),
+		Section:         c.Query("section"),
+		Cursor:          c.Query("cursor"),
+		MaxTokens:       parseIntDefault(c.Query("max_tokens"), 2000),
+	})
 	if err != nil {
 		response.Failure(c, err)
 		return
