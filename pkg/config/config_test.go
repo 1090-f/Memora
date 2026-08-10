@@ -24,6 +24,12 @@ func TestLoadExampleConfig(t *testing.T) {
 	if cfg.DocumentParser.BaseURL == "" {
 		t.Error("document_parser.base_url 应为默认值")
 	}
+	if !cfg.DocumentParser.AutoStart {
+		t.Error("document_parser.auto_start 应默认启用")
+	}
+	if cfg.DocumentParser.AutoStartCommand == "" || len(cfg.DocumentParser.AutoStartArgs) == 0 {
+		t.Error("document_parser 自动启动命令应完整配置")
+	}
 	if cfg.DocumentParser.Timeout <= 0 {
 		t.Error("document_parser.timeout 应为正数")
 	}

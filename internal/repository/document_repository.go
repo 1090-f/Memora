@@ -78,6 +78,16 @@ func (r *documentRepository) ListByKB(ctx context.Context, userID, kbID string, 
 	if filter.ProcessingStatus != nil {
 		db = db.Where("processing_status = ?", *filter.ProcessingStatus)
 	}
+	if filter.IndexMode != nil {
+		switch *filter.IndexMode {
+		case "none":
+			db = db.Where("active_index_version IS NULL")
+		case "keyword":
+			db = db.Where("active_index_version IS NOT NULL AND embedding_model_id IS NULL")
+		case "hybrid":
+			db = db.Where("active_index_version IS NOT NULL AND embedding_model_id IS NOT NULL")
+		}
+	}
 	if filter.SourceType != nil {
 		db = db.Where("source_type = ?", *filter.SourceType)
 	}

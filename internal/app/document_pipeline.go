@@ -20,7 +20,7 @@ import (
 const defaultChunkConfig = `{"splitter":"structure-aware","chunk_size_tokens":1000,"overlap_tokens":100,"min_tokens":100,"repeat_table_header":true}`
 
 func buildDocumentProcessService(cfg *config.Config, store *objectstore.Client, tasks repository.ImportTaskRepository, docs repository.DocumentRepository, chunks repository.DocumentChunkRepository, vectors repository.VectorRepository, embeddings service.DocumentEmbeddingResolver) (service.DocumentProcessService, error) {
-	parseOptions := parser.ParseOptions{SchemaVersion: parser.SchemaVersion, OCRLanguages: cfg.DocumentParser.OCRLanguages, DoOCR: cfg.DocumentParser.DoOCR, TableStructure: cfg.DocumentParser.TableStructure, ExtractPictures: cfg.DocumentParser.ExtractPictures, IncludeBBoxes: cfg.DocumentParser.IncludeBBoxes}
+	parseOptions := documentParseOptions(cfg)
 	chunkOptions := chunking.ChunkOptions{MaxTokens: cfg.Chunking.MaxTokens, MinTokens: cfg.Chunking.MinTokens, OverlapTokens: cfg.Chunking.OverlapTokens, RepeatTableHead: cfg.Chunking.RepeatTableHead, StrategyVersion: cfg.Chunking.StrategyVersion}
 	pipelineConfig := pipeline.DocumentPipelineConfig{
 		Store: &parserObjectStore{inner: store}, Chunks: chunks, Vectors: vectors,
@@ -37,6 +37,10 @@ func buildDocumentProcessService(cfg *config.Config, store *objectstore.Client, 
 		return nil, fmt.Errorf("构造文档加工流水线失败: %w", err)
 	}
 	return service.NewDocumentProcessService(tasks, docs, chunks, vectors, documentPipeline, embeddings), nil
+}
+
+func documentParseOptions(cfg *config.Config) parser.ParseOptions {
+	return parser.ParseOptions{SchemaVersion: parser.SchemaVersion, OCRLanguages: cfg.DocumentParser.OCRLanguages, DoOCR: cfg.DocumentParser.DoOCR, TableStructure: cfg.DocumentParser.TableStructure, ExtractPictures: cfg.DocumentParser.ExtractPictures, IncludeBBoxes: cfg.DocumentParser.IncludeBBoxes}
 }
 
 type parserObjectStore struct{ inner *objectstore.Client }

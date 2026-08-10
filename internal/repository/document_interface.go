@@ -35,6 +35,7 @@ type DocumentFilter struct {
 	Keyword          string
 	DirectoryID      *string
 	ProcessingStatus *string
+	IndexMode        *string
 	SourceType       *string
 }
 

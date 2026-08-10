@@ -7,6 +7,8 @@ func (ctrl *Controller) RegisterRoutes(v1 *gin.RouterGroup, authRequired gin.Han
 	// 按文档 ID 的跨知识库操作（详情/删除）挂在根级路径下。
 	docs := v1.Group("", authRequired)
 	docs.GET("/documents/:document_id", ctrl.Get)
+	docs.GET("/documents/:document_id/preview", ctrl.Preview)
+	docs.GET("/documents/:document_id/original", ctrl.Original)
 	docs.DELETE("/documents/:document_id", ctrl.Delete)
 
 	// 知识库域下的文档集合操作（创建/列表）与导入上传分别成组。

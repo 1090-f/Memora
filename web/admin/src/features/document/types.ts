@@ -2,6 +2,7 @@ export type DocumentSourceType = 'manual' | 'file' | 'url';
 export type DocumentProcessingStatus =
   | 'pending' | 'parsing' | 'cleaning' | 'chunking' | 'embedding'
   | 'keyword_indexing' | 'succeeded' | 'failed';
+export type DocumentIndexMode = 'none' | 'keyword' | 'hybrid';
 export type ImportTaskStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped';
 
 // 后端对空指针字段使用 omitempty，因此可选字段以 undefined 表达而不是强制 null。
@@ -21,6 +22,7 @@ export interface DocumentListItem {
   directory_id?: string;
   source_type: DocumentSourceType;
   processing_status: DocumentProcessingStatus;
+  index_mode: DocumentIndexMode;
   file_size?: number;
   created_at: string;
   updated_at: string;
@@ -38,6 +40,7 @@ export interface Document {
   file_size?: number;
   mime_type?: string;
   processing_status: DocumentProcessingStatus;
+  index_mode: DocumentIndexMode;
   failure_step?: string;
   failure_reason?: string;
   content_version: number;
@@ -71,6 +74,11 @@ export interface DocumentReadPage {
   next_cursor?: string;
   truncated: boolean;
   citation: Citation;
+}
+
+export interface DocumentPreview {
+  content: string;
+  format: 'markdown' | 'txt' | 'pdf' | 'docx' | string;
 }
 
 export interface ImportTask {
@@ -120,6 +128,7 @@ export interface DocumentListParams {
   keyword?: string;
   directory_id?: string;
   processing_status?: DocumentProcessingStatus;
+  index_mode?: DocumentIndexMode;
   source_type?: DocumentSourceType;
 }
 import type { Citation } from '@/features/rag/types';
