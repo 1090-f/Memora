@@ -4,10 +4,11 @@ export type DocumentProcessingStatus =
   | 'keyword_indexing' | 'succeeded' | 'failed';
 export type ImportTaskStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped';
 
+// 后端对空指针字段使用 omitempty，因此可选字段以 undefined 表达而不是强制 null。
 export interface DirectoryNode {
   id: string;
   name: string;
-  parent_id: string | null;
+  parent_id?: string;
   depth: number;
   sort_order: number;
   is_default: boolean;
@@ -17,10 +18,10 @@ export interface DirectoryNode {
 export interface DocumentListItem {
   id: string;
   title: string;
-  directory_id: string | null;
+  directory_id?: string;
   source_type: DocumentSourceType;
   processing_status: DocumentProcessingStatus;
-  file_size: number | null;
+  file_size?: number;
   created_at: string;
   updated_at: string;
 }
@@ -28,20 +29,20 @@ export interface DocumentListItem {
 export interface Document {
   id: string;
   knowledge_base_id: string;
-  directory_id: string | null;
+  directory_id?: string;
   title: string;
-  content: string;
+  content?: string;
   source_type: DocumentSourceType;
-  source_url: string | null;
-  original_file_name: string | null;
-  file_size: number | null;
-  mime_type: string | null;
+  source_url?: string;
+  original_file_name?: string;
+  file_size?: number;
+  mime_type?: string;
   processing_status: DocumentProcessingStatus;
-  failure_step: string | null;
-  failure_reason: string | null;
+  failure_step?: string;
+  failure_reason?: string;
   content_version: number;
   chunk_version: number;
-  active_index_version: number | null;
+  active_index_version?: number;
   created_at: string;
   updated_at: string;
 }
@@ -51,27 +52,44 @@ export interface DocumentProcessing {
   processing_status: DocumentProcessingStatus;
   current_index_version: number;
   active_index_version: number;
-  failure_step: string | null;
-  failure_reason: string | null;
+  failure_step: string;
+  failure_reason: string;
 }
 
 export interface ImportTask {
   id: string;
   source_type: 'file' | 'url';
-  file_name: string | null;
-  file_size: number | null;
-  mime_type: string | null;
-  source_url: string | null;
+  file_name?: string;
+  file_size?: number;
+  mime_type?: string;
+  source_url?: string;
   status: ImportTaskStatus;
-  current_step: string | null;
-  failure_reason: string | null;
-  document_id: string | null;
+  current_step?: string;
+  failure_reason?: string;
+  document_id?: string;
   created_at: string;
-  completed_at: string | null;
+  completed_at?: string;
 }
 
 export interface CreateDirectoryInput {
   name: string;
   parent_id?: string;
   sort_order?: number;
+}
+
+export interface CreateManualDocumentInput {
+  title: string;
+  content?: string;
+  directory_id?: string;
+  source_type: 'manual';
+  source_url?: string;
+}
+
+export interface DocumentListParams {
+  page?: number;
+  page_size?: number;
+  keyword?: string;
+  directory_id?: string;
+  processing_status?: DocumentProcessingStatus;
+  source_type?: DocumentSourceType;
 }

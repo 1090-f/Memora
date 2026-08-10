@@ -1,13 +1,10 @@
-.PHONY: build run-server run-worker migrate bootstrap-admin reset-admin-password test fmt vet
+.PHONY: build run-server migrate bootstrap-admin reset-admin-password test fmt vet
 
 build:
 	go build ./cmd/...
 
 run-server:
 	go run ./cmd/server
-
-run-worker:
-	go run ./cmd/worker
 
 migrate:
 	go run ./cmd/migrate up

@@ -12,6 +12,14 @@ bin/
 .gocache/
 .gomodcache/
 
+# Python
+.venv/
+.venv-*/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
 # Frontend
 web/node_modules/
 web/**/node_modules/

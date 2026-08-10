@@ -9,18 +9,19 @@ import (
 
 // Config 是应用程序的完整配置结构，包含所有子模块的配置项
 type Config struct {
-	App             AppConfig             `mapstructure:"app"`
-	Database        DatabaseConfig        `mapstructure:"database"`
-	Redis           RedisConfig           `mapstructure:"redis"`
-	MinIO           MinIOConfig           `mapstructure:"minio"`
-	JWT             JWTConfig             `mapstructure:"jwt"`
-	Worker          WorkerConfig          `mapstructure:"worker"`
-	MCP             MCPConfig             `mapstructure:"mcp"`
-	Log             LogConfig             `mapstructure:"log"`
-	CORS            CORSConfig            `mapstructure:"cors"`
-	DocumentParser  DocumentParserConfig  `mapstructure:"document_parser"`
-	Chunking        ChunkingConfig        `mapstructure:"chunking"`
-	AssetEnrichment AssetEnrichmentConfig `mapstructure:"asset_enrichment"`
+	App              AppConfig              `mapstructure:"app"`
+	Database         DatabaseConfig         `mapstructure:"database"`
+	Redis            RedisConfig            `mapstructure:"redis"`
+	MinIO            MinIOConfig            `mapstructure:"minio"`
+	JWT              JWTConfig              `mapstructure:"jwt"`
+	DocumentConsumer DocumentConsumerConfig `mapstructure:"document_consumer"`
+	Outbox           OutboxConfig           `mapstructure:"outbox"`
+	MCP              MCPConfig              `mapstructure:"mcp"`
+	Log              LogConfig              `mapstructure:"log"`
+	CORS             CORSConfig             `mapstructure:"cors"`
+	DocumentParser   DocumentParserConfig   `mapstructure:"document_parser"`
+	Chunking         ChunkingConfig         `mapstructure:"chunking"`
+	AssetEnrichment  AssetEnrichmentConfig  `mapstructure:"asset_enrichment"`
 }
 
 // AppConfig 定义应用程序基础配置，包括名称、版本、运行模式和超时设置
@@ -64,13 +65,22 @@ type JWTConfig struct {
 	AccessTTL time.Duration `mapstructure:"access_ttl"`
 }
 
-// WorkerConfig 定义后台Worker任务配置，包括并发数、轮询间隔和超时设置
-type WorkerConfig struct {
-	Concurrency    int           `mapstructure:"concurrency"`
-	PollInterval   time.Duration `mapstructure:"poll_interval"`
-	DefaultTimeout time.Duration `mapstructure:"default_timeout"`
-	MaxRetryDelay  time.Duration `mapstructure:"max_retry_delay"`
-	IdempotencyTTL time.Duration `mapstructure:"idempotency_ttl"`
+// DocumentConsumerConfig 定义 API 进程内 Redis Stream 文档消费者。
+type DocumentConsumerConfig struct {
+	Enabled           bool          `mapstructure:"enabled"`
+	Stream            string        `mapstructure:"stream"`
+	Group             string        `mapstructure:"group"`
+	Concurrency       int           `mapstructure:"concurrency"`
+	BlockTimeout      time.Duration `mapstructure:"block_timeout"`
+	ProcessingTimeout time.Duration `mapstructure:"processing_timeout"`
+	ClaimIdle         time.Duration `mapstructure:"claim_idle"`
+	MaxAttempts       int           `mapstructure:"max_attempts"`
+}
+
+// OutboxConfig 定义数据库 Outbox 到 Redis Stream 的发布参数。
+type OutboxConfig struct {
+	PollInterval time.Duration `mapstructure:"poll_interval"`
+	BatchSize    int           `mapstructure:"batch_size"`
 }
 
 // MCPConfig 是 MCP 导入与调用的安全配置。
@@ -172,8 +182,14 @@ func (c Config) Validate() error {
 	if c.App.Mode == "release" && (len(c.JWT.Secret) < 32 || strings.HasPrefix(strings.ToLower(c.JWT.Secret), "change-me")) {
 		errs = append(errs, errors.New("MEMORA_JWT_SECRET 至少需要 32 个字符，且在发布模式下不能使用示例值"))
 	}
-	if c.Worker.Concurrency <= 0 || c.Worker.PollInterval <= 0 || c.Worker.DefaultTimeout <= 0 || c.Worker.IdempotencyTTL <= 0 {
-		errs = append(errs, errors.New("Worker 并发数和各项时长必须为正数"))
+	if c.DocumentConsumer.Enabled && (c.DocumentConsumer.Stream == "" || c.DocumentConsumer.Group == "" || c.DocumentConsumer.Concurrency <= 0 || c.DocumentConsumer.BlockTimeout <= 0 || c.DocumentConsumer.ProcessingTimeout <= 0 || c.DocumentConsumer.ClaimIdle <= 0 || c.DocumentConsumer.MaxAttempts <= 0) {
+		errs = append(errs, errors.New("document_consumer 配置无效"))
+	}
+	if c.DocumentConsumer.Enabled && c.DocumentConsumer.ClaimIdle <= c.DocumentConsumer.ProcessingTimeout {
+		errs = append(errs, errors.New("document_consumer.claim_idle 必须大于 processing_timeout"))
+	}
+	if c.Outbox.PollInterval <= 0 || c.Outbox.BatchSize <= 0 {
+		errs = append(errs, errors.New("outbox 配置无效"))
 	}
 	if c.App.Mode == "release" && len(c.MCP.EncryptionKey) < 32 {
 		errs = append(errs, errors.New("MEMORA_MCP_ENCRYPTION_KEY must be at least 32 characters in release mode"))

@@ -1,15 +1,28 @@
 import { apiRequest } from '@/api/client';
-import type { CreateDirectoryInput, DirectoryNode, Document, DocumentListItem, DocumentProcessing, ImportTask } from './types';
+import type {
+  CreateDirectoryInput,
+  CreateManualDocumentInput,
+  DirectoryNode,
+  Document,
+  DocumentListItem,
+  DocumentListParams,
+  DocumentProcessing,
+  ImportTask,
+} from './types';
 import type { PageResult } from '@/features/knowledge-base/types';
 
+// 任务包 00～06 已开放的目录、文档与异步处理接口；后续格式的接口不在此提前暴露。
 export const getDirectoryTree = (kbId: string) =>
   apiRequest<DirectoryNode[]>({ url: `/knowledge-bases/${kbId}/directories/tree` });
 
 export const createDirectory = (kbId: string, input: CreateDirectoryInput) =>
   apiRequest<DirectoryNode>({ url: `/knowledge-bases/${kbId}/directories`, method: 'POST', data: input });
 
-export const listDocuments = (kbId: string, params: Record<string, unknown> = {}) =>
+export const listDocuments = (kbId: string, params: DocumentListParams = {}) =>
   apiRequest<PageResult<DocumentListItem>>({ url: `/knowledge-bases/${kbId}/documents`, params });
+
+export const createManualDocument = (kbId: string, input: CreateManualDocumentInput) =>
+  apiRequest<Document>({ url: `/knowledge-bases/${kbId}/documents`, method: 'POST', data: input });
 
 export const getDocument = (documentId: string) =>
   apiRequest<Document>({ url: `/documents/${documentId}` });
@@ -18,13 +31,9 @@ export const deleteDocument = (documentId: string) =>
   apiRequest<{ deleted: boolean }>({ url: `/documents/${documentId}`, method: 'DELETE' });
 
 export const importFiles = (kbId: string, formData: FormData) =>
+  // FormData 交给 Axios 自动生成带 boundary 的 Content-Type，避免手工设置导致后端无法解析。
   apiRequest<{ tasks: Array<{ task_id: string; file_name: string; status: ImportTask['status'] }> }>({
     url: `/knowledge-bases/${kbId}/imports/files`, method: 'POST', data: formData,
-  });
-
-export const importUrl = (kbId: string, input: { url: string; directory_id?: string; duplicate_policy?: 'create_new' | 'skip' }) =>
-  apiRequest<{ tasks: Array<{ task_id: string; status: ImportTask['status'] }> }>({
-    url: `/knowledge-bases/${kbId}/imports/url`, method: 'POST', data: input,
   });
 
 export const listImportTasks = (kbId: string, params: Record<string, unknown> = {}) =>

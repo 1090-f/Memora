@@ -33,14 +33,15 @@ export function KnowledgeTree({ nodes, selectedId, onSelect, onCreateDirectory }
   nodes: DirectoryNode[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
-  onCreateDirectory: (name: string) => void;
+  onCreateDirectory: (name: string, parentId?: string) => void;
 }) {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
 
   function submit() {
     if (name.trim() === '') return;
-    onCreateDirectory(name.trim());
+    // 选中目录时创建其子目录；选中“全部文档”时创建根目录。
+    onCreateDirectory(name.trim(), selectedId ?? undefined);
     setName('');
     setCreating(false);
   }
@@ -49,7 +50,7 @@ export function KnowledgeTree({ nodes, selectedId, onSelect, onCreateDirectory }
     <Box sx={{ p: 1 }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" px={1} py={0.5}>
         <Typography variant="subtitle2" color="text.secondary">目录</Typography>
-        <Button size="small" startIcon={<AddOutlined />} onClick={() => setCreating(true)}>新建目录</Button>
+        <Button size="small" startIcon={<AddOutlined />} onClick={() => setCreating(true)}>{selectedId ? '新建子目录' : '新建目录'}</Button>
       </Stack>
       {creating && (
         <Stack direction="row" spacing={1} px={1} pb={1}>
@@ -62,6 +63,7 @@ export function KnowledgeTree({ nodes, selectedId, onSelect, onCreateDirectory }
             onKeyDown={(event) => { if (event.key === 'Enter') submit(); }}
           />
           <Button size="small" variant="contained" onClick={submit}>创建</Button>
+          <Button size="small" onClick={() => { setCreating(false); setName(''); }}>取消</Button>
         </Stack>
       )}
       <ListItemButton selected={selectedId === null} onClick={() => onSelect(null)}>

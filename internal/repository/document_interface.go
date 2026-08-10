@@ -60,6 +60,8 @@ type ImportTaskRepository interface {
 	// ReservePending 使用 FOR UPDATE SKIP LOCKED 领取一个 pending 任务并置为 running。
 	// 无可用任务时返回 nil, nil。
 	ReservePending(ctx context.Context) (*entity.ImportTask, error)
+	// ClaimPendingByID 原子认领 Redis Stream 指定的 pending 任务。
+	ClaimPendingByID(ctx context.Context, taskID string) (*entity.ImportTask, error)
 	// RecoverStale 恢复卡在 running 且超过租约时间的任务为 pending。
 	// 返回恢复数量。
 	RecoverStale(ctx context.Context, staleBefore int64) (int64, error)
@@ -69,10 +71,18 @@ type ImportTaskRepository interface {
 	FailTask(ctx context.Context, taskID string, failureReason string) error
 	// RetryTask 将 failed 任务重置为 pending（显式重试），清空失败原因。
 	RetryTask(ctx context.Context, taskID string) error
+	// RequeueTask 将运行失败但仍可重试的任务重新排队，并生成 Outbox 事件。
+	RequeueTask(ctx context.Context, taskID, failureReason string) error
 	// SetRunningStep 更新 running 任务的当前步骤（心跳式进度更新）。
 	SetRunningStep(ctx context.Context, taskID, step string) error
 	// SkipTask 将任务标记为 skipped（去重策略命中）。
 	SkipTask(ctx context.Context, taskID string) error
 	// Delete 物理删除任务记录（仅用于上传失败回滚）。
 	Delete(ctx context.Context, userID, taskID string) error
+}
+
+// TaskOutboxRepository 管理可靠 Redis Stream 发布事件。
+type TaskOutboxRepository interface {
+	ListUnpublished(ctx context.Context, limit int) ([]*entity.TaskOutbox, error)
+	MarkPublished(ctx context.Context, eventID string) error
 }
