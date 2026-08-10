@@ -24,7 +24,7 @@ database:
 redis:
   address: "localhost:6379"
   password: ""
-  db: 0
+  db: 3
   pool_size: 10
 
 # MinIO 配置
@@ -40,13 +40,20 @@ jwt:
   secret: "change-me"
   access_ttl: 2h         # 单位/小时
 
-# 后台 Worker 配置
-worker:
-  concurrency: 4
-  poll_interval: 2s      # 单位/秒
-  default_timeout: 5m    # 单位/分钟
-  max_retry_delay: 1m    # 单位/分钟
-  idempotency_ttl: 24h   # 单位/小时
+# API 进程内 Redis Stream 文档消费者
+document_consumer:
+  enabled: true
+  stream: "memora:document:parse"
+  group: "memora-api"
+  concurrency: 2
+  block_timeout: 5s
+  processing_timeout: 15m
+  claim_idle: 20m
+  max_attempts: 3
+
+outbox:
+  poll_interval: 500ms
+  batch_size: 100
 
 # MCP
 mcp:
