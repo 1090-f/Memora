@@ -16,6 +16,7 @@ type DocumentResponse struct {
 	FileSize           *int64    `json:"file_size,omitempty"`            // FileSize 文件大小（字节），可选
 	MIMEType           *string   `json:"mime_type,omitempty"`            // MIMEType 文件 MIME 类型，可选
 	ProcessingStatus   string    `json:"processing_status"`              // ProcessingStatus 文档处理状态
+	IndexMode          string    `json:"index_mode"`                     // IndexMode 当前活动索引能力（none/keyword/hybrid）
 	FailureStep        *string   `json:"failure_step,omitempty"`         // FailureStep 处理失败的步骤，可选
 	FailureReason      *string   `json:"failure_reason,omitempty"`       // FailureReason 处理失败原因，可选
 	ContentVersion     int       `json:"content_version"`                // ContentVersion 内容版本号
@@ -32,6 +33,7 @@ type DocumentListItem struct {
 	DirectoryID      *string   `json:"directory_id,omitempty"` // DirectoryID 所属目录 ID，为空表示未归入目录
 	SourceType       string    `json:"source_type"`            // SourceType 文档来源类型（manual/file/url）
 	ProcessingStatus string    `json:"processing_status"`      // ProcessingStatus 文档处理状态
+	IndexMode        string    `json:"index_mode"`             // IndexMode 当前活动索引能力（none/keyword/hybrid）
 	FileSize         *int64    `json:"file_size,omitempty"`    // FileSize 文件大小（字节），可选
 	CreatedAt        time.Time `json:"created_at"`             // CreatedAt 创建时间
 	UpdatedAt        time.Time `json:"updated_at"`             // UpdatedAt 更新时间
@@ -43,6 +45,12 @@ type DocumentList struct {
 	Page     int                 `json:"page"`      // Page 当前页码（从 1 开始）
 	PageSize int                 `json:"page_size"` // PageSize 每页条数
 	Total    int64               `json:"total"`     // Total 文档总数
+}
+
+// DocumentPreviewResponse 表示从完整解析产物读取的阅读版正文。
+type DocumentPreviewResponse struct {
+	Content string `json:"content"` // Content 完整解析正文（Markdown 或纯文本）
+	Format  string `json:"format"`  // Format 解析后的来源格式（markdown/txt/pdf/docx）
 }
 
 // UploadTaskItem 表示文件上传后创建的任务项。

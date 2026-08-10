@@ -1,11 +1,32 @@
+import DownloadOutlined from '@mui/icons-material/DownloadOutlined';
+import OpenInNewOutlined from '@mui/icons-material/OpenInNewOutlined';
 import { Alert, Box, Button, Chip, Divider, Paper, Stack, Typography } from '@mui/material';
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery } from '@tanstack/react-query';
+import { useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { errorMessage } from '@/api/errors';
 import { queryKeys } from '@/api/queryKeys';
-import { listDocumentIndexVersions, readDocumentContent } from '../api';
+import { getDocumentPreview, getOriginalDocument, listDocumentIndexVersions, readDocumentContent } from '../api';
+import { documentStatusLabel } from '../status';
 import type { Document, DocumentProcessing } from '../types';
 
 const sourceLabel = { manual: '手工文档', file: '文件导入', url: 'URL 导入' } as const;
+
+const markdownSx = {
+  overflowWrap: 'anywhere',
+  '& > :first-of-type': { mt: 0 },
+  '& > :last-child': { mb: 0 },
+  '& h1, & h2, & h3, & h4, & h5, & h6': { mt: 2.5, mb: 1, lineHeight: 1.35 },
+  '& p, & ul, & ol, & blockquote': { my: 1.25, lineHeight: 1.75 },
+  '& pre': { overflowX: 'auto', p: 1.5, borderRadius: 1, bgcolor: 'action.hover' },
+  '& code': { fontFamily: 'Consolas, "SFMono-Regular", monospace' },
+  '& :not(pre) > code': { px: 0.5, py: 0.2, borderRadius: 0.5, bgcolor: 'action.hover' },
+  '& table': { display: 'block', maxWidth: '100%', overflowX: 'auto', borderCollapse: 'collapse', my: 2 },
+  '& th, & td': { border: 1, borderColor: 'divider', px: 1.25, py: 0.75, textAlign: 'left' },
+  '& blockquote': { ml: 0, pl: 2, borderLeft: 4, borderColor: 'divider', color: 'text.secondary' },
+  '& img': { maxWidth: '100%', height: 'auto' },
+} as const;
 
 function formatBytes(value?: number) {
   if (value === undefined) return null;
@@ -19,12 +40,20 @@ export function DocumentViewer({ document, processing }: { document: Document; p
   const failureStep = processing?.failure_step || document.failure_step;
   const activeIndexVersion = processing?.active_index_version ?? document.active_index_version;
   const effectiveStatus = processing?.processing_status ?? document.processing_status;
-  const shouldReadIndexedContent = !document.content && effectiveStatus === 'succeeded';
+  const shouldReadPreview = !document.content && effectiveStatus === 'succeeded';
+  const previewQuery = useQuery({
+    queryKey: [...queryKeys.documentContent(document.id), 'preview', document.content_version],
+    queryFn: () => getDocumentPreview(document.id),
+    enabled: shouldReadPreview,
+    retry: false,
+  });
+  // 旧 Artifact 不可用时才回退到 Chunk 正文，保证已有数据仍可阅读。
+  const shouldReadIndexedContent = shouldReadPreview && previewQuery.isError;
   const contentQuery = useInfiniteQuery({
     queryKey: [...queryKeys.documentContent(document.id), activeIndexVersion],
     queryFn: ({ pageParam }) => readDocumentContent(document.knowledge_base_id, document.id, {
       cursor: pageParam || undefined,
-      max_tokens: 2000,
+      max_tokens: 6000,
     }),
     initialPageParam: '',
     getNextPageParam: (lastPage) => lastPage.truncated && lastPage.next_cursor ? lastPage.next_cursor : undefined,
@@ -36,13 +65,74 @@ export function DocumentViewer({ document, processing }: { document: Document; p
     enabled: document.processing_status === 'succeeded',
   });
   const indexedContent = contentQuery.data?.pages.map((page) => page.content).join('') || '';
+  const displayedContent = document.content || previewQuery.data?.content || indexedContent;
+  const contentError = contentQuery.error;
+  const fetchNextContentPage = contentQuery.fetchNextPage;
+  const hasNextContentPage = contentQuery.hasNextPage;
+  const isFetchingNextContentPage = contentQuery.isFetchingNextPage;
+  const fileName = (document.original_file_name || document.title).toLowerCase();
+  const mimeType = (document.mime_type || '').toLowerCase();
+  const isPdf = mimeType === 'application/pdf' || fileName.endsWith('.pdf');
+  const isDocx = mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || fileName.endsWith('.docx');
+  const isMarkdown = mimeType === 'text/markdown' || mimeType === 'text/x-markdown' || fileName.endsWith('.md') || fileName.endsWith('.markdown');
+  const previewFormat = (previewQuery.data?.format || '').toLowerCase();
+  const renderAsMarkdown = document.source_type !== 'url' && (isMarkdown || isPdf || isDocx || ['markdown', 'pdf', 'docx'].includes(previewFormat));
+  const canOpenOriginal = document.source_type === 'file' && (isPdf || isDocx);
+  const originalMutation = useMutation({
+    mutationFn: ({ inline }: { inline: boolean; previewWindow: Window | null }) => getOriginalDocument(document.id, inline),
+    onSuccess: (blob, { inline, previewWindow }) => {
+      const objectURL = URL.createObjectURL(blob);
+      if (inline && previewWindow) {
+        previewWindow.opener = null;
+        previewWindow.location.href = objectURL;
+      } else {
+        previewWindow?.close();
+        const anchor = window.document.createElement('a');
+        anchor.href = objectURL;
+        anchor.download = document.original_file_name || document.title;
+        window.document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+      }
+      window.setTimeout(() => URL.revokeObjectURL(objectURL), 60_000);
+    },
+    onError: (_error, { previewWindow }) => previewWindow?.close(),
+  });
+
+  const openOriginal = () => {
+    const inline = isPdf;
+    const previewWindow = inline ? window.open('about:blank', '_blank') : null;
+    originalMutation.mutate({ inline, previewWindow });
+  };
+
+  // 文档预览面向人工阅读：保留后端的安全分页，但在前端自动连续读取，不暴露工具游标和分页操作。
+  useEffect(() => {
+    if (shouldReadIndexedContent && hasNextContentPage && !isFetchingNextContentPage && !contentError) {
+      void fetchNextContentPage();
+    }
+  }, [contentError, fetchNextContentPage, hasNextContentPage, isFetchingNextContentPage, shouldReadIndexedContent]);
 
   return (
     <Paper variant="outlined" sx={{ p: 3, minHeight: 360, overflow: 'hidden' }}>
       <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap">
         <Typography component="h2" variant="h5" fontWeight={750} sx={{ flexGrow: 1 }}>{document.title}</Typography>
         <Chip size="small" label={sourceLabel[document.source_type]} />
-        <Chip size="small" color={document.processing_status === 'failed' ? 'error' : document.processing_status === 'succeeded' ? 'success' : 'info'} label={document.processing_status} />
+        <Chip
+          size="small"
+          color={effectiveStatus === 'failed' ? 'error' : effectiveStatus === 'succeeded' ? 'success' : 'info'}
+          label={documentStatusLabel(effectiveStatus, document.index_mode)}
+        />
+        {canOpenOriginal && (
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={isPdf ? <OpenInNewOutlined /> : <DownloadOutlined />}
+            disabled={originalMutation.isPending}
+            onClick={openOriginal}
+          >
+            {originalMutation.isPending ? '正在读取…' : isPdf ? '查看原文件' : '下载原文件'}
+          </Button>
+        )}
       </Stack>
       <Stack direction="row" spacing={2} mt={1} color="text.secondary" flexWrap="wrap">
         {document.original_file_name && <Typography variant="caption">文件：{document.original_file_name}</Typography>}
@@ -54,6 +144,7 @@ export function DocumentViewer({ document, processing }: { document: Document; p
       </Stack>
       {document.source_url && <Typography mt={1} variant="body2" color="text.secondary">来源：{document.source_url}</Typography>}
       {failureReason && <Alert severity="error" sx={{ mt: 2 }}>失败步骤：{failureStep || '未知'}；{failureReason}</Alert>}
+      {originalMutation.error && <Alert severity="warning" sx={{ mt: 2 }}>原文件读取失败：{errorMessage(originalMutation.error)}</Alert>}
 
       {versionsQuery.data?.items && versionsQuery.data.items.length > 0 && (
         <Stack direction="row" spacing={1} mt={2} alignItems="center" flexWrap="wrap" useFlexGap>
@@ -72,23 +163,30 @@ export function DocumentViewer({ document, processing }: { document: Document; p
       {versionsQuery.error && <Alert severity="warning" sx={{ mt: 2 }}>索引版本加载失败：{errorMessage(versionsQuery.error)}</Alert>}
 
       <Divider sx={{ my: 2 }} />
-      {document.content || indexedContent ? (
+      {displayedContent ? (
         <>
-          <Typography component="pre" sx={{ m: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: 'inherit' }}>
-            {document.content || indexedContent}
-          </Typography>
-          {contentQuery.data?.pages.map((page, index) => (
-            <Alert key={`${page.citation.chunk_id}-${index}`} severity="info" variant="outlined" sx={{ mt: 2 }}>
-              引用 {index + 1}：{page.citation.document_title || page.title}
-              {page.citation.source_location ? ` · ${JSON.stringify(page.citation.source_location)}` : ''}
+          {renderAsMarkdown ? (
+            <Box sx={markdownSx}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayedContent}</ReactMarkdown>
+            </Box>
+          ) : (
+            <Typography component="pre" sx={{ m: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: 'inherit' }}>
+              {displayedContent}
+            </Typography>
+          )}
+          {contentQuery.isFetchingNextPage && <Typography mt={2} color="text.secondary">正在加载剩余正文…</Typography>}
+          {contentQuery.error && contentQuery.hasNextPage && (
+            <Alert
+              severity="warning"
+              sx={{ mt: 2 }}
+              action={<Button color="inherit" size="small" onClick={() => void contentQuery.fetchNextPage()}>重试</Button>}
+            >
+              剩余正文加载失败：{errorMessage(contentQuery.error)}
             </Alert>
-          ))}
-          {contentQuery.hasNextPage && (
-            <Button sx={{ mt: 2 }} variant="outlined" disabled={contentQuery.isFetchingNextPage} onClick={() => void contentQuery.fetchNextPage()}>
-              {contentQuery.isFetchingNextPage ? '正在继续读取…' : '继续读取正文'}
-            </Button>
           )}
         </>
+      ) : previewQuery.isPending && shouldReadPreview ? (
+        <Typography color="text.secondary">正在读取完整解析正文…</Typography>
       ) : contentQuery.isPending && shouldReadIndexedContent ? (
         <Typography color="text.secondary">正在读取已索引正文…</Typography>
       ) : contentQuery.error ? (

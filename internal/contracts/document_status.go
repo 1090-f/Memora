@@ -34,6 +34,16 @@ const (
 	ProcessingFailed DocumentProcessingStatus = "failed"
 )
 
+// DocumentIndexMode 表示文档当前活动索引具备的检索能力。
+// none 表示尚无活动索引，keyword 表示仅关键词索引，hybrid 表示关键词与向量索引均已建立。
+type DocumentIndexMode string
+
+const (
+	DocumentIndexNone    DocumentIndexMode = "none"
+	DocumentIndexKeyword DocumentIndexMode = "keyword"
+	DocumentIndexHybrid  DocumentIndexMode = "hybrid"
+)
+
 // ImportTaskStatus 表示导入任务状态，与 import_tasks.status 枚举一致。
 type ImportTaskStatus string
 

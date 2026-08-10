@@ -1,4 +1,4 @@
-import { apiRequest } from '@/api/client';
+import { apiBlobRequest, apiRequest } from '@/api/client';
 import type {
   CreateDirectoryInput,
   CreateManualDocumentInput,
@@ -9,6 +9,7 @@ import type {
   DocumentIndexVersion,
   DocumentReadPage,
   DocumentProcessing,
+  DocumentPreview,
   ImportSubmission,
   ImportTask,
   ImportURLInput,
@@ -30,6 +31,12 @@ export const createManualDocument = (kbId: string, input: CreateManualDocumentIn
 
 export const getDocument = (documentId: string) =>
   apiRequest<Document>({ url: `/documents/${documentId}` });
+
+export const getDocumentPreview = (documentId: string) =>
+  apiRequest<DocumentPreview>({ url: `/documents/${documentId}/preview` });
+
+export const getOriginalDocument = (documentId: string, inline = false) =>
+  apiBlobRequest({ url: `/documents/${documentId}/original`, params: inline ? { inline: true } : undefined });
 
 export const deleteDocument = (documentId: string) =>
   apiRequest<{ deleted: boolean }>({ url: `/documents/${documentId}`, method: 'DELETE' });

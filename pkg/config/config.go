@@ -118,6 +118,17 @@ type CORSConfig struct {
 type DocumentParserConfig struct {
 	// BaseURL 是 Python 服务地址；空表示未配置（PDF/DOCX 解析报错，TXT/MD 不受影响）。
 	BaseURL string `mapstructure:"base_url"`
+	// AutoStart 仅用于本地开发：主程序在服务未就绪时托管启动解析进程。
+	AutoStart bool `mapstructure:"auto_start"`
+	// AutoStartCommand/Args 是直接执行的命令与参数，不经过 shell。
+	AutoStartCommand string   `mapstructure:"auto_start_command"`
+	AutoStartArgs    []string `mapstructure:"auto_start_args"`
+	// AutoStartWorkingDirectory 是解析服务工作目录。
+	AutoStartWorkingDirectory string `mapstructure:"auto_start_working_directory"`
+	// AutoStartTimeout 是首次依赖同步、模型初始化与健康检查的总等待时间。
+	AutoStartTimeout time.Duration `mapstructure:"auto_start_timeout"`
+	// AutoStartEnvironment 是追加到子进程的环境变量。
+	AutoStartEnvironment map[string]string `mapstructure:"auto_start_environment"`
 	// Timeout 是单次解析请求超时（必须小于 Worker 总超时）。
 	Timeout time.Duration `mapstructure:"timeout"`
 	// MaxResponseBytes 是解析响应体大小上限。
@@ -227,6 +238,9 @@ func (c Config) Validate() error {
 	}
 	if c.DocumentParser.Timeout <= 0 {
 		errs = append(errs, errors.New("document_parser.timeout 必须为正数"))
+	}
+	if c.DocumentParser.AutoStart && (strings.TrimSpace(c.DocumentParser.AutoStartCommand) == "" || strings.TrimSpace(c.DocumentParser.AutoStartWorkingDirectory) == "" || c.DocumentParser.AutoStartTimeout <= 0) {
+		errs = append(errs, errors.New("document_parser 自动启动配置无效"))
 	}
 	if c.AssetEnrichment.Mode != "" && c.AssetEnrichment.Mode != "none" {
 		errs = append(errs, errors.New("asset_enrichment.mode 仅支持 none"))

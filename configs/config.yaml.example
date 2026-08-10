@@ -98,7 +98,15 @@ cors:
 
 # 文档解析（Python document-parser 客户端；只含解析选项，不含 Chunk 参数）
 document_parser:
-  base_url: "http://localhost:5001"
+  base_url: "http://127.0.0.1:5001"
+  auto_start: true                     # 主程序统一托管 Python 解析服务
+  auto_start_command: "uv"
+  auto_start_args: ["run", "--frozen", "--no-dev", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", "5001"]
+  auto_start_working_directory: "./services/document-parser"
+  auto_start_timeout: 10m
+  auto_start_environment:
+    PYTHONUTF8: "1"
+    TORCH_COMPILE_DISABLE: "1"
   timeout: 8m
   max_response_size: 134217728
   max_file_bytes: 67108864

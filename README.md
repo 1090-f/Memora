@@ -63,6 +63,15 @@ go run ./cmd/server
 go run ./cmd/worker
 ```
 
+`document_parser.auto_start` 默认启用。执行 `go run ./cmd/server` 时，主程序会先复用
+已就绪的 5001 解析服务；服务不存在时，通过 `uv` 自动创建/同步 Python 3.11 环境并
+启动解析服务，主程序退出时一并关闭。首次启动需要下载 Python 依赖和 Docling 模型，
+可能耗时数分钟。
+
+部署镜像同样由 `memora-server` 托管解析进程。主镜像已经包含 Python 3.11、`uv`、
+锁定的解析依赖和解析服务源码；Compose 不再创建独立的 `document-parser` 容器，
+Docling 模型缓存在 API 容器挂载的 `docling-models` 卷中。
+
 环境变量使用 `MEMORA_` 前缀，可覆盖配置文件中的敏感配置。
 
 ## 前端开发

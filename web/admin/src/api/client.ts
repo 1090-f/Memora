@@ -70,3 +70,33 @@ export async function apiRequest<T = unknown>(
     throw new AppError('NETWORK_ERROR', '网络连接失败', 0, undefined, '');
   }
 }
+
+// apiBlobRequest 用于经过 Bearer 鉴权的原始文件流下载，不要求 JSON envelope。
+export async function apiBlobRequest(config: AxiosRequestConfig): Promise<Blob> {
+  const session = readStoredSession();
+
+  try {
+    const response = await service.request<Blob>({
+      method: 'GET',
+      ...config,
+      responseType: 'blob',
+      headers: {
+        ...config.headers,
+        ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}),
+      },
+    });
+    if (response.status === 401) unauthorizedHandler?.();
+    if (response.status >= 200 && response.status < 300) return response.data;
+
+    throw new AppError(
+      'HTTP_ERROR',
+      response.status >= 500 ? '原文件服务暂时不可用' : '原文件读取失败',
+      response.status,
+      undefined,
+      '',
+    );
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw new AppError('NETWORK_ERROR', '网络连接失败', 0, undefined, '');
+  }
+}
