@@ -109,10 +109,12 @@ func (r *reactRunner) Run(ctx context.Context, agentCtx contracts.AgentContext, 
 			if err := budget.CheckToolCalls(calls); err != nil {
 				return RunOutput{FinalResult: final, Citations: r.collector.Get(), Usage: usage}, err
 			}
-			result, callErr := r.executor.Execute(ctx, contracts.ToolContext{UserID: agentCtx.UserID, KnowledgeBaseID: agentCtx.KnowledgeBaseID, AgentRunID: agentCtx.RunID, ReactRound: round, AllowedToolNames: agentCtx.AllowedTools, MaxResultBytes: cfg.MaxToolResultBytes}, call)
+			toolContext := contracts.ToolContext{UserID: agentCtx.UserID, KnowledgeBaseID: agentCtx.KnowledgeBaseID, AgentRunID: agentCtx.RunID, ReactRound: round, AllowedToolNames: agentCtx.AllowedTools, MaxResultBytes: cfg.MaxToolResultBytes}
+			result, callErr := r.executor.Execute(ctx, toolContext, call)
 			r.collector.Add(result.Citations)
 			messages = append(messages, contracts.ChatMessage{Role: "tool", Content: toolContent(result)})
 			if callErr != nil {
+				// 工具失败作为受限观察结果交回模型，让模型决定是否换用其他工具或结束。
 				continue
 			}
 		}
@@ -149,20 +151,32 @@ func addUsage(total, current contracts.TokenUsage) contracts.TokenUsage {
 
 func withDefaults(cfg contracts.AgentConfig) contracts.AgentConfig {
 	defaults := contracts.DefaultAgentConfig()
-	if cfg.MaxReactRounds <= 0 {
+	if cfg.MaxReactRounds <= 0 || cfg.MaxReactRounds > maxReactRoundsLimit {
 		cfg.MaxReactRounds = defaults.MaxReactRounds
 	}
-	if cfg.MaxPlanSteps <= 0 {
+	if cfg.MaxPlanSteps <= 0 || cfg.MaxPlanSteps > maxPlanStepsLimit {
 		cfg.MaxPlanSteps = defaults.MaxPlanSteps
 	}
-	if cfg.MaxToolCalls <= 0 {
+	if cfg.MaxReplans < 0 || cfg.MaxReplans > maxReplansLimit {
+		cfg.MaxReplans = defaults.MaxReplans
+	}
+	if cfg.ReviewerRuns <= 0 {
+		cfg.ReviewerRuns = defaults.ReviewerRuns
+	}
+	if cfg.MaxToolCalls <= 0 || cfg.MaxToolCalls > maxToolCallsLimit {
 		cfg.MaxToolCalls = defaults.MaxToolCalls
 	}
-	if cfg.MaxToolResultBytes <= 0 {
+	if cfg.MaxDocumentReadTokens <= 0 || cfg.MaxDocumentReadTokens > maxDocumentReadTokensLimit {
+		cfg.MaxDocumentReadTokens = defaults.MaxDocumentReadTokens
+	}
+	if cfg.MaxToolResultBytes <= 0 || cfg.MaxToolResultBytes > maxToolResultBytesLimit {
 		cfg.MaxToolResultBytes = defaults.MaxToolResultBytes
 	}
-	if cfg.MaxRunSeconds <= 0 {
+	if cfg.MaxRunSeconds <= 0 || cfg.MaxRunSeconds > maxRunSecondsLimit {
 		cfg.MaxRunSeconds = defaults.MaxRunSeconds
+	}
+	if cfg.MemoryTopK <= 0 || cfg.MemoryTopK > maxMemoryTopKLimit {
+		cfg.MemoryTopK = defaults.MemoryTopK
 	}
 	return cfg
 }

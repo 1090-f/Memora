@@ -55,23 +55,24 @@ func (s *Service) Run(ctx context.Context, request contracts.AgentRunRequest) (c
 		return contracts.AgentRunResult{}, newCoreError(contracts.ErrInternal, ErrExecutionDependency)
 	}
 	cfg := withDefaults(request.Config)
+	startedAt := now()
+	runCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.MaxRunSeconds)*time.Second)
+	defer cancel()
 	mode := contracts.ExecutionReact
 	runner := s.runner
 	if s.router != nil {
-		decision, err := s.router.Route(ctx, request.Context)
+		decision, err := s.router.Route(runCtx, request.Context)
 		if err == nil {
 			if decision.ExecutionMode == contracts.ExecutionPlanExecute && s.planRunner != nil {
 				mode = contracts.ExecutionPlanExecute
 				runner = s.planRunner
 			}
-			_ = s.events.PublishRouterSelected(ctx, request.RunID, decision)
+			_ = s.events.PublishRouterSelected(runCtx, request.RunID, decision)
 		}
 	}
-	if err := s.events.PublishRunStarted(ctx, request.RunID, mode); err != nil {
+	if err := s.events.PublishRunStarted(runCtx, request.RunID, mode); err != nil {
 		return contracts.AgentRunResult{}, err
 	}
-	startedAt := now()
-	runCtx, cancel := context.WithCancel(ctx)
 	s.mu.Lock()
 	s.cancel[request.RunID] = cancel
 	s.mu.Unlock()
@@ -86,14 +87,14 @@ func (s *Service) Run(ctx context.Context, request contracts.AgentRunRequest) (c
 	endedAt := now()
 	if err != nil {
 		if runCtx.Err() != nil || ctx.Err() != nil {
-			_ = s.events.PublishRunCancelled(ctx, request.RunID)
+			_ = s.events.PublishRunCancelled(context.Background(), request.RunID)
 		} else {
-			_ = s.events.PublishRunFailed(ctx, request.RunID, err)
+			_ = s.events.PublishRunFailed(context.Background(), request.RunID, err)
 		}
 		return contracts.AgentRunResult{}, err
 	}
 	result := output.Result(request.RunID, mode, "", startedAt, endedAt)
-	if err := s.events.PublishRunCompleted(ctx, request.RunID, result); err != nil {
+	if err := s.events.PublishRunCompleted(context.Background(), request.RunID, result); err != nil {
 		return contracts.AgentRunResult{}, err
 	}
 	return result, nil

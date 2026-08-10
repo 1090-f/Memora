@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/1090-f/Memora/internal/contracts"
+	"github.com/google/uuid"
 )
 
 // EventPublisher 是 Core 内部使用的生命周期事件发布抽象。
@@ -57,7 +58,10 @@ func (p *SequencedEventPublisher) Publish(ctx context.Context, event contracts.A
 	p.sequences[event.RunID] = event.Sequence
 	p.mu.Unlock()
 	if event.Timestamp.IsZero() {
-		event.Timestamp = time.Now()
+		event.Timestamp = time.Now().UTC()
+	}
+	if event.EventID == "" {
+		event.EventID = contracts.ID(uuid.NewString())
 	}
 	return p.publisher.Publish(ctx, event)
 }
