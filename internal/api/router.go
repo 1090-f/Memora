@@ -47,6 +47,7 @@ type Dependencies struct {
 	MCP             service.ImportService
 	AIModelConfigs  repository.AIModelConfigRepository
 	AIEncryption    encryption.Service
+	ContextBuilder  contracts.ContextBuilder
 	PostgresHealth  HealthCheck
 	RedisHealth     HealthCheck
 	MinIOHealth     HealthCheck
