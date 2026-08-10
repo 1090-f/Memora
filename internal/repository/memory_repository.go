@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/1090-f/Memora/internal/model/entity"
@@ -161,6 +162,47 @@ func (r *memoryRepository) SearchByVector(ctx context.Context, req VectorSearchR
 		return nil, fmt.Errorf("vector search memories: %w", err)
 	}
 
+	return results, nil
+}
+
+// SearchByKeyword 使用 PostgreSQL 全文检索搜索记忆。
+func (r *memoryRepository) SearchByKeyword(ctx context.Context, req KeywordMemorySearchRequest) ([]KeywordMemorySearchResult, error) {
+	if len(req.QueryTokens) == 0 || req.TopK <= 0 {
+		return nil, nil
+	}
+
+	// 用 OR 连接 Token 构建 tsquery，提升召回
+	query := strings.Join(req.QueryTokens, " | ")
+
+	// 构建 WHERE 条件
+	where := "user_id = ? AND status = 'active' AND deleted_at IS NULL"
+	args := []any{req.UserID}
+
+	// scope 过滤
+	if req.KnowledgeBaseID != nil {
+		where += " AND (scope_type = 'user' OR (scope_type = 'knowledge_base' AND scope_id = ?))"
+		args = append(args, *req.KnowledgeBaseID)
+	} else {
+		where += " AND scope_type = 'user'"
+	}
+
+	// tsquery 命中 fts_vector
+	where += " AND to_tsquery('simple', ?) @@ fts_vector"
+	args = append(args, query)
+
+	args = append(args, req.TopK)
+
+	sql := fmt.Sprintf(`
+		SELECT *, ts_rank(fts_vector, to_tsquery('simple', ?)) AS score
+		FROM memories
+		WHERE %s
+		ORDER BY score DESC, id ASC
+		LIMIT ?`, where)
+
+	var results []KeywordMemorySearchResult
+	if err := r.db.WithContext(ctx).Raw(sql, args...).Scan(&results).Error; err != nil {
+		return nil, fmt.Errorf("keyword search memories: %w", err)
+	}
 	return results, nil
 }
 

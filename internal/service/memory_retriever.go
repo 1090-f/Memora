@@ -11,6 +11,7 @@ import (
 
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/repository"
+	"github.com/1090-f/Memora/internal/service/rag/tokenizer"
 	"github.com/1090-f/Memora/pkg/logger"
 	"go.uber.org/zap"
 )
@@ -60,6 +61,7 @@ func DefaultRetrieverConfig() *RetrieverConfig {
 type memoryRetriever struct {
 	memoryRepo   repository.MemoryRepository
 	embeddingSvc contracts.EmbeddingService
+	tokenizer    tokenizer.Tokenizer
 	config       *RetrieverConfig
 }
 
@@ -71,43 +73,95 @@ func NewMemoryRetriever(
 	return &memoryRetriever{
 		memoryRepo:   memoryRepo,
 		embeddingSvc: embeddingSvc,
+		tokenizer:    tokenizer.NewNgramTokenizer(tokenizer.DefaultNgramConfig()),
 		config:       DefaultRetrieverConfig(),
 	}
 }
 
 // Retrieve 搜索与查询匹配的记忆并返回排序后的结果。
+// 采用双路召回策略：向量检索 + 关键词检索，通过 RRF 融合后复合排序。
 func (r *memoryRetriever) Retrieve(
 	ctx context.Context,
 	query contracts.MemoryQuery,
 ) ([]contracts.MemoryQueryResult, error) {
-	// 1. 生成查询向量
-	queryVector, err := r.embeddingSvc.Embed(ctx, query.Query)
-	if err != nil {
-		return nil, fmt.Errorf("embed query: %w", err)
+	userID := string(query.UserID)
+	var kbID *string
+	if query.KnowledgeBaseID != "" {
+		id := string(query.KnowledgeBaseID)
+		kbID = &id
 	}
 
-	// 2. 转换为字节数组（pgvector 格式）
-	queryVectorBytes := float64SliceToBytes(queryVector)
-
-	// 3. 向量检索
-	searchReq := repository.VectorSearchRequest{
-		UserID:          string(query.UserID),
-		KnowledgeBaseID: (*string)(&query.KnowledgeBaseID),
-		QueryVector:     queryVectorBytes,
-		EmbeddingDim:    len(queryVector),
-		TopK:            r.config.VectorTopK,
-		MinImportance:   r.config.MinImportance,
+	// 1. 并行执行向量检索和关键词检索
+	type vectorResult struct {
+		results []repository.VectorSearchResult
+		err     error
+	}
+	type keywordResult struct {
+		results []repository.KeywordMemorySearchResult
+		err     error
 	}
 
-	candidates, err := r.memoryRepo.SearchByVector(ctx, searchReq)
-	if err != nil {
-		return nil, fmt.Errorf("vector search: %w", err)
+	vectorCh := make(chan vectorResult, 1)
+	keywordCh := make(chan keywordResult, 1)
+
+	// goroutine 1: 向量检索
+	go func() {
+		queryVector, err := r.embeddingSvc.Embed(ctx, query.Query)
+		if err != nil {
+			vectorCh <- vectorResult{err: fmt.Errorf("embed query: %w", err)}
+			return
+		}
+		queryVectorBytes := float64SliceToBytes(queryVector)
+		searchReq := repository.VectorSearchRequest{
+			UserID:          userID,
+			KnowledgeBaseID: kbID,
+			QueryVector:     queryVectorBytes,
+			EmbeddingDim:    len(queryVector),
+			TopK:            r.config.VectorTopK,
+			MinImportance:   r.config.MinImportance,
+		}
+		results, err := r.memoryRepo.SearchByVector(ctx, searchReq)
+		vectorCh <- vectorResult{results: results, err: err}
+	}()
+
+	// goroutine 2: 关键词检索
+	go func() {
+		tokens := r.tokenizer.Tokenize(query.Query)
+		if len(tokens) == 0 {
+			keywordCh <- keywordResult{results: nil, err: nil}
+			return
+		}
+		searchReq := repository.KeywordMemorySearchRequest{
+			UserID:          userID,
+			KnowledgeBaseID: kbID,
+			QueryTokens:     tokens,
+			TopK:            r.config.KeywordTopK,
+		}
+		results, err := r.memoryRepo.SearchByKeyword(ctx, searchReq)
+		keywordCh <- keywordResult{results: results, err: err}
+	}()
+
+	// 等待两路结果
+	vr := <-vectorCh
+	kr := <-keywordCh
+
+	if vr.err != nil {
+		return nil, fmt.Errorf("vector search: %w", vr.err)
+	}
+	if kr.err != nil {
+		// 关键词检索失败不阻塞，降级为纯向量检索
+		logger.Warn("keyword search failed, fallback to vector only", zap.Error(kr.err))
+		kr.results = nil
 	}
 
-	// 4. 综合排序
-	ranked := r.rankCandidates(candidates, queryVector)
+	// 2. RRF 融合
+	fused := r.rrfFuse(vr.results, kr.results)
 
-	// 5. 截取 TopK
+	// 3. 复合排序（相似度 + 重要性 + 时间衰减）
+	now := time.Now()
+	ranked := r.rankCandidates(fused, now)
+
+	// 4. 截取 TopK
 	finalTopK := r.config.FinalTopK
 	if query.TopK > 0 && query.TopK < finalTopK {
 		finalTopK = query.TopK
@@ -116,7 +170,7 @@ func (r *memoryRetriever) Retrieve(
 		ranked = ranked[:finalTopK]
 	}
 
-	// 6. 更新最后访问时间
+	// 5. 更新最后访问时间
 	ids := make([]string, len(ranked))
 	for i, item := range ranked {
 		ids[i] = string(item.MemoryID)
@@ -129,18 +183,84 @@ func (r *memoryRetriever) Retrieve(
 	return ranked, nil
 }
 
-// rankCandidates 综合排序候选记忆。
+// fusedCandidate 融合后的候选记忆。
+type fusedCandidate struct {
+	memory     repository.VectorSearchResult // 复用结构，Similarity 字段存储 RRF 分数
+	rrfScore   float64
+	similarity float64 // 原始向量相似度
+}
+
+// rrfFuse 使用 Reciprocal Rank Fusion 融合向量检索和关键词检索结果。
+func (r *memoryRetriever) rrfFuse(
+	vectorResults []repository.VectorSearchResult,
+	keywordResults []repository.KeywordMemorySearchResult,
+) []repository.VectorSearchResult {
+	k := float64(r.config.RRFK)
+
+	// 用 memory ID 作为 key，累积 RRF 分数
+	rrfScores := make(map[string]float64)
+	// 保留原始数据用于后续排序
+	vectorMap := make(map[string]repository.VectorSearchResult)
+
+	// 处理向量检索结果
+	for rank, vr := range vectorResults {
+		id := vr.Memory.ID
+		rrfScores[id] += 1.0 / (k + float64(rank+1))
+		vectorMap[id] = vr
+	}
+
+	// 处理关键词检索结果
+	for rank, kr := range keywordResults {
+		id := kr.Memory.ID
+		rrfScores[id] += 1.0 / (k + float64(rank+1))
+		// 如果向量检索没找到这条记忆，补充到 vectorMap 中
+		if _, exists := vectorMap[id]; !exists {
+			vectorMap[id] = repository.VectorSearchResult{
+				Memory:     kr.Memory,
+				Similarity: 0, // 向量检索未命中，相似度为 0
+			}
+		}
+	}
+
+	// 按 RRF 分数排序，构造返回结果
+	type idScore struct {
+		id    string
+		score float64
+	}
+	var sorted []idScore
+	for id, score := range rrfScores {
+		sorted = append(sorted, idScore{id: id, score: score})
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].score > sorted[j].score
+	})
+
+	// 取 Top FinalTopK * 2 作为候选（后续还会复合排序截断）
+	limit := r.config.FinalTopK * 2
+	if len(sorted) > limit {
+		sorted = sorted[:limit]
+	}
+
+	var fused []repository.VectorSearchResult
+	for _, item := range sorted {
+		vr := vectorMap[item.id]
+		// 将 RRF 分数写入 Similarity 字段，供后续复合排序使用
+		vr.Similarity = item.score
+		fused = append(fused, vr)
+	}
+
+	return fused
+}
+
+// rankCandidates 复合排序候选记忆。
+// 对于向量检索命中的记忆，使用原始相似度；对于仅关键词命中的记忆，使用 RRF 分数作为相似度代理。
 func (r *memoryRetriever) rankCandidates(
 	candidates []repository.VectorSearchResult,
-	queryVector []float64,
+	now time.Time,
 ) []contracts.MemoryQueryResult {
-	now := time.Now()
 	var results []contracts.MemoryQueryResult
 
 	for _, cand := range candidates {
-		// 计算综合得分
-		_ = r.calculateScore(cand, now)
-
 		var scopeID *contracts.ID
 		if cand.Memory.ScopeID != nil {
 			id := contracts.ID(*cand.Memory.ScopeID)
@@ -161,7 +281,7 @@ func (r *memoryRetriever) rankCandidates(
 
 	// 按综合得分排序
 	sort.Slice(results, func(i, j int) bool {
-		return r.calculateScoreFromResult(results[i], now) > r.calculateScoreFromResult(results[j], now)
+		return r.calculateScore(results[i], now) > r.calculateScore(results[j], now)
 	})
 
 	return results
@@ -169,35 +289,13 @@ func (r *memoryRetriever) rankCandidates(
 
 // calculateScore 计算综合得分。
 func (r *memoryRetriever) calculateScore(
-	cand repository.VectorSearchResult,
-	now time.Time,
-) float64 {
-	// 1. 相似度得分（已归一化到 0-1）
-	similarityScore := cand.Similarity
-
-	// 2. 重要性得分（已归一化到 0-1）
-	importanceScore := cand.Memory.Importance
-
-	// 3. 时间衰减得分
-	timeDecayScore := r.calculateTimeDecay(cand.Memory.UpdatedAt, now)
-
-	// 4. 加权求和
-	score := r.config.SimilarityWeight*similarityScore +
-		r.config.ImportanceWeight*importanceScore +
-		r.config.TimeDecayWeight*timeDecayScore
-
-	return score
-}
-
-// calculateScoreFromResult 从 MemoryQueryResult 计算综合得分。
-func (r *memoryRetriever) calculateScoreFromResult(
 	result contracts.MemoryQueryResult,
 	now time.Time,
 ) float64 {
-	// 1. 相似度得分
+	// 1. 相似度得分（向量检索命中的使用原始相似度，仅关键词命中的使用 RRF 分数）
 	similarityScore := result.Similarity
 
-	// 2. 重要性得分
+	// 2. 重要性得分（已归一化到 0-1）
 	importanceScore := result.Importance
 
 	// 3. 时间衰减得分
