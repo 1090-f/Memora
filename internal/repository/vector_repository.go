@@ -78,7 +78,7 @@ func (r *vectorRepository) BatchUpsert(ctx context.Context, vectors []*entity.Do
 
 // MarkFailed 将文档指定版本的向量标记为 failed。
 func (r *vectorRepository) MarkFailed(ctx context.Context, documentID string, indexVersion int) error {
-	err := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.DocumentVector{}).
+	err := dbFromContext(ctx, r.db).WithContext(ctx).Table("document_vectors").
 		Where("document_id = ? AND index_version = ? AND status = 'pending'", documentID, indexVersion).
 		Update("status", "failed").Error
 	if err != nil {
@@ -139,8 +139,7 @@ func (r *vectorRepository) SearchCosine(ctx context.Context, params VectorSearch
 // DeleteByVersion 删除文档指定索引版本的向量。
 func (r *vectorRepository) DeleteByVersion(ctx context.Context, documentID string, indexVersion int) error {
 	err := dbFromContext(ctx, r.db).WithContext(ctx).
-		Where("document_id = ? AND index_version = ?", documentID, indexVersion).
-		Delete(&entity.DocumentVector{}).Error
+		Exec("DELETE FROM document_vectors WHERE document_id = ? AND index_version = ?", documentID, indexVersion).Error
 	if err != nil {
 		return fmt.Errorf("删除向量失败: %w", err)
 	}

@@ -4,7 +4,6 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -o /out/memora-server ./cmd/server && \
-    CGO_ENABLED=0 go build -trimpath -o /out/memora-worker ./cmd/worker && \
     CGO_ENABLED=0 go build -trimpath -o /out/memora-migrate ./cmd/migrate
 
 FROM alpine:3.22
