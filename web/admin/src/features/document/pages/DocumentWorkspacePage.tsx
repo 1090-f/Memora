@@ -1,23 +1,63 @@
 import CachedOutlined from '@mui/icons-material/CachedOutlined';
+import CreateOutlined from '@mui/icons-material/CreateOutlined';
 import DeleteOutlineOutlined from '@mui/icons-material/DeleteOutlineOutlined';
 import RefreshOutlined from '@mui/icons-material/RefreshOutlined';
+import SearchOutlined from '@mui/icons-material/SearchOutlined';
 import UploadFileOutlined from '@mui/icons-material/UploadFileOutlined';
-import { Alert, Box, Button, Chip, IconButton, List, ListItemButton, ListItemText, Paper, Stack, Tooltip, Typography } from '@mui/material';
+import {
+  Alert,
+  Box,
+  Button,
+  Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  IconButton,
+  InputAdornment,
+  List,
+  ListItemButton,
+  ListItemText,
+  MenuItem,
+  Paper,
+  Stack,
+  TextField,
+  Tooltip,
+  Typography,
+} from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { capabilities, type CapabilityStatus } from '@/app/capabilities';
+import { errorMessage } from '@/api/errors';
 import { queryKeys } from '@/api/queryKeys';
+import { capabilities, type CapabilityStatus } from '@/app/capabilities';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { ErrorState } from '@/components/shared/ErrorState';
 import { LoadingState } from '@/components/shared/LoadingState';
 import { UnavailableState } from '@/components/shared/UnavailableState';
 import { DocumentWorkspace } from '@/layouts/DocumentWorkspace';
-import { createDirectory, deleteDocument, getDirectoryTree, getDocument, listDocuments, listImportTasks, reindexDocument, retryDocumentProcessing, retryImportTask } from '../api';
+import {
+  createDirectory,
+  deleteDocument,
+  getDirectoryTree,
+  getDocument,
+  getDocumentProcessing,
+  listDocuments,
+  listImportTasks,
+  reindexDocument,
+  retryDocumentProcessing,
+  retryImportTask,
+} from '../api';
+import { CreateManualDocumentDialog } from '../components/CreateManualDocumentDialog';
 import { DocumentViewer } from '../components/DocumentViewer';
 import { ImportDrawer } from '../components/ImportDrawer';
 import { KnowledgeTree } from '../components/KnowledgeTree';
-import type { DocumentListItem, DocumentProcessingStatus, ImportTask } from '../types';
+import type {
+  DocumentListItem,
+  DocumentProcessingStatus,
+  DocumentSourceType,
+  ImportTask,
+} from '../types';
 
 const processingLabel: Record<DocumentProcessingStatus, string> = {
   pending: '待处理',
@@ -30,6 +70,12 @@ const processingLabel: Record<DocumentProcessingStatus, string> = {
   failed: '失败',
 };
 
+const sourceLabel: Record<DocumentSourceType, string> = {
+  manual: '手工',
+  file: '文件',
+  url: 'URL',
+};
+
 const taskLabel: Record<ImportTask['status'], string> = {
   pending: '等待中',
   running: '进行中',
@@ -38,9 +84,36 @@ const taskLabel: Record<ImportTask['status'], string> = {
   skipped: '已跳过',
 };
 
-function DocumentList({ kbId, directoryId, selectedId, onSelect, onDelete, onRetry, onReindex }: {
+const activeProcessingStatuses: DocumentProcessingStatus[] = [
+  'pending',
+  'parsing',
+  'cleaning',
+  'chunking',
+  'embedding',
+  'keyword_indexing',
+];
+
+function isProcessing(status?: DocumentProcessingStatus) {
+  return status !== undefined && activeProcessingStatuses.includes(status);
+}
+
+function DocumentList({
+  kbId,
+  directoryId,
+  keyword,
+  status,
+  sourceType,
+  selectedId,
+  onSelect,
+  onDelete,
+  onRetry,
+  onReindex,
+}: {
   kbId: string;
   directoryId: string | null;
+  keyword: string;
+  status: '' | DocumentProcessingStatus;
+  sourceType: '' | DocumentSourceType;
   selectedId: string | null;
   onSelect: (id: string) => void;
   onDelete: (document: DocumentListItem) => void;
@@ -48,8 +121,17 @@ function DocumentList({ kbId, directoryId, selectedId, onSelect, onDelete, onRet
   onReindex: (document: DocumentListItem) => void;
 }) {
   const query = useQuery({
-    queryKey: [...queryKeys.documents(kbId), { directory_id: directoryId }],
-    queryFn: () => listDocuments(kbId, directoryId ? { directory_id: directoryId, page: 1, page_size: 100 } : { page: 1, page_size: 100 }),
+    queryKey: [...queryKeys.documents(kbId), { directoryId, keyword, status, sourceType }],
+    queryFn: () => listDocuments(kbId, {
+      page: 1,
+      page_size: 100,
+      directory_id: directoryId || undefined,
+      keyword: keyword.trim() || undefined,
+      processing_status: status || undefined,
+      source_type: sourceType || undefined,
+    }),
+    // 仅存在处理中记录时轮询；进入终态后自动停止，避免无意义请求。
+    refetchInterval: (result) => result.state.data?.items.some((document) => isProcessing(document.processing_status)) ? 3000 : false,
   });
 
   if (query.isPending) return <LoadingState label="正在加载文档" />;
@@ -57,7 +139,7 @@ function DocumentList({ kbId, directoryId, selectedId, onSelect, onDelete, onRet
 
   const documents = query.data?.items ?? [];
   if (documents.length === 0) {
-    return <EmptyState title="暂无文档" description={directoryId ? '该目录下还没有文档。' : '点击右上角「导入文档」开始导入。'} />;
+    return <EmptyState title="暂无文档" description={keyword || status || sourceType ? '没有符合当前筛选条件的文档。' : '新建手工文档或导入 Markdown/TXT 文件。'} />;
   }
 
   return (
@@ -66,33 +148,56 @@ function DocumentList({ kbId, directoryId, selectedId, onSelect, onDelete, onRet
         <ListItemButton key={document.id} selected={selectedId === document.id} onClick={() => onSelect(document.id)}>
           <ListItemText
             primary={document.title}
-            secondary={`${processingLabel[document.processing_status]} · ${document.source_type}`}
+            secondary={`${processingLabel[document.processing_status]} · ${sourceLabel[document.source_type]}`}
           />
-          <Box component="span" sx={{ display: 'inline-flex' }}>
-            <Tooltip title="重试处理"><IconButton size="small" disabled={document.processing_status !== 'failed'} onClick={(event) => { event.stopPropagation(); onRetry(document); }}><RefreshOutlined fontSize="small" /></IconButton></Tooltip>
-          </Box>
-          <Tooltip title="重新索引"><IconButton size="small" onClick={(event) => { event.stopPropagation(); onReindex(document); }}><CachedOutlined fontSize="small" /></IconButton></Tooltip>
-          <Tooltip title="删除"><IconButton size="small" color="error" onClick={(event) => { event.stopPropagation(); onDelete(document); }}><DeleteOutlineOutlined fontSize="small" /></IconButton></Tooltip>
+          {isProcessing(document.processing_status) && <Chip size="small" color="info" label="处理中" sx={{ mr: 0.5 }} />}
+          <Tooltip title={document.processing_status === 'failed' ? '重试处理' : '仅失败文档可重试'}>
+            <span>
+              <IconButton size="small" disabled={document.processing_status !== 'failed'} onClick={(event) => { event.stopPropagation(); onRetry(document); }}>
+                <RefreshOutlined fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
+          <Tooltip title={document.processing_status === 'succeeded' ? '重新建立索引' : '处理完成后可重新索引'}>
+            <span>
+              <IconButton size="small" disabled={document.processing_status !== 'succeeded'} onClick={(event) => { event.stopPropagation(); onReindex(document); }}>
+                <CachedOutlined fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
+          <Tooltip title="删除文档">
+            <IconButton size="small" color="error" onClick={(event) => { event.stopPropagation(); onDelete(document); }}>
+              <DeleteOutlineOutlined fontSize="small" />
+            </IconButton>
+          </Tooltip>
         </ListItemButton>
       ))}
     </List>
   );
 }
 
-function ImportTasks({ kbId }: { kbId: string }) {
-  const query = useQuery({
-    queryKey: ['knowledge-bases', kbId, 'import-tasks'],
-    queryFn: () => listImportTasks(kbId, { page: 1, page_size: 20 }),
-    refetchInterval: (queryResult) => {
-      const hasActive = queryResult.state.data?.items.some((task) => task.status === 'pending' || task.status === 'running');
-      return hasActive ? 3000 : false;
-    },
-  });
+function ImportTasks({ kbId, onOpenDocument }: { kbId: string; onOpenDocument: (documentId: string) => void }) {
   const queryClient = useQueryClient();
+  const query = useQuery({
+    queryKey: queryKeys.importTasks(kbId),
+    queryFn: () => listImportTasks(kbId, { page: 1, page_size: 20 }),
+    // pending/running 期间每三秒刷新一次，成功、失败或跳过后停止轮询。
+    refetchInterval: (result) => result.state.data?.items.some((task) => task.status === 'pending' || task.status === 'running') ? 3000 : false,
+  });
   const retry = useMutation({
     mutationFn: (taskId: string) => retryImportTask(taskId),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['knowledge-bases', kbId, 'import-tasks'] }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.documents(kbId) });
+    },
   });
+
+  useEffect(() => {
+    // Worker 创建出文档或完成任务后，主动刷新文档列表以展示最新结果。
+    if (query.data?.items.some((task) => task.document_id || task.status === 'succeeded')) {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.documents(kbId) });
+    }
+  }, [kbId, query.dataUpdatedAt, query.data?.items, queryClient]);
 
   if (query.isPending) return <LoadingState label="正在加载导入任务" />;
   if (query.error) return <ErrorState error={query.error as Error} onRetry={() => void query.refetch()} />;
@@ -101,17 +206,24 @@ function ImportTasks({ kbId }: { kbId: string }) {
 
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>
-      <Typography variant="subtitle2" color="text.secondary" mb={1}>导入任务</Typography>
+      <Stack direction="row" alignItems="center" mb={1}>
+        <Typography variant="subtitle2" color="text.secondary" sx={{ flexGrow: 1 }}>最近导入任务</Typography>
+        <Button size="small" startIcon={<RefreshOutlined />} onClick={() => void query.refetch()}>刷新</Button>
+      </Stack>
+      {retry.error && <Alert severity="error" sx={{ mb: 1 }}>{errorMessage(retry.error)}</Alert>}
       <Stack spacing={1}>
         {tasks.map((task) => (
           <Stack key={task.id} direction="row" alignItems="center" spacing={1}>
-            <Typography variant="body2" sx={{ flexGrow: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
-              {task.file_name || task.source_url || task.id}
-            </Typography>
-            <Chip size="small" color={task.status === 'failed' ? 'error' : task.status === 'succeeded' ? 'success' : 'default'} label={taskLabel[task.status]} />
-            {task.failure_reason && <Typography variant="caption" color="error" noWrap>{task.failure_reason}</Typography>}
+            <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+              <Typography variant="body2" noWrap>{task.file_name || task.source_url || task.id}</Typography>
+              <Typography variant="caption" color={task.failure_reason ? 'error' : 'text.secondary'} noWrap display="block">
+                {task.failure_reason || task.current_step || new Date(task.created_at).toLocaleString()}
+              </Typography>
+            </Box>
+            <Chip size="small" color={task.status === 'failed' ? 'error' : task.status === 'succeeded' ? 'success' : task.status === 'running' ? 'info' : 'default'} label={taskLabel[task.status]} />
+            {task.document_id && <Button size="small" onClick={() => onOpenDocument(task.document_id as string)}>查看文档</Button>}
             {task.status === 'failed' && (
-              <Tooltip title="重试导入"><IconButton size="small" onClick={() => retry.mutate(task.id)}><RefreshOutlined fontSize="small" /></IconButton></Tooltip>
+              <Tooltip title="重试导入"><IconButton size="small" disabled={retry.isPending} onClick={() => retry.mutate(task.id)}><RefreshOutlined fontSize="small" /></IconButton></Tooltip>
             )}
           </Stack>
         ))}
@@ -120,65 +232,78 @@ function ImportTasks({ kbId }: { kbId: string }) {
   );
 }
 
-export function DocumentWorkspaceContent({
-  status,
-  kbId,
-  documentId,
-}: {
+export function DocumentWorkspaceContent({ status, kbId, documentId }: {
   status: CapabilityStatus;
   kbId: string;
   documentId?: string;
 }) {
   const [importOpen, setImportOpen] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
   const [directoryId, setDirectoryId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(documentId ?? null);
+  const [keyword, setKeyword] = useState('');
+  const [processingStatus, setProcessingStatus] = useState<'' | DocumentProcessingStatus>('');
+  const [sourceType, setSourceType] = useState<'' | DocumentSourceType>('');
+  const [deleteTarget, setDeleteTarget] = useState<DocumentListItem | null>(null);
   const [notice, setNotice] = useState('');
   const [actionError, setActionError] = useState<Error | null>(null);
   const queryClient = useQueryClient();
-  const enabled = status === 'available';
+  const enabled = status === 'available' && kbId !== '';
 
   const treeQuery = useQuery({
-    queryKey: ['knowledge-bases', kbId, 'directories'],
+    queryKey: queryKeys.directories(kbId),
     queryFn: () => getDirectoryTree(kbId),
     enabled,
   });
   const documentQuery = useQuery({
-    queryKey: ['documents', selectedId],
+    queryKey: queryKeys.document(selectedId ?? ''),
     queryFn: () => getDocument(selectedId as string),
     enabled: enabled && Boolean(selectedId),
+    // 文档详情同样只在处理中轮询，避免页面常驻时持续访问后端。
+    refetchInterval: (result) => isProcessing(result.state.data?.processing_status) ? 3000 : false,
   });
+  const processingQuery = useQuery({
+    queryKey: queryKeys.documentProcessing(selectedId ?? ''),
+    queryFn: () => getDocumentProcessing(selectedId as string),
+    enabled: enabled && Boolean(selectedId),
+    refetchInterval: (result) => isProcessing(result.state.data?.processing_status) ? 3000 : false,
+  });
+
   const createDir = useMutation({
-    mutationFn: (name: string) => createDirectory(kbId, { name }),
+    mutationFn: ({ name, parentId }: { name: string; parentId?: string }) => createDirectory(kbId, { name, parent_id: parentId }),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['knowledge-bases', kbId, 'directories'] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.directories(kbId) });
       setNotice('目录已创建');
     },
     onError: (error) => setActionError(error as Error),
   });
   const retryDoc = useMutation({
-    mutationFn: (documentIdValue: string) => retryDocumentProcessing(documentIdValue),
-    onSuccess: () => {
+    mutationFn: retryDocumentProcessing,
+    onSuccess: (_, documentIdValue) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.documents(kbId) });
-      void queryClient.invalidateQueries({ queryKey: ['documents'] });
-      setNotice('已触发重试');
+      void queryClient.invalidateQueries({ queryKey: queryKeys.document(documentIdValue) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.documentProcessing(documentIdValue) });
+      setNotice('已提交处理重试');
     },
     onError: (error) => setActionError(error as Error),
   });
   const reindex = useMutation({
-    mutationFn: (documentIdValue: string) => reindexDocument(documentIdValue),
-    onSuccess: () => {
+    mutationFn: reindexDocument,
+    onSuccess: (_, documentIdValue) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.documents(kbId) });
-      void queryClient.invalidateQueries({ queryKey: ['documents'] });
-      setNotice('已触发重新索引');
+      void queryClient.invalidateQueries({ queryKey: queryKeys.document(documentIdValue) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.documentProcessing(documentIdValue) });
+      setNotice('已提交重新索引');
     },
     onError: (error) => setActionError(error as Error),
   });
   const removeDoc = useMutation({
-    mutationFn: (documentIdValue: string) => deleteDocument(documentIdValue),
-    onSuccess: (result, documentIdValue) => {
+    mutationFn: deleteDocument,
+    onSuccess: (_, documentIdValue) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.documents(kbId) });
-      void queryClient.invalidateQueries({ queryKey: ['documents'] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
       if (selectedId === documentIdValue) setSelectedId(null);
+      setDeleteTarget(null);
       setNotice('文档已删除');
     },
     onError: (error) => setActionError(error as Error),
@@ -186,30 +311,20 @@ export function DocumentWorkspaceContent({
 
   return (
     <Stack spacing={2}>
-      <Stack direction="row" alignItems="center">
+      <Stack direction={{ xs: 'column', sm: 'row' }} alignItems={{ sm: 'center' }} gap={1}>
         <Box sx={{ flexGrow: 1 }}>
           <Typography component="h2" variant="h5" fontWeight={750}>文档工作区</Typography>
-          <Typography color="text.secondary">目录、处理状态与清洗后的只读正文。</Typography>
+          <Typography color="text.secondary">管理目录、手工文档、文件导入任务与索引处理状态。</Typography>
         </Box>
-        <Button
-          startIcon={<UploadFileOutlined />}
-          variant="contained"
-          disabled={!enabled}
-          onClick={() => setImportOpen(true)}
-        >
-          导入文档
-        </Button>
+        <Button startIcon={<CreateOutlined />} variant="outlined" disabled={!enabled} onClick={() => setManualOpen(true)}>手工新建</Button>
+        <Button startIcon={<UploadFileOutlined />} variant="contained" disabled={!enabled} onClick={() => setImportOpen(true)}>导入文件</Button>
       </Stack>
 
       {notice && <Alert severity="success" onClose={() => setNotice('')}>{notice}</Alert>}
-      {actionError && <Alert severity="error" onClose={() => setActionError(null)}>操作失败：{actionError.message}</Alert>}
+      {actionError && <Alert severity="error" onClose={() => setActionError(null)}>操作失败：{errorMessage(actionError)}</Alert>}
 
       {!enabled && (
-        <UnavailableState
-          title="文档后端待接入"
-          description="只读浏览将在文档接口可用后自动启用；当前不会加载目录或正文。"
-          capability="document"
-        />
+        <UnavailableState title="文档后端待接入" description="当前不会加载目录、文档或导入任务。" capability="document" />
       )}
       {enabled && treeQuery.isPending && <LoadingState label="正在加载目录" />}
       {enabled && treeQuery.error && <ErrorState error={treeQuery.error as Error} onRetry={() => void treeQuery.refetch()} />}
@@ -220,39 +335,72 @@ export function DocumentWorkspaceContent({
               nodes={treeQuery.data}
               selectedId={directoryId}
               onSelect={setDirectoryId}
-              onCreateDirectory={(name) => createDir.mutate(name)}
+              onCreateDirectory={(name, parentId) => createDir.mutate({ name, parentId })}
             />
           }
         >
           <Stack spacing={2}>
-            <Paper variant="outlined" sx={{ maxHeight: 420, overflow: 'auto' }}>
-              <DocumentList
-                kbId={kbId}
-                directoryId={directoryId}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-                onDelete={(document) => removeDoc.mutate(document.id)}
-                onRetry={(document) => retryDoc.mutate(document.id)}
-                onReindex={(document) => reindex.mutate(document.id)}
-              />
+            <Paper variant="outlined" sx={{ overflow: 'hidden' }}>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} p={1.5}>
+                <TextField
+                  size="small"
+                  placeholder="按标题搜索"
+                  value={keyword}
+                  onChange={(event) => setKeyword(event.target.value)}
+                  InputProps={{ startAdornment: <InputAdornment position="start"><SearchOutlined fontSize="small" /></InputAdornment> }}
+                  sx={{ flexGrow: 1 }}
+                />
+                <TextField select size="small" label="状态" value={processingStatus} onChange={(event) => setProcessingStatus(event.target.value as '' | DocumentProcessingStatus)} sx={{ minWidth: 150 }}>
+                  <MenuItem value="">全部状态</MenuItem>
+                  {Object.entries(processingLabel).map(([value, label]) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
+                </TextField>
+                <TextField select size="small" label="来源" value={sourceType} onChange={(event) => setSourceType(event.target.value as '' | DocumentSourceType)} sx={{ minWidth: 130 }}>
+                  <MenuItem value="">全部来源</MenuItem>
+                  {Object.entries(sourceLabel).map(([value, label]) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
+                </TextField>
+              </Stack>
+              <Box sx={{ maxHeight: 360, overflow: 'auto', borderTop: 1, borderColor: 'divider' }}>
+                <DocumentList
+                  kbId={kbId}
+                  directoryId={directoryId}
+                  keyword={keyword}
+                  status={processingStatus}
+                  sourceType={sourceType}
+                  selectedId={selectedId}
+                  onSelect={setSelectedId}
+                  onDelete={setDeleteTarget}
+                  onRetry={(document) => retryDoc.mutate(document.id)}
+                  onReindex={(document) => reindex.mutate(document.id)}
+                />
+              </Box>
             </Paper>
-            <ImportTasks kbId={kbId} />
-            {!selectedId && (
-              <UnavailableState title="选择一篇文档" description="从左侧目录选择文档以查看只读正文。" capability="document" />
-            )}
-            {selectedId && documentQuery.isPending && <LoadingState label="正在加载文档" />}
+            <ImportTasks kbId={kbId} onOpenDocument={setSelectedId} />
+            {!selectedId && <EmptyState title="选择一篇文档" description="从上方文档列表选择文档，查看详情与索引状态。" />}
+            {selectedId && (documentQuery.isPending || processingQuery.isPending) && <LoadingState label="正在加载文档" />}
             {selectedId && documentQuery.error && <ErrorState error={documentQuery.error as Error} onRetry={() => void documentQuery.refetch()} />}
-            {documentQuery.data && <DocumentViewer document={documentQuery.data} />}
+            {selectedId && processingQuery.error && <ErrorState error={processingQuery.error as Error} onRetry={() => void processingQuery.refetch()} />}
+            {documentQuery.data && <DocumentViewer document={documentQuery.data} processing={processingQuery.data} />}
           </Stack>
         </DocumentWorkspace>
       )}
-      <ImportDrawer
-        open={importOpen}
-        onClose={() => setImportOpen(false)}
-        disabled={!enabled}
+
+      <ImportDrawer open={importOpen} onClose={() => setImportOpen(false)} disabled={!enabled} kbId={kbId} directories={treeQuery.data ?? []} />
+      <CreateManualDocumentDialog
+        open={manualOpen}
+        onClose={() => setManualOpen(false)}
         kbId={kbId}
         directories={treeQuery.data ?? []}
+        initialDirectoryId={directoryId}
+        onCreated={(createdDocumentId) => { setSelectedId(createdDocumentId); setNotice('手工文档已创建'); }}
       />
+      <Dialog open={deleteTarget !== null} onClose={removeDoc.isPending ? undefined : () => setDeleteTarget(null)}>
+        <DialogTitle>删除文档</DialogTitle>
+        <DialogContent><Typography>确定删除“{deleteTarget?.title}”吗？文档将被软删除。</Typography></DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteTarget(null)} disabled={removeDoc.isPending}>取消</Button>
+          <Button color="error" variant="contained" disabled={removeDoc.isPending} onClick={() => deleteTarget && removeDoc.mutate(deleteTarget.id)}>删除</Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   );
 }

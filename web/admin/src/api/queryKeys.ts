@@ -1,8 +1,18 @@
 export const queryKeys = {
   currentUser: ['users', 'me'] as const,
   knowledgeBases: ['knowledge-bases'] as const,
+  // 资源级查询键保持统一，便于上传、重试和删除后精确刷新关联缓存。
+  knowledgeBase: (knowledgeBaseId: string) =>
+    ['knowledge-bases', knowledgeBaseId] as const,
+  directories: (knowledgeBaseId: string) =>
+    ['knowledge-bases', knowledgeBaseId, 'directories'] as const,
   documents: (knowledgeBaseId: string) =>
     ['knowledge-bases', knowledgeBaseId, 'documents'] as const,
+  document: (documentId: string) => ['documents', documentId] as const,
+  documentProcessing: (documentId: string) =>
+    ['documents', documentId, 'processing'] as const,
+  importTasks: (knowledgeBaseId: string) =>
+    ['knowledge-bases', knowledgeBaseId, 'import-tasks'] as const,
   conversations: (knowledgeBaseId: string) =>
     ['knowledge-bases', knowledgeBaseId, 'conversations'] as const,
   agentRuns: ['agent-runs'] as const,
