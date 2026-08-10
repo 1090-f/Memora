@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/1090-f/Memora/internal/ai/encryption"
 	"github.com/1090-f/Memora/internal/api/response"
 	"github.com/1090-f/Memora/internal/api/v1/auth"
 	"github.com/1090-f/Memora/internal/api/v1/directory"
@@ -14,6 +15,7 @@ import (
 	"github.com/1090-f/Memora/internal/api/v1/knowledgebase"
 	mcpapi "github.com/1090-f/Memora/internal/api/v1/mcp"
 	modelconfigapi "github.com/1090-f/Memora/internal/api/v1/modelconfig"
+	searchapi "github.com/1090-f/Memora/internal/api/v1/search"
 	"github.com/1090-f/Memora/internal/api/v1/user"
 	apperrors "github.com/1090-f/Memora/internal/apperror"
 	"github.com/1090-f/Memora/internal/contracts"
@@ -39,9 +41,12 @@ type Dependencies struct {
 	KnowledgeBases  service.KnowledgeBaseService
 	Directories     service.DirectoryService
 	Documents       service.DocumentService
+	DocumentReader  contracts.DocumentService
 	DocumentProcess service.DocumentProcessService
+	Retrieval       contracts.RetrievalService
 	MCP             service.ImportService
 	AIModelConfigs  repository.AIModelConfigRepository
+	AIEncryption    encryption.Service
 	ContextBuilder  contracts.ContextBuilder
 	PostgresHealth  HealthCheck
 	RedisHealth     HealthCheck
@@ -67,10 +72,13 @@ func NewRouter(deps Dependencies) *gin.Engine {
 		mcpapi.NewController(deps.MCP).RegisterRoutes(v1, authRequired)
 	}
 	if deps.AIModelConfigs != nil {
-		modelconfigapi.NewController(deps.AIModelConfigs).RegisterRoutes(v1, authRequired)
+		modelconfigapi.NewController(deps.AIModelConfigs, deps.AIEncryption).RegisterRoutes(v1, authRequired)
 	}
-	document.NewController(deps.Documents).RegisterRoutes(v1, authRequired)
+	document.NewController(deps.Documents, deps.DocumentReader).RegisterRoutes(v1, authRequired)
 	importtask.NewController(deps.DocumentProcess).RegisterRoutes(v1, authRequired)
+	if deps.Retrieval != nil {
+		searchapi.NewController(deps.Retrieval).RegisterRoutes(v1, authRequired)
+	}
 	return engine
 }
 

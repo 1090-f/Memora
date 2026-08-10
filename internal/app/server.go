@@ -2,16 +2,22 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 
+	"github.com/1090-f/Memora/internal/ai"
+	"github.com/1090-f/Memora/internal/ai/encryption"
 	"github.com/1090-f/Memora/internal/api"
 	"github.com/1090-f/Memora/internal/background"
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service"
+	ragpipeline "github.com/1090-f/Memora/internal/service/rag/pipeline"
+	ragretrieval "github.com/1090-f/Memora/internal/service/rag/retrieval"
+	"github.com/1090-f/Memora/internal/service/rag/tokenizer"
 	"github.com/1090-f/Memora/pkg/audit"
 	"github.com/1090-f/Memora/pkg/config"
 	"github.com/1090-f/Memora/pkg/database"
@@ -102,13 +108,58 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	mcpService := service.NewImportService(mcpServers, mcpTools, cfg)
 
 	aiModelConfigs := repository.NewAIModelConfigRepository(a.db)
+	keyMaterial := cfg.AI.EncryptionKey
+	if keyMaterial == "" {
+		keyMaterial = cfg.MCP.EncryptionKey
+	}
+	if keyMaterial == "" {
+		keyMaterial = cfg.JWT.Secret
+	}
+	key := sha256.Sum256([]byte(keyMaterial))
+	aiEncryption, err := encryption.NewService(key[:])
+	if err != nil {
+		_ = a.Close()
+		return fmt.Errorf("初始化 AI 凭证加密失败: %w", err)
+	}
+	modelFactory := ai.NewModelFactory(aiModelConfigs, aiEncryption, ai.NewProviderFactory())
 
 	docs := repository.NewDocumentRepository(a.db)
 	importTasks := repository.NewImportTaskRepository(a.db)
 	chunks := repository.NewDocumentChunkRepository(a.db)
 	vectors := repository.NewVectorRepository(a.db)
 	documentService := service.NewDocumentService(docs, importTasks, kbs, dirs, a.store)
-	documentProcessService, err := buildDocumentProcessService(cfg, a.store, importTasks, docs, chunks, vectors)
+	citationService := service.NewCitationService()
+	documentReader, err := service.NewDocumentReader(chunks, citationService, cfg.JWT.Secret)
+	if err != nil {
+		_ = a.Close()
+		return fmt.Errorf("初始化文档读取服务失败: %w", err)
+	}
+	keywordRetriever, err := ragretrieval.NewPostgresKeywordRetriever(repository.NewKeywordSearchRepository(a.db), tokenizer.NewNgramTokenizer(tokenizer.DefaultNgramConfig()))
+	if err != nil {
+		_ = a.Close()
+		return err
+	}
+	vectorRetriever, err := ragretrieval.NewPgVectorRetriever(vectors)
+	if err != nil {
+		_ = a.Close()
+		return err
+	}
+	retrievalPipeline, err := ragpipeline.NewRetrievalPipeline(keywordRetriever, vectorRetriever, citationService)
+	if err != nil {
+		_ = a.Close()
+		return err
+	}
+	retrievalService, err := service.NewRetrievalService(kbs, searchConfigs, aiModelConfigs, modelFactory, retrievalPipeline)
+	if err != nil {
+		_ = a.Close()
+		return err
+	}
+	documentEmbeddingResolver, err := service.NewDocumentEmbeddingResolver(kbs, aiModelConfigs, modelFactory)
+	if err != nil {
+		_ = a.Close()
+		return err
+	}
+	documentProcessService, err := buildDocumentProcessService(cfg, a.store, importTasks, docs, chunks, vectors, documentEmbeddingResolver)
 	if err != nil {
 		_ = a.Close()
 		return err
@@ -128,8 +179,9 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 
 	router := api.NewRouter(api.Dependencies{
 		Config: cfg.CORS, Auth: authService, Users: userService, MCP: mcpService,
-		KnowledgeBases: kbService, Directories: directoryService, AIModelConfigs: aiModelConfigs,
-		Documents: documentService, DocumentProcess: documentProcessService,
+		KnowledgeBases: kbService, Directories: directoryService, AIModelConfigs: aiModelConfigs, AIEncryption: aiEncryption,
+		Documents: documentService, DocumentReader: documentReader, DocumentProcess: documentProcessService,
+		Retrieval:      retrievalService,
 		ContextBuilder: contextBuilder,
 		PostgresHealth: func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
 		RedisHealth:    func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },

@@ -39,9 +39,9 @@
 - `DeleteByVersion`：重试时清理同版本残留向量。
 
 ### Pipeline 双模式
-- **无向量**（Embedder 未接入）：persist → finalize → END；
-- **有向量**：persist（写回 chunk_id）→ index（PostgresIndexer）→ finalize_ids → END；
-- Graph 输出统一 `ProcessOutput{ChunkCount}`。
+- **未配置模型**：persist → embed_and_index（跳过模型调用）→ END，保留关键词索引；
+- **已配置模型**：persist → embed_and_index（调用 PostgresIndexer）→ END；
+- Embedding 模型按用户和知识库在任务执行时通过 ModelFactory 解析，Graph 仍在启动期编译一次；Graph 输出统一 `ProcessOutput{ChunkCount}`。
 
 ### 索引版本安全切换（processDocument）
 - 加工前 `DeleteByVersion` 清理同版本 Chunk 与向量残留（幂等重试）；
@@ -50,7 +50,7 @@
 
 ### 决策（用户确认）
 - **暂不建 HNSW 索引**：Embedding 维度未冻结（风险门第 1 项），顺序扫描可功能验证；维度冻结后追加 Migration 000008（DB 设计文档 5.6 的 HNSW 模板已记录）。
-- **Embedder 未接入**：成员二 ModelFactory 未实现，Worker 的 `embeddingProvider()` 返回 nil → 当前仅关键词索引；接入点已预留。
+- **Embedder 已接入**：应用通过知识库默认模型或用户默认 Embedding 配置解析，并由 ModelFactory 创建 Eino 适配器；未配置时兼容关键词链。
 
 ## 3. 验证
 
@@ -86,7 +86,7 @@
 
 ## 6. 风险 / 待协作
 
-- 维度冻结后需：追加 HNSW Migration + `embeddingProvider()` 接入成员二 ModelFactory + 填 `EmbeddingModelID`。
+- 维度冻结后需追加 HNSW Migration；`EmbeddingModelID` 已随任务解析并写回文档/向量。
 - `document_vectors` 无 updated_at 列，DoUpdates 已避开。
 - 顺序扫描在数据量大时性能下降，HNSW 接入后改善。
 - 向量维度与模型维度不一致时 BatchUpsert 会因 pgvector 类型不匹配报错（明确失败，符合验收"不写入损坏向量"）。

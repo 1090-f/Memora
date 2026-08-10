@@ -3,6 +3,8 @@ package ai
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"time"
 
 	"github.com/1090-f/Memora/internal/ai/encryption"
 	"github.com/1090-f/Memora/internal/contracts"
@@ -13,6 +15,7 @@ import (
 
 // ChatModelConfig 表示创建 ChatModel 所需的配置。
 type ChatModelConfig struct {
+	Model             string
 	BaseURL           string
 	APIKey            string
 	TimeoutSeconds    int
@@ -23,6 +26,7 @@ type ChatModelConfig struct {
 
 // EmbeddingModelConfig 表示创建 EmbeddingModel 所需的配置。
 type EmbeddingModelConfig struct {
+	Model           string
 	BaseURL         string
 	APIKey          string
 	TimeoutSeconds  int
@@ -31,6 +35,7 @@ type EmbeddingModelConfig struct {
 
 // RerankerConfig 表示创建 Reranker 所需的配置。
 type RerankerConfig struct {
+	Model          string
 	BaseURL        string
 	APIKey         string
 	TimeoutSeconds int
@@ -58,9 +63,10 @@ func NewProviderFactory() ProviderFactory {
 func (f *einoProviderFactory) CreateChatModel(ctx context.Context, config ChatModelConfig) (contracts.ChatModel, error) {
 	// 使用 Eino OpenAI 组件创建 ChatModel
 	chatModel, err := einomodel.NewChatModel(ctx, &einomodel.ChatModelConfig{
-		Model:   "gpt-4",
+		Model:   config.Model,
 		APIKey:  config.APIKey,
 		BaseURL: config.BaseURL,
+		Timeout: time.Duration(config.TimeoutSeconds) * time.Second,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create eino chat model: %w", err)
@@ -74,9 +80,10 @@ func (f *einoProviderFactory) CreateChatModel(ctx context.Context, config ChatMo
 func (f *einoProviderFactory) CreateEmbeddingModel(ctx context.Context, config EmbeddingModelConfig) (contracts.EmbeddingModel, error) {
 	// 使用 Eino OpenAI 组件创建 Embedder
 	embedder, err := einoembedding.NewEmbedder(ctx, &einoembedding.EmbeddingConfig{
-		Model:   "text-embedding-ada-002",
+		Model:   config.Model,
 		APIKey:  config.APIKey,
 		BaseURL: config.BaseURL,
+		Timeout: time.Duration(config.TimeoutSeconds) * time.Second,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create eino embedding model: %w", err)
@@ -93,8 +100,8 @@ func (f *einoProviderFactory) CreateEmbeddingModel(ctx context.Context, config E
 func (f *einoProviderFactory) CreateReranker(ctx context.Context, config RerankerConfig) (contracts.Reranker, error) {
 	// 使用 go-openai 实现 Reranker
 	return &goOpenAIReranker{
-		apiKey:  config.APIKey,
-		baseURL: config.BaseURL,
+		apiKey: config.APIKey, baseURL: config.BaseURL, model: config.Model,
+		client: &http.Client{Timeout: time.Duration(config.TimeoutSeconds) * time.Second},
 	}, nil
 }
 
@@ -109,6 +116,7 @@ func buildChatModelConfig(config *entity.AIModelConfig, apiKey string) ChatModel
 		temp = *config.Temperature
 	}
 	return ChatModelConfig{
+		Model:             config.Name,
 		BaseURL:           config.BaseURL,
 		APIKey:            apiKey,
 		TimeoutSeconds:    config.TimeoutSeconds,
@@ -125,6 +133,7 @@ func buildEmbeddingModelConfig(config *entity.AIModelConfig, apiKey string) Embe
 		dim = *config.VectorDimension
 	}
 	return EmbeddingModelConfig{
+		Model:           config.Name,
 		BaseURL:         config.BaseURL,
 		APIKey:          apiKey,
 		TimeoutSeconds:  config.TimeoutSeconds,
@@ -135,6 +144,7 @@ func buildEmbeddingModelConfig(config *entity.AIModelConfig, apiKey string) Embe
 // buildRerankerConfig 从实体配置构建 RerankerConfig。
 func buildRerankerConfig(config *entity.AIModelConfig, apiKey string) RerankerConfig {
 	return RerankerConfig{
+		Model:          config.Name,
 		BaseURL:        config.BaseURL,
 		APIKey:         apiKey,
 		TimeoutSeconds: config.TimeoutSeconds,

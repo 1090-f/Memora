@@ -3,6 +3,8 @@ import DeleteOutlineOutlined from '@mui/icons-material/DeleteOutlineOutlined';
 import EditOutlined from '@mui/icons-material/EditOutlined';
 import MenuBookOutlined from '@mui/icons-material/MenuBookOutlined';
 import QuestionAnswerOutlined from '@mui/icons-material/QuestionAnswerOutlined';
+import SearchOutlined from '@mui/icons-material/SearchOutlined';
+import SettingsOutlined from '@mui/icons-material/SettingsOutlined';
 import { Alert, Box, Button, Card, CardActionArea, CardContent, Checkbox, Chip, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, IconButton, Stack, TextField, Typography } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
@@ -213,6 +215,12 @@ export function KnowledgeBaseListContent({ status }: { status: CapabilityStatus 
                 >
                   开始问答
                 </Button>
+                <IconButton component={Link} to={`/kb/${kb.id}/search-test`} size="small" aria-label={`检索测试 ${kb.name}`}>
+                  <SearchOutlined fontSize="small" />
+                </IconButton>
+                <IconButton component={Link} to={`/kb/${kb.id}/settings`} size="small" aria-label={`设置 ${kb.name}`}>
+                  <SettingsOutlined fontSize="small" />
+                </IconButton>
                 <IconButton
                   size="small"
                   aria-label={`编辑 ${kb.name}`}

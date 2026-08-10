@@ -15,4 +15,5 @@ func (ctrl *Controller) RegisterRoutes(v1 *gin.RouterGroup, authRequired gin.Han
 	docs.GET("/processing", ctrl.GetProcessing)
 	docs.POST("/retry-processing", ctrl.RetryProcessing)
 	docs.POST("/reindex", ctrl.Reindex)
+	docs.GET("/index-versions", ctrl.ListIndexVersions)
 }
