@@ -12,6 +12,8 @@ type AIModelConfigRepository interface {
 	Create(ctx context.Context, config *entity.AIModelConfig) error
 	// FindByID 根据 ID 查找模型配置。
 	FindByID(ctx context.Context, id string) (*entity.AIModelConfig, error)
+	// FindByIDForUserAndType 同时校验用户归属、类型、启用状态和软删除。
+	FindByIDForUserAndType(ctx context.Context, userID, id, modelType string) (*entity.AIModelConfig, error)
 	// FindDefaultByUserAndType 根据用户 ID 和模型类型查找默认配置。
 	FindDefaultByUserAndType(ctx context.Context, userID, modelType string) (*entity.AIModelConfig, error)
 	// ListByUser 列出用户的所有模型配置。

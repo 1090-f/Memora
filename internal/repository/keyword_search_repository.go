@@ -11,12 +11,15 @@ import (
 
 // KeywordHit 是一次关键词检索命中的 Chunk 结果。
 type KeywordHit struct {
-	ChunkID      string
-	DocumentID   string
-	Content      string
-	Score        float64
-	IndexVersion int
-	UpdatedAt    time.Time
+	ChunkID        string
+	DocumentID     string
+	DocumentTitle  string
+	DirectoryID    *string
+	Content        string
+	SourceLocation []byte
+	Score          float64
+	IndexVersion   int
+	UpdatedAt      time.Time
 }
 
 // KeywordSearchParams 是关键词全文检索参数。
@@ -56,7 +59,7 @@ func (r *keywordSearchRepository) Search(ctx context.Context, params KeywordSear
 	query := strings.Join(params.QueryTokens, " | ")
 	args := []any{query}
 	// 归属过滤(user_id + knowledge_base_id) + 文档软删除过滤，防止跨库/跨用户泄漏已删内容。
-	where := `dc.user_id = ? AND dc.knowledge_base_id = ? AND d.deleted_at IS NULL`
+	where := `dc.user_id = ? AND dc.knowledge_base_id = ? AND d.deleted_at IS NULL AND d.processing_status = 'succeeded'`
 	// tsquery 命中 dc.fts_vector（'simple' 配置下分词后的全文索引列）。
 	where += ` AND to_tsquery('simple', ?) @@ dc.fts_vector`
 	args = append(args, params.UserID, params.KnowledgeBaseID, query)
@@ -78,7 +81,8 @@ func (r *keywordSearchRepository) Search(ctx context.Context, params KeywordSear
 	args = append(args, params.TopK)
 
 	sql := fmt.Sprintf(`
-		SELECT dc.id AS chunk_id, dc.document_id AS document_id, dc.content AS content,
+		SELECT dc.id AS chunk_id, dc.document_id AS document_id, d.title AS document_title,
+		       d.directory_id, dc.content AS content, dc.source_location,
 		       ts_rank(dc.fts_vector, to_tsquery('simple', ?)) AS score,
 		       dc.index_version AS index_version, d.updated_at AS updated_at
 		FROM document_chunks dc

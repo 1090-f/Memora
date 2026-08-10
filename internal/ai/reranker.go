@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/1090-f/Memora/internal/contracts"
 )
@@ -15,6 +17,8 @@ import (
 type goOpenAIReranker struct {
 	apiKey  string
 	baseURL string
+	model   string
+	client  *http.Client
 }
 
 // rerankRequest 表示 Reranker API 请求。
@@ -46,7 +50,7 @@ type rerankerItem struct {
 func (r *goOpenAIReranker) Rerank(ctx context.Context, query string, documents []string, topK int) ([]contracts.RerankItem, error) {
 	// 构建请求
 	reqBody := rerankRequest{
-		Model:     "rerank-english-v2.0",
+		Model:     r.model,
 		Query:     query,
 		Documents: documents,
 		TopN:      topK,
@@ -58,7 +62,7 @@ func (r *goOpenAIReranker) Rerank(ctx context.Context, query string, documents [
 	}
 
 	// 创建 HTTP 请求
-	url := r.baseURL + "/rerank"
+	url := strings.TrimRight(r.baseURL, "/") + "/rerank"
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("create rerank request: %w", err)
@@ -68,7 +72,10 @@ func (r *goOpenAIReranker) Rerank(ctx context.Context, query string, documents [
 	req.Header.Set("Authorization", "Bearer "+r.apiKey)
 
 	// 发送请求
-	client := &http.Client{}
+	client := r.client
+	if client == nil {
+		client = &http.Client{Timeout: 60 * time.Second}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("send rerank request: %w", err)
@@ -76,13 +83,16 @@ func (r *goOpenAIReranker) Rerank(ctx context.Context, query string, documents [
 	defer resp.Body.Close()
 
 	// 读取响应
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024+1))
 	if err != nil {
 		return nil, fmt.Errorf("read rerank response: %w", err)
 	}
+	if len(body) > 4*1024*1024 {
+		return nil, fmt.Errorf("rerank response exceeds size limit")
+	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("rerank API error: status=%d, body=%s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("rerank API error: status=%d", resp.StatusCode)
 	}
 
 	// 解析响应

@@ -124,6 +124,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("chunking.repeat_table_header", true)
 	v.SetDefault("asset_enrichment.mode", "none")
 	v.SetDefault("asset_enrichment.timeout", "2m")
+	v.SetDefault("url_import.timeout", "30s")
+	v.SetDefault("url_import.max_response_bytes", 10485760)
+	v.SetDefault("url_import.max_redirects", 5)
+	v.SetDefault("ai.encryption_key", "")
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.filename", "")
 	v.SetDefault("log.max_size", 100)
@@ -176,6 +180,10 @@ func bindEnvironment(v *viper.Viper) {
 		"chunking.repeat_table_header":         "MEMORA_CHUNKING_REPEAT_TABLE_HEADER",
 		"asset_enrichment.mode":                "MEMORA_ASSET_ENRICHMENT_MODE",
 		"asset_enrichment.timeout":             "MEMORA_ASSET_ENRICHMENT_TIMEOUT",
+		"url_import.timeout":                   "MEMORA_URL_IMPORT_TIMEOUT",
+		"url_import.max_response_bytes":        "MEMORA_URL_IMPORT_MAX_RESPONSE_BYTES",
+		"url_import.max_redirects":             "MEMORA_URL_IMPORT_MAX_REDIRECTS",
+		"ai.encryption_key":                    "MEMORA_AI_ENCRYPTION_KEY",
 		"log.level":                            "MEMORA_LOG_LEVEL", "log.filename": "MEMORA_LOG_FILENAME",
 		"log.max_size": "MEMORA_LOG_MAX_SIZE", "log.max_backups": "MEMORA_LOG_MAX_BACKUPS",
 		"log.max_age": "MEMORA_LOG_MAX_AGE", "log.compress": "MEMORA_LOG_COMPRESS",

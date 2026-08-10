@@ -38,6 +38,7 @@ internal/service/rag/einoadapter   contracts/Entity ↔ Eino schema.Document 的
 internal/service/rag/tokenizer     可替换的中文/英文 N-gram 分词内核（普通 Go 接口）
 internal/service/rag/indexing      PostgresIndexer 等 Eino Indexer 实现（向量写入 pgvector）
 internal/service/rag/retrieval     PostgresKeywordRetriever/PgVectorRetriever 等 Eino Retriever 实现
+internal/service/rag/loader        SafeWebLoader（URL 导入 SSRF 防护、重定向/大小/超时限制）
 internal/service/rag/mock          仅用于联调的确定性 RetrievalService Mock
 internal/worker/document/          文档处理任务 Source 与 Handler（后续任务包落位）
 pkg/config/                        Viper 配置
@@ -93,3 +94,6 @@ RequestID → AccessLog → Recovery → CORS → Auth → Controller
 - 数据访问（SQL、GORM、pgvector、全文检索、`SKIP LOCKED`）只允许在 `internal/repository`；自定义 Eino Indexer/Retriever 通过最小 Repository 接口访问数据，组件本身不持有 GORM 查询逻辑。
 - 文档处理长任务由 `internal/worker/document` 的 Source/Handler 驱动；Eino Compose 负责任务内部的确定性数据流，PostgreSQL 任务领取、状态持久化、重试、幂等与恢复仍由 `internal/worker` 通用 Runner/Registry 负责。
 - 长耗时解析、分段、Embedding 和索引必须进入 Worker，不能阻塞 HTTP 请求；数据库是业务事实来源，Redis 不保存唯一业务状态。
+- 检索在应用启动时编译单一 Eino Graph：参数校验 → keyword/vector Retriever（hybrid 并发）→ RRF → 可降级 Reranker → 知识充分性 → Citation。生产 API 不存在绕过 Graph 的第二条检索路径。
+- `CitationService` 是 Retrieval 与 DocumentReader 的统一可信引用映射；`DocumentReader` 使用绑定用户/知识库/文档/索引版本的 HMAC 游标执行有限正文读取。
+- URL 导入只在 HTTP 层落 pending 任务；安全抓取节点位于文档 Worker Graph，抓取结果继续进入与 TXT/Markdown/PDF/DOCX 相同的解析、分块和索引链。

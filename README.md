@@ -78,6 +78,6 @@ pnpm dev
 
 ## 当前范围
 
-Foundation 包含配置、日志、PostgreSQL/Redis/MinIO、P0 20 表 Migration、健康检查、指标、Trace ID、审计日志、完整用户接口、`contracts v0.1` 和通用 Worker 执行底座。Knowledge、RAG、Memory、Agent 与 MCP 的业务实现将按需求文档分阶段实现。
+当前后端包含配置、日志、PostgreSQL/Redis/MinIO、P0 Schema、健康检查、指标、Trace ID、审计日志、用户/知识库/目录/文档/导入 API，以及 Eino 文档加工和混合检索内核。文件、PDF、DOCX 与安全 URL 来源统一进入 Worker；检索支持 keyword/vector/hybrid、RRF、可降级 Reranker、知识充分性和可信 Citation。
 
 当前项目按负责人要求不保留测试文件；不得将静态代码落地描述为已经通过运行态验收。

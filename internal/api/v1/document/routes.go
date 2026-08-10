@@ -16,4 +16,5 @@ func (ctrl *Controller) RegisterRoutes(v1 *gin.RouterGroup, authRequired gin.Han
 
 	imports := v1.Group("/knowledge-bases/:kb_id/imports", authRequired)
 	imports.POST("/files", ctrl.UploadFiles)
+	imports.POST("/url", ctrl.ImportURL)
 }

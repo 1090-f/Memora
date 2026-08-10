@@ -16,3 +16,10 @@ type DocumentListFilter struct {
 	ProcessingStatus *string // 按处理状态过滤（pending/processing/succeeded/failed）
 	SourceType       *string // 按来源类型过滤（manual/file/url）
 }
+
+// ImportURLRequest 是静态网页异步导入请求；抓取由 Worker 执行。
+type ImportURLRequest struct {
+	URL             string  `json:"url" binding:"required,max=4096"`
+	DirectoryID     *string `json:"directory_id" binding:"omitempty"`
+	DuplicatePolicy string  `json:"duplicate_policy" binding:"omitempty,oneof=skip create_new"`
+}

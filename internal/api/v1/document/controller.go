@@ -167,6 +167,26 @@ func (ctrl *Controller) UploadFiles(c *gin.Context) {
 	response.Success(c, http.StatusCreated, result)
 }
 
+// ImportURL 创建异步 URL 导入任务。
+func (ctrl *Controller) ImportURL(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	var req request.ImportURLRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+	result, err := ctrl.docs.ImportURL(c.Request.Context(), user.ID, c.Param("kb_id"), &req)
+	if err != nil {
+		response.Failure(c, err)
+		return
+	}
+	response.Success(c, http.StatusAccepted, result)
+}
+
 // parseIntDefault 解析查询参数为整数，缺失或非法时返回默认值。
 func parseIntDefault(value string, defaultValue int) int {
 	if value == "" {

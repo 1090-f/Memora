@@ -6,36 +6,42 @@
 //   - MetaData 键一律使用本包集中定义的常量，读取必须做类型与缺失校验，禁止不安全类型断言。
 package einoadapter
 
-import "github.com/cloudwego/eino/schema"
+import (
+	"time"
+
+	"github.com/cloudwego/eino/schema"
+)
 
 // MetaData 键常量。Eino schema.Document.MetaData 使用 open map[string]any，
 // 集中定义可保证 Loader/Transformer/Indexer/Retriever 各阶段一致读写。
 const (
-	MetaUserID          = "user_id"
-	MetaKnowledgeBase   = "knowledge_base_id"
-	MetaDocumentID      = "document_id"
-	MetaChunkID         = "chunk_id"
-	MetaChunkNo         = "chunk_no"
-	MetaIndexVersion    = "index_version"
-	MetaHeadingPath     = "heading_path"
-	MetaSourceLocation  = "source_location"
-	MetaKeywordRank     = "keyword_rank"
-	MetaKeywordScore    = "keyword_score"
-	MetaVectorRank      = "vector_rank"
-	MetaVectorScore     = "vector_score"
-	MetaRRFScore        = "rrf_score"
-	MetaRRFRank         = "rrf_rank"
-	MetaRerankerScore   = "reranker_score"
-	MetaDocumentTitle   = "document_title"
-	MetaDocumentUpdAt   = "document_updated_at"
-	MetaChunkConfigHash = "chunk_config_hash"
-	MetaContentVersion  = "content_version"
-	MetaChunkVersion    = "chunk_version"
-	MetaQuery           = "query"
-	MetaFTSTokens       = "fts_tokens"
-	MetaCharCount       = "char_count"
-	MetaTokenCount      = "token_count"
-	MetaContextTitle    = "context_title"
+	MetaUserID           = "user_id"
+	MetaKnowledgeBase    = "knowledge_base_id"
+	MetaDocumentID       = "document_id"
+	MetaDirectoryID      = "directory_id"
+	MetaChunkID          = "chunk_id"
+	MetaChunkNo          = "chunk_no"
+	MetaIndexVersion     = "index_version"
+	MetaHeadingPath      = "heading_path"
+	MetaSourceLocation   = "source_location"
+	MetaKeywordRank      = "keyword_rank"
+	MetaKeywordScore     = "keyword_score"
+	MetaVectorRank       = "vector_rank"
+	MetaVectorScore      = "vector_score"
+	MetaRRFScore         = "rrf_score"
+	MetaRRFRank          = "rrf_rank"
+	MetaRerankerScore    = "reranker_score"
+	MetaDocumentTitle    = "document_title"
+	MetaDocumentUpdAt    = "document_updated_at"
+	MetaChunkConfigHash  = "chunk_config_hash"
+	MetaContentVersion   = "content_version"
+	MetaChunkVersion     = "chunk_version"
+	MetaQuery            = "query"
+	MetaFTSTokens        = "fts_tokens"
+	MetaCharCount        = "char_count"
+	MetaTokenCount       = "token_count"
+	MetaContextTitle     = "context_title"
+	MetaEmbeddingModelID = "embedding_model_id"
 )
 
 // GetMetaString 读取 MetaData 中的字符串值并做类型校验；缺失或类型不符时返回零值。
@@ -58,11 +64,27 @@ func GetMetaInt(meta map[string]any, key string) int {
 
 // GetMetaFloat 读取 MetaData 中的 float64 值并做类型校验；缺失或类型不符时返回 0。
 func GetMetaFloat(meta map[string]any, key string) float64 {
-	value, ok := meta[key].(float64)
-	if !ok {
+	switch value := meta[key].(type) {
+	case float64:
+		return value
+	case float32:
+		return float64(value)
+	default:
 		return 0
 	}
-	return value
+}
+
+// GetMetaTime 读取 time.Time 或 RFC3339 字符串时间。
+func GetMetaTime(meta map[string]any, key string) time.Time {
+	switch value := meta[key].(type) {
+	case time.Time:
+		return value
+	case string:
+		parsed, _ := time.Parse(time.RFC3339Nano, value)
+		return parsed
+	default:
+		return time.Time{}
+	}
 }
 
 // GetMetaAny 读取 MetaData 中的任意值，缺失时返回 nil。

@@ -3,8 +3,10 @@ package modelconfig
 import (
 	"net/http"
 
+	"github.com/1090-f/Memora/internal/ai/encryption"
 	"github.com/1090-f/Memora/internal/api/response"
 	apperrors "github.com/1090-f/Memora/internal/apperror"
+	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/middleware"
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/1090-f/Memora/internal/repository"
@@ -14,12 +16,13 @@ import (
 
 // Controller 处理模型配置相关的 HTTP 请求。
 type Controller struct {
-	repo repository.AIModelConfigRepository
+	repo   repository.AIModelConfigRepository
+	crypto encryption.Service
 }
 
 // NewController 创建一个新的 Controller 实例。
-func NewController(repo repository.AIModelConfigRepository) *Controller {
-	return &Controller{repo: repo}
+func NewController(repo repository.AIModelConfigRepository, crypto encryption.Service) *Controller {
+	return &Controller{repo: repo, crypto: crypto}
 }
 
 // ListModelConfigs 返回当前用户的所有模型配置。
@@ -82,17 +85,19 @@ func (ctrl *Controller) CreateModelConfig(c *gin.Context) {
 	}
 
 	var input struct {
-		Name            string   `json:"name" binding:"required"`
-		Provider        string   `json:"provider" binding:"required"`
-		ModelType       string   `json:"model_type" binding:"required"`
-		BaseURL         string   `json:"base_url" binding:"required"`
-		APIKey          string   `json:"api_key" binding:"required"`
-		TimeoutSeconds  int      `json:"timeout_seconds"`
-		RetryTimes      int      `json:"retry_times"`
-		IsDefault       bool     `json:"is_default"`
-		MaxTokens       *int     `json:"max_tokens,omitempty"`
-		Temperature     *float64 `json:"temperature,omitempty"`
-		VectorDimension *int     `json:"vector_dimension,omitempty"`
+		Name                string   `json:"name" binding:"required"`
+		Provider            string   `json:"provider" binding:"required"`
+		ModelType           string   `json:"model_type" binding:"required,oneof=chat embedding reranker"`
+		BaseURL             string   `json:"base_url" binding:"required"`
+		APIKey              string   `json:"api_key" binding:"required"`
+		TimeoutSeconds      int      `json:"timeout_seconds"`
+		RetryTimes          int      `json:"retry_times"`
+		IsDefault           bool     `json:"is_default"`
+		MaxTokens           *int     `json:"max_tokens,omitempty"`
+		Temperature         *float64 `json:"temperature,omitempty"`
+		VectorDimension     *int     `json:"vector_dimension,omitempty"`
+		SupportsToolCalling bool     `json:"supports_tool_calling"`
+		SupportsStreaming   bool     `json:"supports_streaming"`
 	}
 
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -107,6 +112,15 @@ func (ctrl *Controller) CreateModelConfig(c *gin.Context) {
 	} else if len(input.APIKey) > 0 {
 		apiKeyMasked = "****"
 	}
+	if ctrl.crypto == nil {
+		response.Failure(c, apperrors.New(contracts.ErrServiceUnavailable, nil))
+		return
+	}
+	ciphertext, err := ctrl.crypto.Encrypt(input.APIKey)
+	if err != nil {
+		response.Failure(c, apperrors.New(contracts.ErrInternal, err))
+		return
+	}
 
 	// 设置默认值
 	timeoutSeconds := input.TimeoutSeconds
@@ -119,19 +133,23 @@ func (ctrl *Controller) CreateModelConfig(c *gin.Context) {
 	}
 
 	config := &entity.AIModelConfig{
-		ID:              uuid.New().String(),
-		Name:            input.Name,
-		UserID:          user.ID,
-		Provider:        input.Provider,
-		ModelType:       input.ModelType,
-		BaseURL:         input.BaseURL,
-		APIKeyMasked:    apiKeyMasked,
-		TimeoutSeconds:  timeoutSeconds,
-		RetryTimes:      retryTimes,
-		IsDefault:       input.IsDefault,
-		MaxTokens:       input.MaxTokens,
-		Temperature:     input.Temperature,
-		VectorDimension: input.VectorDimension,
+		ID:                  uuid.New().String(),
+		Name:                input.Name,
+		UserID:              user.ID,
+		Provider:            input.Provider,
+		ModelType:           input.ModelType,
+		BaseURL:             input.BaseURL,
+		APIKeyMasked:        apiKeyMasked,
+		APIKeyCiphertext:    ciphertext,
+		TimeoutSeconds:      timeoutSeconds,
+		RetryTimes:          retryTimes,
+		IsDefault:           input.IsDefault,
+		MaxTokens:           input.MaxTokens,
+		Temperature:         input.Temperature,
+		VectorDimension:     input.VectorDimension,
+		SupportsToolCalling: input.SupportsToolCalling,
+		SupportsStreaming:   input.SupportsStreaming,
+		Enabled:             true,
 	}
 
 	if err := ctrl.repo.Create(c.Request.Context(), config); err != nil {

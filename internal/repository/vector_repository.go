@@ -12,12 +12,15 @@ import (
 
 // VectorHit 是一次向量检索命中的 Chunk 结果。
 type VectorHit struct {
-	ChunkID      string
-	DocumentID   string
-	Content      string
-	Score        float64
-	IndexVersion int
-	UpdatedAt    time.Time
+	ChunkID        string
+	DocumentID     string
+	DocumentTitle  string
+	DirectoryID    *string
+	Content        string
+	SourceLocation []byte
+	Score          float64
+	IndexVersion   int
+	UpdatedAt      time.Time
 }
 
 // VectorSearchParams 是向量检索参数。
@@ -95,7 +98,7 @@ func (r *vectorRepository) SearchCosine(ctx context.Context, params VectorSearch
 	}
 	// args 严格按 SQL 占位符出现顺序构造。
 	args := []any{params.QueryVector} // SELECT 1 - (embedding <=> ?)
-	where := `dv.user_id = ? AND dv.knowledge_base_id = ? AND dv.status = 'ready' AND d.deleted_at IS NULL`
+	where := `dv.user_id = ? AND dv.knowledge_base_id = ? AND dv.status = 'ready' AND d.deleted_at IS NULL AND d.processing_status = 'succeeded'`
 	where += ` AND 1 - (dv.embedding <=> ?) > 0`
 	args = append(args, params.UserID, params.KnowledgeBaseID, params.QueryVector) // WHERE user/kb/dist
 
@@ -118,7 +121,7 @@ func (r *vectorRepository) SearchCosine(ctx context.Context, params VectorSearch
 	// ORDER BY 的距离占位符。
 	sql := fmt.Sprintf(`
 		SELECT dv.chunk_id AS chunk_id, dv.document_id AS document_id,
-		       dc.content AS content,
+		       d.title AS document_title, d.directory_id, dc.content AS content, dc.source_location,
 		       1 - (dv.embedding <=> ?) AS score,
 		       dv.index_version AS index_version, d.updated_at AS updated_at
 		FROM document_vectors dv

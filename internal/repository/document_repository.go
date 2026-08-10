@@ -185,7 +185,7 @@ func (r *importTaskRepository) Create(ctx context.Context, task *entity.ImportTa
 		if err := tx.Create(task).Error; err != nil {
 			return fmt.Errorf("创建导入任务失败: %w", err)
 		}
-		if task.MinIOObjectKey != nil && *task.MinIOObjectKey != "" {
+		if (task.MinIOObjectKey != nil && *task.MinIOObjectKey != "") || (task.SourceType == "url" && task.SourceURL != nil && *task.SourceURL != "") {
 			return enqueueTaskEvent(tx, task.ID)
 		}
 		return nil
@@ -241,6 +241,40 @@ func (r *importTaskRepository) UpdateObjectInfo(ctx context.Context, userID, tas
 		}
 		return enqueueTaskEvent(tx, taskID)
 	})
+}
+
+func (r *importTaskRepository) UpdateURLResult(ctx context.Context, taskID, finalURL, sourceHash string) error {
+	updates := map[string]any{}
+	if finalURL != "" {
+		updates["source_url"] = finalURL
+	}
+	if sourceHash != "" {
+		updates["source_hash"] = sourceHash
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.ImportTask{}).
+		Where("id = ? AND source_type = 'url'", taskID).Updates(updates)
+	if result.Error != nil {
+		return fmt.Errorf("更新 URL 导入结果失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrImportTaskNotFound
+	}
+	return nil
+}
+
+func (r *importTaskRepository) AttachDocument(ctx context.Context, taskID, documentID string) error {
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.ImportTask{}).
+		Where("id = ? AND status = 'running'", taskID).Update("document_id", documentID)
+	if result.Error != nil {
+		return fmt.Errorf("关联导入任务文档失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrImportTaskNotFound
+	}
+	return nil
 }
 
 // Delete 物理删除任务记录。
