@@ -115,10 +115,22 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	}
 	a.background = background.NewManager(a.redis, importTasks, repository.NewTaskOutboxRepository(a.db), documentProcessService, cfg.DocumentConsumer, cfg.Outbox)
 
+	// 初始化 ContextBuilder（Phase 3）
+	messages := repository.NewMessageRepository(a.db)
+	tokenCounter := service.NewTokenCounter()
+	convCtxService := service.NewConversationContextService(messages, nil, tokenCounter)
+
+	memoryRepo := repository.NewMemoryRepository(a.db)
+	embeddingSvc := service.NewEmbeddingService(nil, "") // TODO: 从配置加载 embedding 模型
+	memoryRetriever := service.NewMemoryRetriever(memoryRepo, embeddingSvc)
+
+	contextBuilder := service.NewContextBuilder(agentConfigs, convCtxService, memoryRetriever)
+
 	router := api.NewRouter(api.Dependencies{
 		Config: cfg.CORS, Auth: authService, Users: userService, MCP: mcpService,
 		KnowledgeBases: kbService, Directories: directoryService, AIModelConfigs: aiModelConfigs,
 		Documents: documentService, DocumentProcess: documentProcessService,
+		ContextBuilder: contextBuilder,
 		PostgresHealth: func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
 		RedisHealth:    func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
 		MinIOHealth:    a.store.Health,

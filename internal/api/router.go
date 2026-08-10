@@ -42,6 +42,7 @@ type Dependencies struct {
 	DocumentProcess service.DocumentProcessService
 	MCP             service.ImportService
 	AIModelConfigs  repository.AIModelConfigRepository
+	ContextBuilder  contracts.ContextBuilder
 	PostgresHealth  HealthCheck
 	RedisHealth     HealthCheck
 	MinIOHealth     HealthCheck
