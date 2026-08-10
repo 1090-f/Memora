@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -111,22 +112,34 @@ func (r *documentRepository) SoftDelete(ctx context.Context, userID, documentID 
 func (r *documentRepository) FindBySourceHash(ctx context.Context, userID, kbID, sourceHash string) (*entity.Document, error) {
 	// 按文件哈希判重（duplicate_policy=skip 用），限定同一用户同一知识库且未删除。
 	var doc entity.Document
-	err := dbFromContext(ctx, r.db).WithContext(ctx).
+	result := dbFromContext(ctx, r.db).WithContext(ctx).
 		Where("user_id = ? AND knowledge_base_id = ? AND file_hash = ? AND deleted_at IS NULL", userID, kbID, sourceHash).
-		First(&doc).Error
-	return mapDocumentResult(&doc, err)
+		Limit(1).Find(&doc)
+	if result.Error != nil {
+		return nil, fmt.Errorf("查询文档失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return nil, ErrDocumentNotFound
+	}
+	return &doc, nil
 }
 
 // FindByImportTask 通过 import_tasks.document_id 查询导入任务关联的文档。
 func (r *documentRepository) FindByImportTask(ctx context.Context, taskID string) (*entity.Document, error) {
 	var doc entity.Document
 	// 经 import_tasks.document_id 反查关联文档，用于导入流程中任务完成后回填。
-	err := dbFromContext(ctx, r.db).WithContext(ctx).
+	result := dbFromContext(ctx, r.db).WithContext(ctx).
 		Table("documents").
 		Joins("JOIN import_tasks ON import_tasks.document_id = documents.id").
 		Where("import_tasks.id = ? AND documents.deleted_at IS NULL", taskID).
-		First(&doc).Error
-	return mapDocumentResult(&doc, err)
+		Limit(1).Find(&doc)
+	if result.Error != nil {
+		return nil, fmt.Errorf("查询任务关联文档失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return nil, ErrDocumentNotFound
+	}
+	return &doc, nil
 }
 
 // UpdateProcessing 更新文档处理状态与相关字段。
@@ -168,11 +181,15 @@ func NewImportTaskRepository(db *gorm.DB) ImportTaskRepository {
 
 // Create 创建导入任务。
 func (r *importTaskRepository) Create(ctx context.Context, task *entity.ImportTask) error {
-	err := dbFromContext(ctx, r.db).WithContext(ctx).Create(task).Error
-	if err != nil {
-		return fmt.Errorf("创建导入任务失败: %w", err)
-	}
-	return nil
+	return dbFromContext(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(task).Error; err != nil {
+			return fmt.Errorf("创建导入任务失败: %w", err)
+		}
+		if task.MinIOObjectKey != nil && *task.MinIOObjectKey != "" {
+			return enqueueTaskEvent(tx, task.ID)
+		}
+		return nil
+	})
 }
 
 // FindByID 按任务 ID 与用户查询任务。
@@ -213,16 +230,17 @@ func (r *importTaskRepository) UpdateObjectInfo(ctx context.Context, userID, tas
 	if sourceHash != nil {
 		updates["source_hash"] = *sourceHash
 	}
-	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.ImportTask{}).
-		Where("id = ? AND user_id = ?", taskID, userID).Updates(updates)
-	if result.Error != nil {
-		return fmt.Errorf("更新导入任务对象信息失败: %w", result.Error)
-	}
-	// RowsAffected 为 0 表示任务不存在或不属于该用户。
-	if result.RowsAffected == 0 {
-		return ErrImportTaskNotFound
-	}
-	return nil
+	return dbFromContext(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&entity.ImportTask{}).
+			Where("id = ? AND user_id = ?", taskID, userID).Updates(updates)
+		if result.Error != nil {
+			return fmt.Errorf("更新导入任务对象信息失败: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return ErrImportTaskNotFound
+		}
+		return enqueueTaskEvent(tx, taskID)
+	})
 }
 
 // Delete 物理删除任务记录。
@@ -307,6 +325,21 @@ func (r *importTaskRepository) ReservePending(ctx context.Context) (*entity.Impo
 	return &task, nil
 }
 
+// ClaimPendingByID 原子认领 Redis Stream 投递的指定任务。
+func (r *importTaskRepository) ClaimPendingByID(ctx context.Context, taskID string) (*entity.ImportTask, error) {
+	now := time.Now().UTC()
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.ImportTask{}).
+		Where("id = ? AND status = 'pending'", taskID).
+		Updates(map[string]any{"status": "running", "started_at": now, "completed_at": nil, "attempt": gorm.Expr("attempt + 1")})
+	if result.Error != nil {
+		return nil, fmt.Errorf("认领导入任务失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return nil, nil
+	}
+	return r.FindByIDInternal(ctx, taskID)
+}
+
 // recoverStaleLocked 将 running 且 started_at 超过租约的任务恢复为 pending。
 // 每次领取前执行，成本低（受 idx_import_tasks_worker 索引约束）。
 func (r *importTaskRepository) recoverStaleLocked(ctx context.Context, db *gorm.DB) error {
@@ -323,13 +356,31 @@ func (r *importTaskRepository) recoverStaleLocked(ctx context.Context, db *gorm.
 // RecoverStale 将卡在 running 且 started_at 早于 staleBefore 的任务恢复为 pending。
 func (r *importTaskRepository) RecoverStale(ctx context.Context, staleBefore int64) (int64, error) {
 	staleTime := time.Unix(staleBefore, 0).UTC()
-	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.ImportTask{}).
-		Where("status = 'running' AND started_at IS NOT NULL AND started_at < ?", staleTime).
-		Updates(map[string]any{"status": "pending", "started_at": nil, "failure_reason": "worker 租约过期，任务恢复为待处理"})
-	if result.Error != nil {
-		return 0, fmt.Errorf("恢复过期导入任务失败: %w", result.Error)
-	}
-	return result.RowsAffected, nil
+	var recovered int64
+	err := dbFromContext(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var taskIDs []string
+		if err := tx.Model(&entity.ImportTask{}).
+			Where("status = 'running' AND started_at IS NOT NULL AND started_at < ?", staleTime).
+			Pluck("id", &taskIDs).Error; err != nil {
+			return fmt.Errorf("查询过期导入任务失败: %w", err)
+		}
+		if len(taskIDs) == 0 {
+			return nil
+		}
+		result := tx.Model(&entity.ImportTask{}).Where("id IN ? AND status = 'running'", taskIDs).
+			Updates(map[string]any{"status": "pending", "started_at": nil, "failure_reason": "消费者租约过期，任务恢复为待处理"})
+		if result.Error != nil {
+			return fmt.Errorf("恢复过期导入任务失败: %w", result.Error)
+		}
+		recovered = result.RowsAffected
+		for _, taskID := range taskIDs {
+			if err := enqueueTaskEvent(tx, taskID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return recovered, err
 }
 
 // CompleteSucceeded 将任务标记为 succeeded 并记录完成时间与关联文档。
@@ -368,15 +419,41 @@ func (r *importTaskRepository) FailTask(ctx context.Context, taskID, failureReas
 
 // RetryTask 将 failed 任务重置为 pending（显式重试）。
 func (r *importTaskRepository) RetryTask(ctx context.Context, taskID string) error {
-	// 仅允许 failed 状态重置，防止正在处理的任务被并发重试打回。
-	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.ImportTask{}).
-		Where("id = ? AND status = 'failed'", taskID).
-		Updates(map[string]any{"status": "pending", "failure_reason": nil, "completed_at": nil, "started_at": nil})
-	if result.Error != nil {
-		return fmt.Errorf("重试导入任务失败: %w", result.Error)
+	return dbFromContext(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&entity.ImportTask{}).Where("id = ? AND status = 'failed'", taskID).
+			Updates(map[string]any{"status": "pending", "attempt": 0, "failure_reason": nil, "completed_at": nil, "started_at": nil})
+		if result.Error != nil {
+			return fmt.Errorf("重试导入任务失败: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return ErrImportTaskNotFound
+		}
+		return enqueueTaskEvent(tx, taskID)
+	})
+}
+
+func (r *importTaskRepository) RequeueTask(ctx context.Context, taskID, failureReason string) error {
+	return dbFromContext(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&entity.ImportTask{}).Where("id = ? AND status = 'running'", taskID).
+			Updates(map[string]any{"status": "pending", "failure_reason": failureReason, "started_at": nil})
+		if result.Error != nil {
+			return fmt.Errorf("重新排队导入任务失败: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return ErrImportTaskNotFound
+		}
+		return enqueueTaskEvent(tx, taskID)
+	})
+}
+
+func enqueueTaskEvent(db *gorm.DB, taskID string) error {
+	payload, err := json.Marshal(map[string]string{"task_id": taskID})
+	if err != nil {
+		return fmt.Errorf("序列化任务 Outbox 事件失败: %w", err)
 	}
-	if result.RowsAffected == 0 {
-		return ErrImportTaskNotFound
+	event := &entity.TaskOutbox{EventType: "document.parse", AggregateID: taskID, Payload: string(payload)}
+	if err := db.Create(event).Error; err != nil {
+		return fmt.Errorf("创建任务 Outbox 事件失败: %w", err)
 	}
 	return nil
 }

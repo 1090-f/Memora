@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/1090-f/Memora/internal/api"
+	"github.com/1090-f/Memora/internal/background"
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service"
 	"github.com/1090-f/Memora/pkg/audit"
@@ -24,11 +25,12 @@ import (
 
 // ServerApp 管理 HTTP 服务器应用的生命周期，包括初始化、运行和关闭。
 type ServerApp struct {
-	cfg    *config.Config
-	db     *gorm.DB
-	redis  *redis.Client
-	store  *objectstore.Client
-	server *http.Server
+	cfg        *config.Config
+	db         *gorm.DB
+	redis      *redis.Client
+	store      *objectstore.Client
+	server     *http.Server
+	background *background.Manager
 }
 
 // NewServer 创建一个新的 ServerApp 实例。
@@ -106,7 +108,12 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	chunks := repository.NewDocumentChunkRepository(a.db)
 	vectors := repository.NewVectorRepository(a.db)
 	documentService := service.NewDocumentService(docs, importTasks, kbs, dirs, a.store)
-	documentProcessService := service.NewDocumentProcessService(importTasks, docs, chunks, vectors, nil)
+	documentProcessService, err := buildDocumentProcessService(cfg, a.store, importTasks, docs, chunks, vectors)
+	if err != nil {
+		_ = a.Close()
+		return err
+	}
+	a.background = background.NewManager(a.redis, importTasks, repository.NewTaskOutboxRepository(a.db), documentProcessService, cfg.DocumentConsumer, cfg.Outbox)
 
 	router := api.NewRouter(api.Dependencies{
 		Config: cfg.CORS, Auth: authService, Users: userService, MCP: mcpService,
@@ -115,7 +122,12 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		PostgresHealth: func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
 		RedisHealth:    func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
 		MinIOHealth:    a.store.Health,
-		WorkerCount:    func(ctx context.Context) (int64, error) { return database.CountWorkerHeartbeats(ctx, a.redis) },
+		WorkerCount: func(context.Context) (int64, error) {
+			if cfg.DocumentConsumer.Enabled {
+				return int64(cfg.DocumentConsumer.Concurrency), nil
+			}
+			return 0, nil
+		},
 	})
 	a.server = &http.Server{
 		Addr: cfg.App.Address, Handler: router, ReadHeaderTimeout: 5 * time.Second,
@@ -126,22 +138,35 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 
 // Run 启动 HTTP 服务器并阻塞等待，直到上下文取消后执行优雅关闭。
 func (a *ServerApp) Run(ctx context.Context) error {
-	errCh := make(chan error, 1)
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	httpErrCh := make(chan error, 1)
+	backgroundErrCh := make(chan error, 1)
 	go func() {
 		logger.Info("Memora API 服务已启动")
 		err := a.server.ListenAndServe()
 		if errors.Is(err, http.ErrServerClosed) {
 			err = nil
 		}
-		errCh <- err
+		httpErrCh <- err
 	}()
+	go func() { backgroundErrCh <- a.background.Run(runCtx) }()
 	select {
-	case err := <-errCh:
-		return errors.Join(err, a.Close())
+	case err := <-httpErrCh:
+		cancelRun()
+		return errors.Join(err, <-backgroundErrCh, a.Close())
+	case err := <-backgroundErrCh:
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), a.cfg.App.ShutdownTimeout)
+		defer cancel()
+		return errors.Join(err, a.server.Shutdown(shutdownCtx), <-httpErrCh, a.Close())
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), a.cfg.App.ShutdownTimeout)
 		defer cancel()
-		return errors.Join(a.server.Shutdown(shutdownCtx), a.Close())
+		shutdownErr := a.server.Shutdown(shutdownCtx)
+		cancelRun()
+		backgroundErr := <-backgroundErrCh
+		<-httpErrCh
+		return errors.Join(shutdownErr, backgroundErr, a.Close())
 	}
 }
 

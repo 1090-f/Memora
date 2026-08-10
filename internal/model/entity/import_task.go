@@ -22,6 +22,7 @@ type ImportTask struct {
 	MinIOObjectKey    *string    `gorm:"column:minio_object_key" json:"minio_object_key,omitempty"`          // MinIOObjectKey 源文件在 MinIO 中的对象键，可选
 	DuplicatePolicy   string     `gorm:"column:duplicate_policy" json:"duplicate_policy"`                    // DuplicatePolicy 重复处理策略：create_new/skip
 	Status            string     `gorm:"column:status" json:"status"`                                        // Status 任务状态：pending/running/succeeded/failed/skipped
+	Attempt           int        `gorm:"column:attempt" json:"attempt"`                                      // Attempt 已执行次数
 	CurrentStep       *string    `gorm:"column:current_step" json:"current_step,omitempty"`                  // CurrentStep 当前执行的步骤，可选
 	FailureReason     *string    `gorm:"column:failure_reason" json:"failure_reason,omitempty"`              // FailureReason 失败原因，可选
 	DocumentID        *string    `gorm:"column:document_id" json:"document_id,omitempty"`                    // DocumentID 导入成功后生成的文档 ID，可选
@@ -32,3 +33,15 @@ type ImportTask struct {
 
 // TableName 返回导入任务实体对应的数据库表名。
 func (ImportTask) TableName() string { return "import_tasks" }
+
+// TaskOutbox 是可靠发布到 Redis Stream 的事务事件。
+type TaskOutbox struct {
+	ID          string     `gorm:"column:id;type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	EventType   string     `gorm:"column:event_type" json:"event_type"`
+	AggregateID string     `gorm:"column:aggregate_id;type:uuid" json:"aggregate_id"`
+	Payload     string     `gorm:"column:payload;type:jsonb" json:"payload"`
+	CreatedAt   time.Time  `gorm:"column:created_at" json:"created_at"`
+	PublishedAt *time.Time `gorm:"column:published_at" json:"published_at,omitempty"`
+}
+
+func (TaskOutbox) TableName() string { return "task_outbox" }
