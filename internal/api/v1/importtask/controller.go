@@ -127,6 +127,10 @@ func (ctrl *Controller) RetryProcessing(c *gin.Context) {
 		response.Failure(c, apperrors.New(contracts.ErrInvalidState, nil))
 		return
 	}
+	if err := ctrl.process.Reindex(c.Request.Context(), contracts.ID(user.ID), status.KnowledgeBaseID, contracts.ID(c.Param("document_id"))); err != nil {
+		response.Failure(c, err)
+		return
+	}
 	response.Success(c, http.StatusOK, gin.H{"retried": true})
 }
 
@@ -158,6 +162,21 @@ func (ctrl *Controller) Reindex(c *gin.Context) {
 	response.Success(c, http.StatusOK, gin.H{
 		"document_id": c.Param("document_id"), "status": "processing",
 	})
+}
+
+// ListIndexVersions 返回从 Chunk/Vector 聚合的文档索引版本。
+func (ctrl *Controller) ListIndexVersions(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	versions, err := ctrl.process.ListIndexVersions(c.Request.Context(), contracts.ID(user.ID), contracts.ID(c.Param("document_id")))
+	if err != nil {
+		response.Failure(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"items": versions})
 }
 
 // taskResponse 是导入任务的 API 响应结构。

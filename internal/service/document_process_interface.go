@@ -19,6 +19,8 @@ type DocumentProcessService interface {
 	Reindex(ctx context.Context, userID, knowledgeBaseID, documentID contracts.ID) error
 	// GetProcessingStatus 查询文档处理状态（按文档 ID 与用户，无需知识库 ID）。
 	GetProcessingStatus(ctx context.Context, userID, documentID contracts.ID) (DocumentProcessingStatus, error)
+	// ListIndexVersions 查询文档索引版本聚合视图。
+	ListIndexVersions(ctx context.Context, userID, documentID contracts.ID) ([]DocumentIndexVersionView, error)
 	// ListImportTasks 分页查询知识库导入任务。
 	ListImportTasks(ctx context.Context, userID, knowledgeBaseID contracts.ID, page, pageSize int) ([]ImportTaskView, int64, error)
 	// GetImportTask 查询导入任务详情。
@@ -27,6 +29,15 @@ type DocumentProcessService interface {
 	ProcessImportTask(ctx context.Context, taskID contracts.ID) error
 	// RecoverStaleTasks 恢复卡在 running 且超过租约的任务，返回恢复数量。
 	RecoverStaleTasks(ctx context.Context) (int64, error)
+}
+
+// DocumentIndexVersionView 是文档索引版本的服务层只读视图。
+type DocumentIndexVersionView struct {
+	Version     int       `json:"version"`
+	ChunkCount  int64     `json:"chunk_count"`
+	VectorCount int64     `json:"vector_count"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // DocumentImportTask 描述一次导入任务所需的最小信息。

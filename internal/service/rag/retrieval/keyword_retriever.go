@@ -3,6 +3,7 @@ package retrieval
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/1090-f/Memora/internal/repository"
@@ -112,6 +113,8 @@ func (r *PostgresKeywordRetriever) Retrieve(ctx context.Context, query string, o
 			continue
 		}
 		rank := len(docs) + 1
+		location := make(map[string]any)
+		_ = json.Unmarshal(hit.SourceLocation, &location)
 		meta := map[string]any{
 			einoadapter.MetaUserID:         impl.UserID,
 			einoadapter.MetaKnowledgeBase:  impl.KnowledgeBaseID,
@@ -121,7 +124,11 @@ func (r *PostgresKeywordRetriever) Retrieve(ctx context.Context, query string, o
 			einoadapter.MetaKeywordRank:    rank,
 			einoadapter.MetaKeywordScore:   hit.Score,
 			einoadapter.MetaDocumentUpdAt:  hit.UpdatedAt,
-			einoadapter.MetaSourceLocation: map[string]any{"engine": "postgres_fts"},
+			einoadapter.MetaDocumentTitle:  hit.DocumentTitle,
+			einoadapter.MetaSourceLocation: location,
+		}
+		if hit.DirectoryID != nil {
+			meta[einoadapter.MetaDirectoryID] = *hit.DirectoryID
 		}
 		doc := &schema.Document{
 			ID:       hit.ChunkID,

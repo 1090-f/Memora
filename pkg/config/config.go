@@ -22,6 +22,8 @@ type Config struct {
 	DocumentParser   DocumentParserConfig   `mapstructure:"document_parser"`
 	Chunking         ChunkingConfig         `mapstructure:"chunking"`
 	AssetEnrichment  AssetEnrichmentConfig  `mapstructure:"asset_enrichment"`
+	URLImport        URLImportConfig        `mapstructure:"url_import"`
+	AI               AIConfig               `mapstructure:"ai"`
 }
 
 // AppConfig 定义应用程序基础配置，包括名称、版本、运行模式和超时设置
@@ -158,6 +160,18 @@ type AssetEnrichmentConfig struct {
 	Timeout time.Duration `mapstructure:"timeout"`
 }
 
+// URLImportConfig 定义 Worker 网页抓取的 SSRF 相关资源上限。
+type URLImportConfig struct {
+	Timeout          time.Duration `mapstructure:"timeout"`
+	MaxResponseBytes int64         `mapstructure:"max_response_bytes"`
+	MaxRedirects     int           `mapstructure:"max_redirects"`
+}
+
+// AIConfig 保存模型 API Key 的应用级加密密钥。
+type AIConfig struct {
+	EncryptionKey string `mapstructure:"encryption_key"`
+}
+
 // Validate 校验所有配置项，收集所有错误后返回合并的错误信息
 func (c Config) Validate() error {
 	var errs []error
@@ -216,6 +230,12 @@ func (c Config) Validate() error {
 	}
 	if c.AssetEnrichment.Mode != "" && c.AssetEnrichment.Mode != "none" {
 		errs = append(errs, errors.New("asset_enrichment.mode 仅支持 none"))
+	}
+	if c.URLImport.Timeout <= 0 || c.URLImport.MaxResponseBytes <= 0 || c.URLImport.MaxRedirects <= 0 || c.URLImport.MaxRedirects > 10 {
+		errs = append(errs, errors.New("url_import 配置无效"))
+	}
+	if c.App.Mode == "release" && (len(c.AI.EncryptionKey) < 16 || strings.HasPrefix(strings.ToLower(c.AI.EncryptionKey), "change-me")) {
+		errs = append(errs, errors.New("MEMORA_AI_ENCRYPTION_KEY 在发布模式下至少需要 16 个字符且不能使用示例值"))
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("配置无效: %w", errors.Join(errs...))

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net/url"
 	"path"
 	"strings"
 	"time"
@@ -216,6 +217,48 @@ func (s *documentService) UploadFiles(ctx context.Context, userID, kbID string, 
 		result.Tasks = append(result.Tasks, *item)
 	}
 	return result, nil
+}
+
+// ImportURL 只创建 pending 任务；网络抓取、SSRF 校验、正文解析和索引全部在 Worker 内执行。
+func (s *documentService) ImportURL(ctx context.Context, userID, kbID string, req *request.ImportURLRequest) (*dto.UploadTaskItem, error) {
+	if req == nil || len(req.URL) > 4096 {
+		return nil, apperrors.ErrInvalidArgument
+	}
+	target, err := url.Parse(strings.TrimSpace(req.URL))
+	if err != nil || target.Hostname() == "" || (target.Scheme != "http" && target.Scheme != "https") || target.User != nil {
+		return nil, apperrors.ErrInvalidArgument
+	}
+	if _, err := s.kbs.FindByID(ctx, userID, kbID); err != nil {
+		if errors.Is(err, repository.ErrKnowledgeBaseNotFound) {
+			return nil, apperrors.ErrNotFound
+		}
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	if req.DirectoryID != nil && *req.DirectoryID != "" {
+		if _, err := s.dirs.FindByIDInKB(ctx, userID, kbID, *req.DirectoryID); err != nil {
+			if errors.Is(err, repository.ErrDirectoryNotFound) {
+				return nil, apperrors.ErrInvalidArgument
+			}
+			return nil, apperrors.New(contracts.ErrInternal, err)
+		}
+	}
+	policy := req.DuplicatePolicy
+	if policy == "" {
+		policy = "skip"
+	}
+	if policy != "skip" && policy != "create_new" {
+		return nil, apperrors.ErrInvalidArgument
+	}
+	sourceURL := target.String()
+	task := &entity.ImportTask{
+		UserID: userID, KnowledgeBaseID: kbID, TargetDirectoryID: req.DirectoryID,
+		SourceType: string(contracts.DocumentSourceURL), SourceURL: &sourceURL,
+		DuplicatePolicy: policy, Status: string(contracts.TaskStatusPending),
+	}
+	if err := s.tasks.Create(ctx, task); err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	return &dto.UploadTaskItem{TaskID: task.ID, FileName: sourceURL, Status: task.Status}, nil
 }
 
 // compensateUploads 删除已创建但未成功返回的任务，并尝试删除对应 MinIO 对象。

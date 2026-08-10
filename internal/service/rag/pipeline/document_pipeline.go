@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/1090-f/Memora/internal/service/rag/parser"
 	"github.com/1090-f/Memora/internal/service/rag/tokenizer"
 	"github.com/1090-f/Memora/internal/service/rag/transformer"
+	"github.com/cloudwego/eino/components/document"
 	"github.com/cloudwego/eino/components/embedding"
 	"github.com/cloudwego/eino/components/indexer"
 	"github.com/cloudwego/eino/compose"
@@ -44,18 +46,26 @@ type ChunkWriter interface {
 type ProcessInput struct {
 	// ObjectKey 是 MinIO 对象 key。
 	ObjectKey string
+	// SourceURL 是 URL 导入来源；与 ObjectKey 二选一。
+	SourceURL string
 	// FileName 是原始文件名。
 	FileName string
 	// MIMEType 是原始文件 MIME 类型（仅辅助判断）。
 	MIMEType string
 	// DocMeta 是稳定的业务元数据。
 	DocMeta transformer.DocMeta
+	// Embedder/EmbeddingModelID 是本任务按用户与知识库解析出的可选向量模型。
+	Embedder         embedding.Embedder
+	EmbeddingModelID string
 }
 
 // ProcessOutput 是文档加工 Graph 的输出。
 type ProcessOutput struct {
 	// ChunkCount 是本次加工成功入库的 Chunk 数量。
 	ChunkCount int
+	FinalURL   string
+	SourceHash string
+	Title      string
 }
 
 // DocumentPipelineConfig 定义文档加工流水线配置。
@@ -82,6 +92,8 @@ type DocumentPipelineConfig struct {
 	EmbeddingModelID string
 	// Embedder 是 Eino Embedding 组件（可选）。
 	Embedder embedding.Embedder
+	// WebLoader 是 URL 来源使用的安全 Eino Loader。
+	WebLoader document.Loader
 	// AssetEnricher 是图片资产增强器（nil 时使用 NoopEnricher）。
 	AssetEnricher asset.Enricher
 }
@@ -94,7 +106,8 @@ type pipelineState struct {
 	artifactPrefix string
 	computedHash   string
 	// indexDocs 供向量索引节点使用（persist_chunks 后填充）。
-	indexDocs []*schema.Document
+	indexDocs     []*schema.Document
+	loadedContent string
 }
 
 // DocumentPipeline 是已编译的文档加工编排。
@@ -102,8 +115,6 @@ type DocumentPipeline struct {
 	runnable         compose.Runnable[ProcessInput, ProcessOutput]
 	chunkConfigHash  string
 	embeddingModelID string
-	indexOption      compose.Option
-	hasVector        bool
 }
 
 // NewDocumentPipeline 构造并编译文档加工 Graph。
@@ -133,13 +144,49 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 
 	g := compose.NewGraph[ProcessInput, ProcessOutput]()
 
-	// resolve_artifact：确定性 key 查找兼容 Artifact；命中则加载，未命中标记待解析。
-	resolveLambda := compose.InvokableLambda(func(ctx context.Context, input ProcessInput) (*pipelineState, error) {
+	// load_source：URL 来源在 Worker 内通过安全 Eino Loader 抓取；文件来源保持 MinIO 流。
+	loadSourceLambda := compose.InvokableLambda(func(ctx context.Context, input ProcessInput) (*pipelineState, error) {
 		state := &pipelineState{input: input}
+		if input.ObjectKey == "" && input.SourceURL != "" {
+			if cfg.WebLoader == nil {
+				return nil, fmt.Errorf("URL 导入未配置安全 WebLoader")
+			}
+			docs, err := cfg.WebLoader.Load(ctx, document.Source{URI: input.SourceURL})
+			if err != nil {
+				return nil, fmt.Errorf("安全抓取 URL 失败: %w", err)
+			}
+			if len(docs) != 1 || strings.TrimSpace(docs[0].Content) == "" {
+				return nil, fmt.Errorf("URL Loader 返回内容数量异常")
+			}
+			state.loadedContent = docs[0].Content
+			state.input.FileName = "web.md"
+			if title := einoadapter.GetMetaString(docs[0].MetaData, "title"); title != "" {
+				state.input.FileName = title + ".md"
+			}
+			if hash := einoadapter.GetMetaString(docs[0].MetaData, "source_hash"); hash != "" {
+				state.input.DocMeta.SourceHash = hash
+			}
+			if state.input.DocMeta.SourceLocation == nil {
+				state.input.DocMeta.SourceLocation = make(map[string]any)
+			}
+			for _, key := range []string{"source_url", "final_url", "title", "content_type", "fetched_at"} {
+				if value := einoadapter.GetMetaAny(docs[0].MetaData, key); value != nil {
+					state.input.DocMeta.SourceLocation[key] = value
+				}
+			}
+		}
+		return state, nil
+	})
+	if err := g.AddLambdaNode("load_source", loadSourceLambda); err != nil {
+		return nil, fmt.Errorf("注册 load_source 节点失败: %w", err)
+	}
+
+	// resolve_artifact：确定性 key 查找兼容 Artifact；命中则加载，未命中标记待解析。
+	resolveLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
 		state.artifactPrefix = parser.ArtifactKeyPrefix(
-			input.DocMeta.UserID, input.DocMeta.DocumentID,
-			input.DocMeta.ContentVersion, parseConfigHash)
-		ref, err := artifactStore.Resolve(ctx, state.artifactPrefix, input.DocMeta.SourceHash)
+			state.input.DocMeta.UserID, state.input.DocMeta.DocumentID,
+			state.input.DocMeta.ContentVersion, parseConfigHash)
+		ref, err := artifactStore.Resolve(ctx, state.artifactPrefix, state.input.DocMeta.SourceHash)
 		if err != nil {
 			if isArtifactNotFound(err) {
 				return state, nil
@@ -162,9 +209,15 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		if state.doc != nil {
 			return state, nil
 		}
-		reader, err := cfg.Store.OpenObject(ctx, state.input.ObjectKey)
-		if err != nil {
-			return nil, fmt.Errorf("打开原始文件失败: %w", err)
+		var reader io.ReadCloser
+		if state.loadedContent != "" {
+			reader = io.NopCloser(strings.NewReader(state.loadedContent))
+		} else {
+			var err error
+			reader, err = cfg.Store.OpenObject(ctx, state.input.ObjectKey)
+			if err != nil {
+				return nil, fmt.Errorf("打开原始文件失败: %w", err)
+			}
 		}
 		hashed := parser.NewHashReader(reader)
 		doc, err := router.Parse(ctx, parser.ParseInput{
@@ -299,7 +352,7 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 				continue
 			}
 			inserted++
-			state.indexDocs = append(state.indexDocs, indexDocumentFromChunk(&state.chunks[i], id, state.input.DocMeta))
+			state.indexDocs = append(state.indexDocs, indexDocumentFromChunk(&state.chunks[i], id, state.input.DocMeta, state.input.EmbeddingModelID))
 		}
 		if inserted == 0 {
 			return nil, fmt.Errorf("未插入任何 Chunk")
@@ -311,11 +364,11 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 	}
 
 	// 节点连线。
-	if err := g.AddEdge(compose.START, "resolve_artifact"); err != nil {
+	if err := g.AddEdge(compose.START, "load_source"); err != nil {
 		return nil, err
 	}
 	chain := []string{
-		"resolve_artifact", "parse_if_missing", "validate_parsed_document", "persist_artifact",
+		"load_source", "resolve_artifact", "parse_if_missing", "validate_parsed_document", "persist_artifact",
 		"document_normalize", "asset_enrich", "structure_chunk", "chunk_clean",
 		"token_count", "persist_chunks",
 	}
@@ -325,10 +378,8 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		}
 	}
 
-	// 向量索引（可选）：persist_chunks → index → finalize_ids。
-	hasVector := cfg.Vectors != nil && cfg.Embedder != nil
-	var indexOption compose.Option
-	if hasVector {
+	// 向量索引（可选）：模型按任务动态注入；无模型时保留关键词索引能力。
+	if cfg.Vectors != nil {
 		vectorIndexer, err := indexing.NewPostgresIndexer(indexing.PostgresIndexerConfig{
 			EmbeddingModelID: cfg.EmbeddingModelID,
 			Repository:       cfg.Vectors,
@@ -336,28 +387,35 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		if err != nil {
 			return nil, fmt.Errorf("构造向量索引器失败: %w", err)
 		}
-		if err := g.AddIndexerNode("index", vectorIndexer); err != nil {
-			return nil, fmt.Errorf("注册 index 节点失败: %w", err)
-		}
-		indexOption = compose.WithIndexerOption(indexer.WithEmbedding(cfg.Embedder))
-		finalizeIDs := compose.InvokableLambda(func(ctx context.Context, ids []string) (ProcessOutput, error) {
-			return ProcessOutput{ChunkCount: len(ids)}, nil
+		embedAndIndex := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (ProcessOutput, error) {
+			embedder, modelID := state.input.Embedder, state.input.EmbeddingModelID
+			if embedder == nil {
+				embedder, modelID = cfg.Embedder, cfg.EmbeddingModelID
+			}
+			if embedder == nil {
+				return processOutput(state, len(state.chunks)), nil
+			}
+			for _, doc := range state.indexDocs {
+				einoadapter.SetMetaString(doc, einoadapter.MetaEmbeddingModelID, modelID)
+			}
+			ids, err := vectorIndexer.Store(ctx, state.indexDocs, indexer.WithEmbedding(embedder))
+			if err != nil {
+				return ProcessOutput{}, fmt.Errorf("向量索引失败: %w", err)
+			}
+			return processOutput(state, len(ids)), nil
 		})
-		if err := g.AddLambdaNode("finalize_ids", finalizeIDs); err != nil {
+		if err := g.AddLambdaNode("embed_and_index", embedAndIndex); err != nil {
 			return nil, err
 		}
-		if err := g.AddEdge("persist_chunks", "index"); err != nil {
+		if err := g.AddEdge("persist_chunks", "embed_and_index"); err != nil {
 			return nil, err
 		}
-		if err := g.AddEdge("index", "finalize_ids"); err != nil {
-			return nil, err
-		}
-		if err := g.AddEdge("finalize_ids", compose.END); err != nil {
+		if err := g.AddEdge("embed_and_index", compose.END); err != nil {
 			return nil, err
 		}
 	} else {
 		finalize := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (ProcessOutput, error) {
-			return ProcessOutput{ChunkCount: len(state.chunks)}, nil
+			return processOutput(state, len(state.chunks)), nil
 		})
 		if err := g.AddLambdaNode("finalize", finalize); err != nil {
 			return nil, err
@@ -378,9 +436,20 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		runnable:         runnable,
 		chunkConfigHash:  chunkConfigHash,
 		embeddingModelID: cfg.EmbeddingModelID,
-		indexOption:      indexOption,
-		hasVector:        hasVector,
 	}, nil
+}
+
+func processOutput(state *pipelineState, chunkCount int) ProcessOutput {
+	output := ProcessOutput{ChunkCount: chunkCount, SourceHash: state.input.DocMeta.SourceHash}
+	if state.input.DocMeta.SourceLocation != nil {
+		if value, ok := state.input.DocMeta.SourceLocation["final_url"].(string); ok {
+			output.FinalURL = value
+		}
+		if value, ok := state.input.DocMeta.SourceLocation["title"].(string); ok {
+			output.Title = value
+		}
+	}
+	return output
 }
 
 // applyDefaults 填充缺省配置。
@@ -444,7 +513,7 @@ func chunkToEntity(chunk chunking.ParsedChunk, chunkNo int, meta transformer.Doc
 	if err != nil {
 		return nil, fmt.Errorf("序列化 heading_path 失败: %w", err)
 	}
-	sourceLocation, err := json.Marshal(sourceLocationMap(chunk))
+	sourceLocation, err := json.Marshal(sourceLocationMap(chunk, meta.SourceLocation))
 	if err != nil {
 		return nil, fmt.Errorf("序列化 source_location 失败: %w", err)
 	}
@@ -478,8 +547,11 @@ func chunkToEntity(chunk chunking.ParsedChunk, chunkNo int, meta transformer.Doc
 }
 
 // sourceLocationMap 将 ParsedChunk 的来源信息编码为 jsonb 结构。
-func sourceLocationMap(chunk chunking.ParsedChunk) map[string]any {
-	location := map[string]any{}
+func sourceLocationMap(chunk chunking.ParsedChunk, base map[string]any) map[string]any {
+	location := make(map[string]any, len(base)+6)
+	for key, value := range base {
+		location[key] = value
+	}
 	if chunk.SourceLocation.Page > 0 {
 		location["page"] = chunk.SourceLocation.Page
 	}
@@ -502,17 +574,18 @@ func sourceLocationMap(chunk chunking.ParsedChunk) map[string]any {
 }
 
 // indexDocumentFromChunk 为向量索引构造 Eino schema.Document。
-func indexDocumentFromChunk(chunk *chunking.ParsedChunk, chunkID string, meta transformer.DocMeta) *schema.Document {
+func indexDocumentFromChunk(chunk *chunking.ParsedChunk, chunkID string, meta transformer.DocMeta, embeddingModelID string) *schema.Document {
 	_ = chunk
 	return &schema.Document{
 		ID:      chunkID,
 		Content: chunk.Content,
 		MetaData: map[string]any{
-			einoadapter.MetaUserID:        meta.UserID,
-			einoadapter.MetaKnowledgeBase: meta.KnowledgeBaseID,
-			einoadapter.MetaDocumentID:    meta.DocumentID,
-			einoadapter.MetaChunkID:       chunkID,
-			einoadapter.MetaIndexVersion:  meta.IndexVersion,
+			einoadapter.MetaUserID:           meta.UserID,
+			einoadapter.MetaKnowledgeBase:    meta.KnowledgeBaseID,
+			einoadapter.MetaDocumentID:       meta.DocumentID,
+			einoadapter.MetaChunkID:          chunkID,
+			einoadapter.MetaIndexVersion:     meta.IndexVersion,
+			einoadapter.MetaEmbeddingModelID: embeddingModelID,
 		},
 	}
 }
@@ -544,8 +617,5 @@ func (p *DocumentPipeline) EmbeddingModelID() string { return p.embeddingModelID
 
 // Run 执行一次文档加工。
 func (p *DocumentPipeline) Run(ctx context.Context, input ProcessInput) (ProcessOutput, error) {
-	if p.hasVector {
-		return p.runnable.Invoke(ctx, input, p.indexOption)
-	}
 	return p.runnable.Invoke(ctx, input)
 }

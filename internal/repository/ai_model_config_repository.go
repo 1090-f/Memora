@@ -40,6 +40,20 @@ func (r *aiModelConfigRepository) FindByID(ctx context.Context, id string) (*ent
 	return &config, nil
 }
 
+func (r *aiModelConfigRepository) FindByIDForUserAndType(ctx context.Context, userID, id, modelType string) (*entity.AIModelConfig, error) {
+	var config entity.AIModelConfig
+	err := r.db.WithContext(ctx).
+		Where("id = ? AND user_id = ? AND model_type = ? AND enabled = true AND deleted_at IS NULL", id, userID, modelType).
+		First(&config).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrModelConfigNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query scoped model config: %w", err)
+	}
+	return &config, nil
+}
+
 // FindDefaultByUserAndType 根据用户 ID 和模型类型查找默认配置。
 func (r *aiModelConfigRepository) FindDefaultByUserAndType(ctx context.Context, userID, modelType string) (*entity.AIModelConfig, error) {
 	var config entity.AIModelConfig

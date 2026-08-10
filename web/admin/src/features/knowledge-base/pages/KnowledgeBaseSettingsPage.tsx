@@ -1,4 +1,4 @@
-import { Alert, Button, Divider, Paper, Stack, Switch, TextField, Typography } from '@mui/material';
+import { Alert, Button, Divider, MenuItem, Paper, Stack, Switch, TextField, Typography } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
@@ -8,6 +8,8 @@ import { errorMessage } from '@/api/errors';
 import { ErrorState } from '@/components/shared/ErrorState';
 import { LoadingState } from '@/components/shared/LoadingState';
 import { UnavailableState } from '@/components/shared/UnavailableState';
+import { listModelConfigs } from '@/features/model/api';
+import type { ModelConfig } from '@/features/model/types';
 import { getKnowledgeBase, getSearchConfig, updateKnowledgeBase, updateSearchConfig } from '../api';
 import type { SearchConfig } from '../types';
 
@@ -17,7 +19,7 @@ function intField(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? Math.trunc(parsed) : undefined;
 }
 
-function SearchConfigForm({ kbId, config }: { kbId: string; config: SearchConfig }) {
+function SearchConfigForm({ kbId, config, rerankerModels }: { kbId: string; config: SearchConfig; rerankerModels: ModelConfig[] }) {
   const queryClient = useQueryClient();
   const [values, setValues] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState('');
@@ -30,6 +32,7 @@ function SearchConfigForm({ kbId, config }: { kbId: string; config: SearchConfig
       reranker_top_k: intField(values.reranker_top_k),
       reranker_threshold: values.reranker_threshold === '' ? undefined : Number(values.reranker_threshold),
       minimum_effective_results: intField(values.minimum_effective_results),
+      reranker_model_id: values.reranker_model_id || undefined,
     }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['knowledge-bases', kbId, 'search-config'] });
@@ -46,6 +49,7 @@ function SearchConfigForm({ kbId, config }: { kbId: string; config: SearchConfig
       reranker_top_k: String(config.reranker_top_k),
       reranker_threshold: config.reranker_threshold === null ? '' : String(config.reranker_threshold),
       minimum_effective_results: String(config.minimum_effective_results),
+      reranker_model_id: config.reranker_model_id || '',
     });
   }, [config]);
 
@@ -63,6 +67,10 @@ function SearchConfigForm({ kbId, config }: { kbId: string; config: SearchConfig
         <TextField label="重排序返回条数（reranker_top_k）" type="number" value={values.reranker_top_k ?? ''} onChange={(event) => setField('reranker_top_k', event.target.value)} helperText="1～20" />
         <TextField label="重排序阈值（reranker_threshold）" type="number" inputProps={{ step: 0.05 }} value={values.reranker_threshold ?? ''} onChange={(event) => setField('reranker_threshold', event.target.value)} helperText="0～1，留空表示不设阈值" />
         <TextField label="最低有效结果数（minimum_effective_results）" type="number" value={values.minimum_effective_results ?? ''} onChange={(event) => setField('minimum_effective_results', event.target.value)} helperText="检索结果少于该值时判定知识不足" />
+        <TextField select label="Reranker 模型" value={values.reranker_model_id ?? ''} onChange={(event) => setField('reranker_model_id', event.target.value)} helperText="留空时使用知识库默认 Reranker">
+          <MenuItem value="">使用知识库默认模型</MenuItem>
+          {rerankerModels.map((model) => <MenuItem key={model.id} value={model.id}>{model.name} · {model.provider}</MenuItem>)}
+        </TextField>
         {mutation.error && <Alert severity="error">{errorMessage(mutation.error)}</Alert>}
         {notice && <Alert severity="success" onClose={() => setNotice('')}>{notice}</Alert>}
         <Stack direction="row" justifyContent="flex-end">
@@ -80,6 +88,9 @@ export function KnowledgeBaseSettingsContent({ status, kbId }: { status: Capabil
   const [description, setDescription] = useState('');
   const [agentEnabled, setAgentEnabled] = useState(true);
   const [networkEnabled, setNetworkEnabled] = useState(false);
+  const [defaultChatModelId, setDefaultChatModelId] = useState('');
+  const [defaultEmbeddingModelId, setDefaultEmbeddingModelId] = useState('');
+  const [defaultRerankerModelId, setDefaultRerankerModelId] = useState('');
   const [notice, setNotice] = useState('');
 
   const kbQuery = useQuery({
@@ -92,6 +103,11 @@ export function KnowledgeBaseSettingsContent({ status, kbId }: { status: Capabil
     queryFn: () => getSearchConfig(kbId),
     enabled,
   });
+  const modelsQuery = useQuery({
+    queryKey: queryKeys.models,
+    queryFn: () => listModelConfigs(),
+    enabled,
+  });
 
   useEffect(() => {
     if (!kbQuery.data) return;
@@ -99,6 +115,9 @@ export function KnowledgeBaseSettingsContent({ status, kbId }: { status: Capabil
     setDescription(kbQuery.data.description || '');
     setAgentEnabled(kbQuery.data.agent_enabled);
     setNetworkEnabled(kbQuery.data.network_enabled);
+    setDefaultChatModelId(kbQuery.data.default_chat_model_id || '');
+    setDefaultEmbeddingModelId(kbQuery.data.default_embedding_model_id || '');
+    setDefaultRerankerModelId(kbQuery.data.default_reranker_model_id || '');
   }, [kbQuery.data]);
 
   const saveMutation = useMutation({
@@ -107,6 +126,9 @@ export function KnowledgeBaseSettingsContent({ status, kbId }: { status: Capabil
       description: description || undefined,
       agent_enabled: agentEnabled,
       network_enabled: networkEnabled,
+      default_chat_model_id: defaultChatModelId || undefined,
+      default_embedding_model_id: defaultEmbeddingModelId || undefined,
+      default_reranker_model_id: defaultRerankerModelId || undefined,
     }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['knowledge-bases', kbId] });
@@ -135,10 +157,16 @@ export function KnowledgeBaseSettingsContent({ status, kbId }: { status: Capabil
     );
   }
 
-  if (kbQuery.isPending || configQuery.isPending) return <LoadingState label="正在加载知识库设置" />;
+  if (kbQuery.isPending || configQuery.isPending || modelsQuery.isPending) return <LoadingState label="正在加载知识库设置" />;
   if (kbQuery.error) return <ErrorState error={kbQuery.error as Error} onRetry={() => void kbQuery.refetch()} />;
   if (configQuery.error) return <ErrorState error={configQuery.error as Error} onRetry={() => void configQuery.refetch()} />;
-  if (!kbQuery.data || !configQuery.data) return null;
+  if (modelsQuery.error) return <ErrorState error={modelsQuery.error as Error} onRetry={() => void modelsQuery.refetch()} />;
+  if (!kbQuery.data || !configQuery.data || !modelsQuery.data) return null;
+
+  const models = modelsQuery.data.items;
+  const chatModels = models.filter((model) => model.model_type === 'chat');
+  const embeddingModels = models.filter((model) => model.model_type === 'embedding');
+  const rerankerModels = models.filter((model) => model.model_type === 'reranker');
 
   return (
     <Stack spacing={3} maxWidth={760}>
@@ -161,6 +189,21 @@ export function KnowledgeBaseSettingsContent({ status, kbId }: { status: Capabil
               <Typography>启用联网搜索</Typography>
             </Stack>
           </Stack>
+          <Divider />
+          <Typography component="h3" variant="h6">RAG 默认模型</Typography>
+          {embeddingModels.length === 0 && <Alert severity="warning">尚未配置 Embedding 模型，向量与混合检索将不可用。</Alert>}
+          <TextField select label="默认 Chat 模型" value={defaultChatModelId} onChange={(event) => setDefaultChatModelId(event.target.value)} helperText="供后续问答与 Agent 使用">
+            <MenuItem value="">未指定</MenuItem>
+            {chatModels.map((model) => <MenuItem key={model.id} value={model.id}>{model.name} · {model.provider}</MenuItem>)}
+          </TextField>
+          <TextField select label="默认 Embedding 模型" value={defaultEmbeddingModelId} onChange={(event) => setDefaultEmbeddingModelId(event.target.value)} helperText="文档索引与向量检索必须使用兼容维度的模型">
+            <MenuItem value="">使用用户默认模型</MenuItem>
+            {embeddingModels.map((model) => <MenuItem key={model.id} value={model.id}>{model.name} · {model.provider}{model.vector_dimension ? ` · ${model.vector_dimension} 维` : ''}</MenuItem>)}
+          </TextField>
+          <TextField select label="默认 Reranker 模型" value={defaultRerankerModelId} onChange={(event) => setDefaultRerankerModelId(event.target.value)} helperText="未指定或调用失败时自动降级为 RRF 排序">
+            <MenuItem value="">不指定（使用 RRF）</MenuItem>
+            {rerankerModels.map((model) => <MenuItem key={model.id} value={model.id}>{model.name} · {model.provider}</MenuItem>)}
+          </TextField>
           {saveMutation.error && <Alert severity="error">{errorMessage(saveMutation.error)}</Alert>}
           <Stack direction="row" justifyContent="flex-end">
             <Button variant="contained" disabled={name.trim() === '' || saveMutation.isPending} onClick={() => saveMutation.mutate()}>保存设置</Button>
@@ -168,7 +211,7 @@ export function KnowledgeBaseSettingsContent({ status, kbId }: { status: Capabil
         </Stack>
       </Paper>
       <Divider />
-      <SearchConfigForm kbId={kbId} config={configQuery.data} />
+      <SearchConfigForm kbId={kbId} config={configQuery.data} rerankerModels={rerankerModels} />
     </Stack>
   );
 }

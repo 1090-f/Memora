@@ -41,9 +41,6 @@ func NewPostgresIndexer(cfg PostgresIndexerConfig) (*PostgresIndexer, error) {
 	if cfg.Repository == nil {
 		return nil, fmt.Errorf("向量仓储不能为空")
 	}
-	if cfg.EmbeddingModelID == "" {
-		return nil, fmt.Errorf("Embedding 模型配置 ID 不能为空")
-	}
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = 32
 	}
@@ -137,8 +134,11 @@ func vectorFromDocument(doc *schema.Document, vector []float64, modelID string) 
 	documentID := einoadapter.GetMetaString(doc.MetaData, einoadapter.MetaDocumentID)
 	chunkID := einoadapter.GetMetaString(doc.MetaData, einoadapter.MetaChunkID)
 	indexVersion := einoadapter.GetMetaInt(doc.MetaData, einoadapter.MetaIndexVersion)
+	if modelID == "" {
+		modelID = einoadapter.GetMetaString(doc.MetaData, einoadapter.MetaEmbeddingModelID)
+	}
 	// 向量记录依赖租户、文档与版本元数据定位，缺失时拒绝写入避免脏数据。
-	if userID == "" || kbID == "" || documentID == "" || chunkID == "" || indexVersion <= 0 {
+	if userID == "" || kbID == "" || documentID == "" || chunkID == "" || indexVersion <= 0 || modelID == "" {
 		return nil, fmt.Errorf("向量缺少 user_id/knowledge_base_id/document_id/chunk_id/index_version 元数据")
 	}
 	if len(vector) == 0 {
