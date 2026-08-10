@@ -2,7 +2,9 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/1090-f/Memora/internal/model/entity"
 	"gorm.io/gorm"
@@ -57,4 +59,69 @@ func (r *documentChunkRepository) DeleteByVersion(ctx context.Context, documentI
 		return fmt.Errorf("删除文档分块失败: %w", err)
 	}
 	return nil
+}
+
+// ReadActive 只读取当前用户、知识库内已成功文档的活动索引版本。
+func (r *documentChunkRepository) ReadActive(ctx context.Context, userID, kbID, documentID, section string, fromChunk, limit int) ([]DocumentReadChunk, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	query := dbFromContext(ctx, r.db).WithContext(ctx).Table("document_chunks dc").
+		Select(`d.id AS document_id, d.knowledge_base_id, d.title AS document_title,
+			d.updated_at AS document_updated_at, dc.index_version, dc.id AS chunk_id,
+			dc.chunk_no, dc.content, COALESCE(dc.context_title, '') AS context_title,
+			dc.source_location`).
+		Joins("JOIN documents d ON d.id = dc.document_id").
+		Where(`d.id = ? AND d.user_id = ? AND d.knowledge_base_id = ?
+			AND d.deleted_at IS NULL AND d.processing_status = 'succeeded'
+			AND d.active_index_version IS NOT NULL
+			AND dc.index_version = d.active_index_version AND dc.chunk_no >= ?`, documentID, userID, kbID, fromChunk)
+	if value := strings.TrimSpace(section); value != "" {
+		query = query.Where("COALESCE(dc.context_title, '') ILIKE ?", "%"+value+"%")
+	}
+	var chunks []DocumentReadChunk
+	if err := query.Order("dc.chunk_no ASC").Limit(limit).Scan(&chunks).Error; err != nil {
+		return nil, fmt.Errorf("读取文档 Chunk 失败: %w", err)
+	}
+	if len(chunks) == 0 {
+		var count int64
+		err := dbFromContext(ctx, r.db).WithContext(ctx).Table("documents").
+			Where("id = ? AND user_id = ? AND knowledge_base_id = ? AND deleted_at IS NULL AND processing_status = 'succeeded'", documentID, userID, kbID).
+			Count(&count).Error
+		if err != nil {
+			return nil, fmt.Errorf("校验文档读取权限失败: %w", err)
+		}
+		if count == 0 {
+			return nil, ErrDocumentNotFound
+		}
+	}
+	return chunks, nil
+}
+
+// ListIndexVersions 从 Chunk/Vector 表聚合版本，不创建额外版本表。
+func (r *documentChunkRepository) ListIndexVersions(ctx context.Context, userID, documentID string) ([]DocumentIndexVersion, error) {
+	var exists int64
+	if err := dbFromContext(ctx, r.db).WithContext(ctx).Table("documents").
+		Where("id = ? AND user_id = ? AND deleted_at IS NULL", documentID, userID).Count(&exists).Error; err != nil {
+		return nil, fmt.Errorf("校验文档索引版本权限失败: %w", err)
+	}
+	if exists == 0 {
+		return nil, ErrDocumentNotFound
+	}
+	var versions []DocumentIndexVersion
+	err := dbFromContext(ctx, r.db).WithContext(ctx).Raw(`
+		SELECT dc.index_version AS version, COUNT(DISTINCT dc.id) AS chunk_count,
+		       COUNT(DISTINCT dv.id) AS vector_count,
+		       CASE WHEN dc.index_version = d.active_index_version THEN 'active' ELSE 'inactive' END AS status,
+		       MIN(dc.created_at) AS created_at
+		FROM documents d
+		JOIN document_chunks dc ON dc.document_id = d.id
+		LEFT JOIN document_vectors dv ON dv.document_id = d.id AND dv.index_version = dc.index_version
+		WHERE d.id = ? AND d.user_id = ? AND d.deleted_at IS NULL
+		GROUP BY dc.index_version, d.active_index_version
+		ORDER BY dc.index_version DESC`, documentID, userID).Scan(&versions).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("查询文档索引版本失败: %w", err)
+	}
+	return versions, nil
 }

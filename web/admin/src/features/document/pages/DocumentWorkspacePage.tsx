@@ -3,6 +3,7 @@ import CreateOutlined from '@mui/icons-material/CreateOutlined';
 import DeleteOutlineOutlined from '@mui/icons-material/DeleteOutlineOutlined';
 import RefreshOutlined from '@mui/icons-material/RefreshOutlined';
 import SearchOutlined from '@mui/icons-material/SearchOutlined';
+import SettingsOutlined from '@mui/icons-material/SettingsOutlined';
 import UploadFileOutlined from '@mui/icons-material/UploadFileOutlined';
 import {
   Alert,
@@ -27,7 +28,7 @@ import {
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { errorMessage } from '@/api/errors';
 import { queryKeys } from '@/api/queryKeys';
 import { capabilities, type CapabilityStatus } from '@/app/capabilities';
@@ -139,7 +140,7 @@ function DocumentList({
 
   const documents = query.data?.items ?? [];
   if (documents.length === 0) {
-    return <EmptyState title="暂无文档" description={keyword || status || sourceType ? '没有符合当前筛选条件的文档。' : '新建手工文档或导入 Markdown/TXT 文件。'} />;
+    return <EmptyState title="暂无文档" description={keyword || status || sourceType ? '没有符合当前筛选条件的文档。' : '新建手工文档，或导入 Markdown、TXT、PDF、DOCX 和 URL。'} />;
   }
 
   return (
@@ -293,6 +294,8 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
       void queryClient.invalidateQueries({ queryKey: queryKeys.documents(kbId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.document(documentIdValue) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.documentProcessing(documentIdValue) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.documentContent(documentIdValue) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.documentIndexVersions(documentIdValue) });
       setNotice('已提交重新索引');
     },
     onError: (error) => setActionError(error as Error),
@@ -316,8 +319,10 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
           <Typography component="h2" variant="h5" fontWeight={750}>文档工作区</Typography>
           <Typography color="text.secondary">管理目录、手工文档、文件导入任务与索引处理状态。</Typography>
         </Box>
+        <Button component={Link} to={`/kb/${kbId}/search-test`} startIcon={<SearchOutlined />} variant="outlined" disabled={!enabled}>检索测试</Button>
+        <Button component={Link} to={`/kb/${kbId}/settings`} startIcon={<SettingsOutlined />} variant="outlined" disabled={!enabled}>知识库设置</Button>
         <Button startIcon={<CreateOutlined />} variant="outlined" disabled={!enabled} onClick={() => setManualOpen(true)}>手工新建</Button>
-        <Button startIcon={<UploadFileOutlined />} variant="contained" disabled={!enabled} onClick={() => setImportOpen(true)}>导入文件</Button>
+        <Button startIcon={<UploadFileOutlined />} variant="contained" disabled={!enabled} onClick={() => setImportOpen(true)}>导入知识</Button>
       </Stack>
 
       {notice && <Alert severity="success" onClose={() => setNotice('')}>{notice}</Alert>}

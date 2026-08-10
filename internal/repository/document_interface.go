@@ -2,9 +2,33 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/1090-f/Memora/internal/model/entity"
 )
+
+// DocumentReadChunk 是受所有权和活动索引约束的只读 Chunk 投影。
+type DocumentReadChunk struct {
+	DocumentID        string
+	KnowledgeBaseID   string
+	DocumentTitle     string
+	DocumentUpdatedAt time.Time
+	IndexVersion      int
+	ChunkID           string
+	ChunkNo           int
+	Content           string
+	ContextTitle      string
+	SourceLocation    []byte
+}
+
+// DocumentIndexVersion 是从 Chunk/Vector 事实表聚合出的索引版本视图。
+type DocumentIndexVersion struct {
+	Version     int
+	ChunkCount  int64
+	VectorCount int64
+	Status      string
+	CreatedAt   time.Time
+}
 
 // DocumentFilter 定义文档列表查询条件，空值表示不过滤。
 type DocumentFilter struct {
@@ -42,6 +66,10 @@ type DocumentChunkRepository interface {
 	BatchInsert(ctx context.Context, chunks []*entity.DocumentChunk) ([]string, error)
 	// DeleteByVersion 删除文档指定索引版本的全部 Chunk。
 	DeleteByVersion(ctx context.Context, documentID string, indexVersion int) error
+	// ReadActive 按用户、知识库、文档和活动索引版本连续读取 Chunk。
+	ReadActive(ctx context.Context, userID, kbID, documentID, section string, fromChunk, limit int) ([]DocumentReadChunk, error)
+	// ListIndexVersions 返回指定文档的版本聚合信息并强制校验所有权。
+	ListIndexVersions(ctx context.Context, userID, documentID string) ([]DocumentIndexVersion, error)
 }
 
 // ImportTaskRepository 定义导入任务数据访问接口。
@@ -57,6 +85,10 @@ type ImportTaskRepository interface {
 	ListByKB(ctx context.Context, userID, kbID string, page, pageSize int) ([]*entity.ImportTask, int64, error)
 	// UpdateObjectInfo 更新任务的 MinIO 对象信息与源哈希。
 	UpdateObjectInfo(ctx context.Context, userID, taskID string, bucket, objectKey string, sourceHash *string) error
+	// UpdateURLResult 保存 Worker 安全抓取后的最终 URL 与正文哈希。
+	UpdateURLResult(ctx context.Context, taskID, finalURL, sourceHash string) error
+	// AttachDocument 在长处理开始前持久化任务与文档关联，保证失败重试复用同一文档。
+	AttachDocument(ctx context.Context, taskID, documentID string) error
 	// ReservePending 使用 FOR UPDATE SKIP LOCKED 领取一个 pending 任务并置为 running。
 	// 无可用任务时返回 nil, nil。
 	ReservePending(ctx context.Context) (*entity.ImportTask, error)

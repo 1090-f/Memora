@@ -2,6 +2,8 @@ package retrieval
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/1090-f/Memora/internal/repository"
@@ -11,6 +13,9 @@ import (
 	"github.com/cloudwego/eino/components/retriever"
 	"github.com/cloudwego/eino/schema"
 )
+
+// ErrQueryEmbedding 标识查询向量化阶段失败，供 Service 映射稳定模型错误码。
+var ErrQueryEmbedding = errors.New("查询向量化失败")
 
 // VectorRetrieverOptions 是 PgVectorRetriever 的自定义选项（仅 Service 注入）。
 type VectorRetrieverOptions struct {
@@ -89,7 +94,7 @@ func (r *PgVectorRetriever) Retrieve(ctx context.Context, query string, opts ...
 	vectors, err := common.Embedding.EmbedStrings(embedCtx, []string{query})
 	cancel()
 	if err != nil {
-		return nil, fmt.Errorf("查询向量化失败: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrQueryEmbedding, err)
 	}
 	if len(vectors) != 1 {
 		return nil, fmt.Errorf("查询向量化返回数量异常: %d", len(vectors))
@@ -116,6 +121,8 @@ func (r *PgVectorRetriever) Retrieve(ctx context.Context, query string, opts ...
 	docs := make([]*schema.Document, 0, len(hits))
 	for _, hit := range hits {
 		rank := len(docs) + 1
+		location := make(map[string]any)
+		_ = json.Unmarshal(hit.SourceLocation, &location)
 		meta := map[string]any{
 			einoadapter.MetaUserID:         impl.UserID,
 			einoadapter.MetaKnowledgeBase:  impl.KnowledgeBaseID,
@@ -125,7 +132,11 @@ func (r *PgVectorRetriever) Retrieve(ctx context.Context, query string, opts ...
 			einoadapter.MetaVectorRank:     rank,
 			einoadapter.MetaVectorScore:    hit.Score,
 			einoadapter.MetaDocumentUpdAt:  hit.UpdatedAt,
-			einoadapter.MetaSourceLocation: map[string]any{"engine": "pgvector_cosine"},
+			einoadapter.MetaDocumentTitle:  hit.DocumentTitle,
+			einoadapter.MetaSourceLocation: location,
+		}
+		if hit.DirectoryID != nil {
+			meta[einoadapter.MetaDirectoryID] = *hit.DirectoryID
 		}
 		doc := &schema.Document{
 			ID:       hit.ChunkID,

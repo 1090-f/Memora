@@ -13,7 +13,9 @@ func (ctrl *Controller) RegisterRoutes(v1 *gin.RouterGroup, authRequired gin.Han
 	kbDocs := v1.Group("/knowledge-bases/:kb_id/documents", authRequired)
 	kbDocs.POST("", ctrl.CreateManual)
 	kbDocs.GET("", ctrl.List)
+	kbDocs.GET("/:document_id/content", ctrl.ReadContent)
 
 	imports := v1.Group("/knowledge-bases/:kb_id/imports", authRequired)
 	imports.POST("/files", ctrl.UploadFiles)
+	imports.POST("/url", ctrl.ImportURL)
 }

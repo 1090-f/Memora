@@ -14,17 +14,19 @@ import (
 	"github.com/1090-f/Memora/internal/service/rag/pipeline"
 	"github.com/1090-f/Memora/internal/service/rag/transformer"
 	"github.com/1090-f/Memora/pkg/logger"
+	"github.com/cloudwego/eino/components/embedding"
 	"go.uber.org/zap"
 )
 
 // documentProcessService 是 DocumentProcessService 接口的实现。
 // 任务包 04 起：创建文档行后调用 Eino 文档加工 Graph（解析/清洗/分段/落库/向量）。
 type documentProcessService struct {
-	tasks     repository.ImportTaskRepository
-	docs      repository.DocumentRepository
-	chunks    repository.DocumentChunkRepository
-	vectors   repository.VectorRepository
-	processor DocumentProcessor
+	tasks      repository.ImportTaskRepository
+	docs       repository.DocumentRepository
+	chunks     repository.DocumentChunkRepository
+	vectors    repository.VectorRepository
+	processor  DocumentProcessor
+	embeddings DocumentEmbeddingResolver
 }
 
 // NewDocumentProcessService 创建一个新的文档处理服务实例。
@@ -35,8 +37,9 @@ func NewDocumentProcessService(
 	chunks repository.DocumentChunkRepository,
 	vectors repository.VectorRepository,
 	processor DocumentProcessor,
+	embeddings DocumentEmbeddingResolver,
 ) DocumentProcessService {
-	return &documentProcessService{tasks: tasks, docs: docs, chunks: chunks, vectors: vectors, processor: processor}
+	return &documentProcessService{tasks: tasks, docs: docs, chunks: chunks, vectors: vectors, processor: processor, embeddings: embeddings}
 }
 
 // CreateImportTask 创建导入任务。
@@ -95,7 +98,7 @@ func (s *documentProcessService) Retry(ctx context.Context, userID, taskID contr
 	return nil
 }
 
-// Reindex 触发文档重新索引。任务包 03 仅校验归属并返回；索引构建在任务包 06 接入。
+// Reindex 为现有文档创建指向原文来源的新导入任务；Worker 构建新版本后原子切换活动索引。
 func (s *documentProcessService) Reindex(ctx context.Context, userID, kbID, documentID contracts.ID) error {
 	doc, err := s.docs.FindByIDInKB(ctx, string(userID), string(kbID), string(documentID))
 	if errors.Is(err, repository.ErrDocumentNotFound) {
@@ -104,10 +107,19 @@ func (s *documentProcessService) Reindex(ctx context.Context, userID, kbID, docu
 	if err != nil {
 		return apperrors.New(contracts.ErrInternal, err)
 	}
-	if doc.ProcessingStatus == string(contracts.ProcessingFailed) {
-		return apperrors.New(contracts.ErrInvalidState, fmt.Errorf("文档处理失败，请先重试"))
+	if (doc.MinIOObjectKey == nil || *doc.MinIOObjectKey == "") && (doc.SourceURL == nil || *doc.SourceURL == "") {
+		return apperrors.New(contracts.ErrInvalidState, fmt.Errorf("文档没有可重建的原始来源"))
 	}
-	logger.Info("文档重新索引已触发", zap.String("user_id", string(userID)), zap.String("document_id", string(documentID)))
+	task := &entity.ImportTask{
+		UserID: doc.UserID, KnowledgeBaseID: doc.KnowledgeBaseID, TargetDirectoryID: doc.DirectoryID,
+		SourceType: doc.SourceType, FileName: doc.OriginalFileName, FileSize: doc.FileSize, MIMEType: doc.MIMEType,
+		SourceURL: doc.SourceURL, SourceHash: doc.FileHash, MinIOBucket: doc.MinIOBucket, MinIOObjectKey: doc.MinIOObjectKey,
+		DuplicatePolicy: "create_new", Status: string(contracts.TaskStatusPending), DocumentID: &doc.ID,
+	}
+	if err := s.tasks.Create(ctx, task); err != nil {
+		return apperrors.New(contracts.ErrInternal, err)
+	}
+	logger.Info("文档重新索引任务已创建", zap.String("user_id", string(userID)), zap.String("document_id", string(documentID)), zap.String("task_id", task.ID))
 	return nil
 }
 
@@ -131,6 +143,21 @@ func (s *documentProcessService) GetProcessingStatus(ctx context.Context, userID
 		result.CurrentStep = *doc.FailureStep
 	}
 	return result, nil
+}
+
+func (s *documentProcessService) ListIndexVersions(ctx context.Context, userID, documentID contracts.ID) ([]DocumentIndexVersionView, error) {
+	versions, err := s.chunks.ListIndexVersions(ctx, string(userID), string(documentID))
+	if errors.Is(err, repository.ErrDocumentNotFound) {
+		return nil, apperrors.ErrNotFound
+	}
+	if err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	views := make([]DocumentIndexVersionView, 0, len(versions))
+	for _, version := range versions {
+		views = append(views, DocumentIndexVersionView{Version: version.Version, ChunkCount: version.ChunkCount, VectorCount: version.VectorCount, Status: version.Status, CreatedAt: version.CreatedAt})
+	}
+	return views, nil
 }
 
 // ListImportTasks 分页查询知识库导入任务。
@@ -221,10 +248,17 @@ func (s *documentProcessService) ProcessImportTask(ctx context.Context, taskID c
 		if err := s.docs.Create(ctx, doc); err != nil {
 			return fmt.Errorf("创建文档失败: %w", err)
 		}
+		if err := s.tasks.AttachDocument(ctx, task.ID, doc.ID); err != nil {
+			if cleanupErr := s.docs.SoftDelete(ctx, doc.UserID, doc.ID); cleanupErr != nil {
+				logger.Error("任务关联失败后清理文档失败", zap.String("task_id", task.ID), zap.String("document_id", doc.ID), zap.Error(cleanupErr))
+			}
+			return fmt.Errorf("持久化任务文档关联失败: %w", err)
+		}
+		task.DocumentID = &doc.ID
 	}
 
 	// 执行文档加工流水线（file 来源且已落 MinIO 时）。
-	if s.processor != nil && task.MinIOObjectKey != nil && *task.MinIOObjectKey != "" {
+	if s.processor != nil && ((task.MinIOObjectKey != nil && *task.MinIOObjectKey != "") || (task.SourceURL != nil && *task.SourceURL != "")) {
 		if err := s.processDocument(ctx, task, doc); err != nil {
 			// 加工失败：文档标记 failed，旧索引不受影响。
 			// 任务状态由 Runner 的 Fail 路径统一回写（Source.Fail → FailTask），避免双重标记。
@@ -269,15 +303,27 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 			return fmt.Errorf("清理旧版本向量失败: %w", err)
 		}
 	}
+	var embeddingModelID string
+	var embedder embedding.Embedder
+	if s.embeddings != nil {
+		var err error
+		embeddingModelID, embedder, err = s.embeddings.Resolve(ctx, task.UserID, task.KnowledgeBaseID)
+		if err != nil {
+			return fmt.Errorf("解析文档 Embedding 模型失败: %w", err)
+		}
+	}
 
 	// 执行 Eino 文档加工 Graph：
 	// resolve_artifact → parse_if_missing → validate → persist_artifact → normalize
 	// → enrich → structure_chunk → clean → token_count → persist → index。
 	// 节点顺序由 pipeline 编译期固定，此处仅传入对象与元数据触发整条流水线。
 	out, err := s.processor.Run(ctx, pipeline.ProcessInput{
-		ObjectKey: *task.MinIOObjectKey,
-		FileName:  valueOrEmpty(task.FileName),
-		MIMEType:  valueOrEmpty(task.MIMEType),
+		ObjectKey:        valueOrEmpty(task.MinIOObjectKey),
+		SourceURL:        valueOrEmpty(task.SourceURL),
+		FileName:         valueOrEmpty(task.FileName),
+		MIMEType:         valueOrEmpty(task.MIMEType),
+		Embedder:         embedder,
+		EmbeddingModelID: embeddingModelID,
 		DocMeta: transformer.DocMeta{
 			UserID:          task.UserID,
 			KnowledgeBaseID: task.KnowledgeBaseID,
@@ -290,6 +336,7 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 			SourceLocation: map[string]any{
 				"source_type": task.SourceType,
 				"file_name":   valueOrEmpty(task.FileName),
+				"source_url":  valueOrEmpty(task.SourceURL),
 			},
 		},
 	})
@@ -305,11 +352,31 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 		"active_index_version": indexVersion,
 		"chunk_config_hash":    s.chunkConfigHash(doc),
 	}
-	if modelID := s.processor.EmbeddingModelID(); modelID != "" {
+	if out.FinalURL != "" {
+		updates["source_url"] = out.FinalURL
+	}
+	if out.SourceHash != "" {
+		updates["file_hash"] = out.SourceHash
+	}
+	if strings.TrimSpace(out.Title) != "" {
+		updates["title"] = strings.TrimSpace(out.Title)
+	}
+	if task.SourceType == string(contracts.DocumentSourceURL) {
+		if err := s.tasks.UpdateURLResult(ctx, task.ID, out.FinalURL, out.SourceHash); err != nil {
+			return fmt.Errorf("保存 URL 导入结果失败: %w", err)
+		}
+	}
+	if embeddingModelID != "" {
+		updates["embedding_model_id"] = embeddingModelID
+	} else if modelID := s.processor.EmbeddingModelID(); modelID != "" {
 		updates["embedding_model_id"] = modelID
 	}
-	_ = s.docs.UpdateProcessing(ctx, doc.ID, updates)
-	_ = s.tasks.SetRunningStep(ctx, task.ID, "succeeded")
+	if err := s.docs.UpdateProcessing(ctx, doc.ID, updates); err != nil {
+		return fmt.Errorf("切换活动索引版本失败: %w", err)
+	}
+	if err := s.tasks.SetRunningStep(ctx, task.ID, "succeeded"); err != nil {
+		return fmt.Errorf("更新导入任务完成步骤失败: %w", err)
+	}
 	return nil
 }
 

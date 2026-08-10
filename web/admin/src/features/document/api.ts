@@ -6,12 +6,16 @@ import type {
   Document,
   DocumentListItem,
   DocumentListParams,
+  DocumentIndexVersion,
+  DocumentReadPage,
   DocumentProcessing,
+  ImportSubmission,
   ImportTask,
+  ImportURLInput,
 } from './types';
 import type { PageResult } from '@/features/knowledge-base/types';
 
-// 任务包 00～06 已开放的目录、文档与异步处理接口；后续格式的接口不在此提前暴露。
+// 文档、导入、受限正文读取与索引版本接口统一从此模块访问。
 export const getDirectoryTree = (kbId: string) =>
   apiRequest<DirectoryNode[]>({ url: `/knowledge-bases/${kbId}/directories/tree` });
 
@@ -36,6 +40,9 @@ export const importFiles = (kbId: string, formData: FormData) =>
     url: `/knowledge-bases/${kbId}/imports/files`, method: 'POST', data: formData,
   });
 
+export const importURL = (kbId: string, input: ImportURLInput) =>
+  apiRequest<ImportSubmission>({ url: `/knowledge-bases/${kbId}/imports/url`, method: 'POST', data: input });
+
 export const listImportTasks = (kbId: string, params: Record<string, unknown> = {}) =>
   apiRequest<PageResult<ImportTask>>({ url: `/knowledge-bases/${kbId}/import-tasks`, params });
 
@@ -53,3 +60,9 @@ export const retryDocumentProcessing = (documentId: string) =>
 
 export const reindexDocument = (documentId: string) =>
   apiRequest<{ document_id: string; status: string }>({ url: `/documents/${documentId}/reindex`, method: 'POST' });
+
+export const readDocumentContent = (kbId: string, documentId: string, params: { cursor?: string; section?: string; max_tokens?: number } = {}) =>
+  apiRequest<DocumentReadPage>({ url: `/knowledge-bases/${kbId}/documents/${documentId}/content`, params });
+
+export const listDocumentIndexVersions = (documentId: string) =>
+  apiRequest<{ items: DocumentIndexVersion[] }>({ url: `/documents/${documentId}/index-versions` });

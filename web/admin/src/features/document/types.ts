@@ -56,6 +56,23 @@ export interface DocumentProcessing {
   failure_reason: string;
 }
 
+export interface DocumentIndexVersion {
+  version: number;
+  chunk_count: number;
+  vector_count: number;
+  status: string;
+  created_at: string;
+}
+
+export interface DocumentReadPage {
+  document_id: string;
+  title: string;
+  content: string;
+  next_cursor?: string;
+  truncated: boolean;
+  citation: Citation;
+}
+
 export interface ImportTask {
   id: string;
   source_type: 'file' | 'url';
@@ -85,6 +102,18 @@ export interface CreateManualDocumentInput {
   source_url?: string;
 }
 
+export interface ImportURLInput {
+  url: string;
+  directory_id?: string;
+  duplicate_policy?: 'create_new' | 'skip';
+}
+
+export interface ImportSubmission {
+  task_id: string;
+  file_name: string;
+  status: ImportTaskStatus;
+}
+
 export interface DocumentListParams {
   page?: number;
   page_size?: number;
@@ -93,3 +122,4 @@ export interface DocumentListParams {
   processing_status?: DocumentProcessingStatus;
   source_type?: DocumentSourceType;
 }
+import type { Citation } from '@/features/rag/types';

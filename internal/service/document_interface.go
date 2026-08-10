@@ -27,4 +27,6 @@ type DocumentService interface {
 	Delete(ctx context.Context, userID, documentID string) error
 	// UploadFiles 文件导入：先创建 import_tasks，再流式上传 MinIO，最后更新任务对象信息。
 	UploadFiles(ctx context.Context, userID, kbID string, directoryID *string, duplicatePolicy string, files []UploadFileInput) (*dto.UploadFilesResponse, error)
+	// ImportURL 创建 URL 导入任务，网页抓取和解析由 Worker 异步执行。
+	ImportURL(ctx context.Context, userID, kbID string, req *request.ImportURLRequest) (*dto.UploadTaskItem, error)
 }

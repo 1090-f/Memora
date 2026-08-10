@@ -44,6 +44,9 @@ func (t *ContractsRerankerTransformer) Transform(ctx context.Context, docs []*sc
 	if err != nil {
 		return nil, err
 	}
+	if len(items) != len(docs) {
+		return nil, fmt.Errorf("reranker 返回数量 %d 与输入数量 %d 不一致", len(items), len(docs))
+	}
 
 	// 校验重排器返回的 index 无越界、无重复，保证结果顺序可重放。
 	seen := make(map[int]struct{}, len(items))
