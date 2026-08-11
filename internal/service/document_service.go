@@ -416,8 +416,12 @@ func (s *documentService) OpenRendered(ctx context.Context, userID, documentID s
 
 	// 缓存 key 按内容版本隔离：文档重新导入后渲染结果自动失效。
 	renderedKey := path.Join("rendered", userID, doc.ID, fmt.Sprintf("v%d.pdf", doc.ContentVersion))
-	if reader, statErr := s.store.OpenObject(ctx, renderedKey); statErr == nil {
-		return &OriginalDocumentFile{Reader: reader, FileName: strings.TrimSuffix(fileName, ext) + ".pdf", ContentType: "application/pdf", Size: -1}, nil
+	// 缓存命中时校验 PDF 魔数：历史坏缓存（转换失败但已上传）必须剔除并重转。
+	if cached, err := s.loadRenderedCache(ctx, renderedKey); err == nil {
+		return cached, nil
+	} else if !errors.Is(err, objectstore.ErrObjectNotFound) {
+		logger.Warn("渲染缓存校验失败，重新转换", zap.String("document_id", doc.ID), zap.Error(err))
+		_ = s.store.RemoveObject(ctx, renderedKey)
 	}
 
 	if s.office == nil || !s.office.Available() {
@@ -428,6 +432,25 @@ func (s *documentService) OpenRendered(ctx context.Context, userID, documentID s
 		return nil, err
 	}
 	return rendered, nil
+}
+
+// loadRenderedCache 读取渲染缓存并校验 PDF 魔数；对象缺失返回 ErrObjectNotFound。
+func (s *documentService) loadRenderedCache(ctx context.Context, key string) (*OriginalDocumentFile, error) {
+	reader, err := s.store.OpenObject(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	head := make([]byte, 8)
+	n, readErr := io.ReadFull(reader, head)
+	if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+		_ = reader.Close()
+		return nil, readErr
+	}
+	if n < 8 || !bytes.HasPrefix(head, []byte("%PDF-")) {
+		_ = reader.Close()
+		return nil, fmt.Errorf("渲染缓存内容不是有效 PDF")
+	}
+	return &OriginalDocumentFile{Reader: reader, FileName: "preview.pdf", ContentType: "application/pdf", Size: -1}, nil
 }
 
 // renderOfficeDocument 下载原文件 → LibreOffice 转 PDF → 上传 MinIO 缓存 → 返回流。
