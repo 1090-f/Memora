@@ -45,7 +45,9 @@ const (
 
 // 支持的文件扩展名。
 var supportedExtensions = map[string]bool{
-	".md": true, ".txt": true, ".pdf": true, ".docx": true, ".xlsx": true, ".pptx": true, ".zip": true,
+	".md": true, ".txt": true, ".pdf": true, ".docx": true, ".xlsx": true, ".pptx": true,
+	".jpg": true, ".jpeg": true, ".png": true, ".bmp": true, ".tiff": true, ".tif": true, ".gif": true, ".webp": true,
+	".zip": true,
 }
 
 // zip 导入限制。
@@ -971,7 +973,7 @@ func isMainDocumentExt(ext string) bool {
 // isImageExt 判断 zip 内的图片附件扩展名。
 func isImageExt(ext string) bool {
 	switch ext {
-	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg":
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".tiff", ".tif":
 		return true
 	}
 	return false

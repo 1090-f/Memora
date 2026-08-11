@@ -150,7 +150,7 @@ async def parse_document(
 
 def _is_supported_document(file_name: str) -> bool:
     lower = file_name.lower()
-    return lower.endswith((".pdf", ".docx", ".xlsx", ".pptx"))
+    return lower.endswith((".pdf", ".docx", ".xlsx", ".pptx", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".gif", ".webp"))
 
 
 _IMAGE_SIGNATURES: list[tuple[bytes, str]] = [

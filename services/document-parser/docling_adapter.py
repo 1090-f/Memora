@@ -89,7 +89,7 @@ def _ocr_lang_codes(langs: list[str]) -> list[str]:
 def _detect_format(file_name: str, content: bytes) -> InputFormat | None:
     """按扩展名 + 文件签名/容器格式双重判断，禁止伪造格式。
 
-    仅返回 PDF / DOCX / XLSX / PPTX，其余一律视为不支持。
+    仅返回 PDF / DOCX / XLSX / PPTX / IMAGE，其余一律视为不支持。
     """
     lower = file_name.lower()
     if lower.endswith(".pdf"):
@@ -108,6 +108,28 @@ def _detect_format(file_name: str, content: bytes) -> InputFormat | None:
         if _is_zip_container(content, "[Content_Types].xml", "ppt/presentation.xml"):
             return InputFormat.PPTX
         return None
+    if lower.endswith((".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".gif", ".webp")):
+        if _detect_image_format(content) is not None:
+            return InputFormat.IMAGE
+        return None
+    return None
+
+
+def _detect_image_format(content: bytes) -> str | None:
+    """按魔数判断图片格式；无法识别返回 None。"""
+    signatures: list[tuple[bytes, str]] = [
+        (b"\x89PNG\r\n\x1a\n", "png"),
+        (b"\xff\xd8\xff", "jpeg"),
+        (b"BM", "bmp"),
+        (b"II*\x00", "tiff"),
+        (b"MM\x00*", "tiff"),
+        (b"GIF87a", "gif"),
+        (b"GIF89a", "gif"),
+        (b"RIFF", "webp"),
+    ]
+    for signature, name in signatures:
+        if content.startswith(signature):
+            return name
     return None
 
 
@@ -205,9 +227,14 @@ class DoclingAdapter:
             layout_options=layout_options,
         )
         return DocumentConverter(
-            allowed_formats=[InputFormat.PDF, InputFormat.DOCX, InputFormat.XLSX, InputFormat.PPTX],
+            allowed_formats=[InputFormat.PDF, InputFormat.DOCX, InputFormat.XLSX, InputFormat.PPTX, InputFormat.IMAGE],
             format_options={
                 InputFormat.PDF: FormatOption(
+                    pipeline_cls=StandardPdfPipeline,
+                    backend=DoclingParseDocumentBackend,
+                    pipeline_options=pdf_options,
+                ),
+                InputFormat.IMAGE: FormatOption(
                     pipeline_cls=StandardPdfPipeline,
                     backend=DoclingParseDocumentBackend,
                     pipeline_options=pdf_options,
