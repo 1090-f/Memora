@@ -87,7 +87,6 @@ export function DocumentViewer({ document, processing }: { document: Document; p
     retry: false,
     staleTime: Infinity,
   });
-  const [renderedURL, setRenderedURL] = useState<string | null>(null);
   // 注意：StrictMode 下 useEffect cleanup 会立即 revoke，导致 iframe 偶发加载已回收的
   // blob URL（"未能加载 PDF"）。改为 useMemo 创建 + 延迟 60s 回收（iframe 早已加载完成），
   // 彻底绕开该竞态。
