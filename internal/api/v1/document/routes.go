@@ -9,6 +9,7 @@ func (ctrl *Controller) RegisterRoutes(v1 *gin.RouterGroup, authRequired gin.Han
 	docs.GET("/documents/:document_id", ctrl.Get)
 	docs.GET("/documents/:document_id/preview", ctrl.Preview)
 	docs.GET("/documents/:document_id/original", ctrl.Original)
+	docs.GET("/documents/:document_id/assets/:asset_id", ctrl.Asset)
 	docs.DELETE("/documents/:document_id", ctrl.Delete)
 
 	// 知识库域下的文档集合操作（创建/列表）与导入上传分别成组。

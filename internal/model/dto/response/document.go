@@ -19,6 +19,7 @@ type DocumentResponse struct {
 	IndexMode          string    `json:"index_mode"`                     // IndexMode 当前活动索引能力（none/keyword/hybrid）
 	FailureStep        *string   `json:"failure_step,omitempty"`         // FailureStep 处理失败的步骤，可选
 	FailureReason      *string   `json:"failure_reason,omitempty"`       // FailureReason 处理失败原因，可选
+	ParseWarnings      []string  `json:"parse_warnings,omitempty"`       // ParseWarnings 解析阶段非致命提示，可选
 	ContentVersion     int       `json:"content_version"`                // ContentVersion 内容版本号
 	ChunkVersion       int       `json:"chunk_version"`                  // ChunkVersion 分块版本号
 	ActiveIndexVersion *int      `json:"active_index_version,omitempty"` // ActiveIndexVersion 当前生效的索引版本，可选

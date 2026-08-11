@@ -3,7 +3,7 @@
 // 文档加工 Graph 在应用初始化时 Compile 一次并注入 Worker Handler。
 // 节点流（见 docs/2026-08-08-docling-document-parsing-execution-plan.md）：
 //
-//	resolve_artifact → parse_if_missing → validate_parsed_document → persist_artifact
+//	resolve_artifact → parse_if_missing → validate_parsed_document → ocr_assets → persist_artifact
 //	→ document_normalize → asset_enrich → structure_chunk → chunk_clean
 //	→ token_count → persist_chunks → embed_and_index
 package pipeline
@@ -11,6 +11,7 @@ package pipeline
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"github.com/1090-f/Memora/internal/service/rag/chunking"
 	"github.com/1090-f/Memora/internal/service/rag/einoadapter"
 	"github.com/1090-f/Memora/internal/service/rag/indexing"
+	"github.com/1090-f/Memora/internal/service/rag/loader"
 	"github.com/1090-f/Memora/internal/service/rag/normalizer"
 	"github.com/1090-f/Memora/internal/service/rag/parser"
 	"github.com/1090-f/Memora/internal/service/rag/tokenizer"
@@ -54,6 +56,8 @@ type ProcessInput struct {
 	MIMEType string
 	// DocMeta 是稳定的业务元数据。
 	DocMeta transformer.DocMeta
+	// Attachments 是 zip 导入的附件映射（相对路径 → MinIO object key），可选。
+	Attachments map[string]string
 	// Embedder/EmbeddingModelID 是本任务按用户与知识库解析出的可选向量模型。
 	Embedder         embedding.Embedder
 	EmbeddingModelID string
@@ -66,6 +70,8 @@ type ProcessOutput struct {
 	FinalURL   string
 	SourceHash string
 	Title      string
+	// Warnings 是解析/OCR 等阶段的非致命提示（如 unresolved 图片）。
+	Warnings []string
 }
 
 // DocumentPipelineConfig 定义文档加工流水线配置。
@@ -94,6 +100,8 @@ type DocumentPipelineConfig struct {
 	Embedder embedding.Embedder
 	// WebLoader 是 URL 来源使用的安全 Eino Loader。
 	WebLoader document.Loader
+	// AssetLoader 解析 Markdown 图片引用（nil 时使用默认实现：网络图片 + 无附件）。
+	AssetLoader parser.AssetLoader
 	// AssetEnricher 是图片资产增强器（nil 时使用 NoopEnricher）。
 	AssetEnricher asset.Enricher
 }
@@ -135,6 +143,18 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 	enricher := cfg.AssetEnricher
 	if enricher == nil {
 		enricher = asset.NewNoopEnricher()
+	}
+	ocrClient := parser.NewPythonOcrClient(cfg.ParserConfig.BaseURL, cfg.ParserConfig.Timeout)
+	assetLoader := cfg.AssetLoader
+	if assetLoader == nil {
+		assetLoader = loader.NewMarkdownAssetLoader(cfg.Store, nil)
+	}
+	// 任务级附件 loader：zip 导入时以附件映射替换默认 loader。
+	assetLoaderForTask := func(attachments map[string]string) parser.AssetLoader {
+		if len(attachments) > 0 {
+			return loader.NewMarkdownAssetLoader(cfg.Store, attachments)
+		}
+		return assetLoader
 	}
 	chunker := chunking.NewStructureAwareChunker(cfg.Tokenizer, cfg.ChunkOptions.StrategyVersion)
 	chunkCleaner := transformer.NewChunkCleaner()
@@ -221,10 +241,11 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		}
 		hashed := parser.NewHashReader(reader)
 		doc, err := router.Parse(ctx, parser.ParseInput{
-			FileName: state.input.FileName,
-			Content:  hashed,
-			Size:     -1,
-			Options:  cfg.ParseOptions,
+			FileName:    state.input.FileName,
+			Content:     hashed,
+			Size:        -1,
+			Options:     cfg.ParseOptions,
+			AssetLoader: assetLoaderForTask(state.input.Attachments),
 		})
 		closeErr := reader.Close()
 		if err != nil {
@@ -250,6 +271,43 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 	})
 	if err := g.AddLambdaNode("validate_parsed_document", validateLambda); err != nil {
 		return nil, fmt.Errorf("注册 validate_parsed_document 节点失败: %w", err)
+	}
+
+	// ocr_assets：对图片资产做 OCR（可选），结果写 asset.metadata["ocr_text"]；
+	// 位于 persist_artifact 之前，OCR 文本随 Artifact 持久化，重试可复用。
+	// 单图失败仅追加 warning，不阻断文档加工。
+	ocrLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
+		if !cfg.ParseOptions.DoImageOCR || state.doc == nil || ocrClient == nil {
+			return state, nil
+		}
+		for i := range state.doc.Assets {
+			asset := &state.doc.Assets[i]
+			if asset.Omitted || asset.Kind != "picture" || strings.TrimSpace(asset.DataBase64) == "" {
+				continue
+			}
+			data, err := base64.StdEncoding.DecodeString(asset.DataBase64)
+			if err != nil {
+				state.doc.Warnings = append(state.doc.Warnings, fmt.Sprintf("图片 %s OCR 跳过: base64 解码失败", asset.ID))
+				continue
+			}
+			result, err := ocrClient.OcrImage(ctx, data, cfg.ParseOptions.OCRLanguages)
+			if err != nil {
+				state.doc.Warnings = append(state.doc.Warnings, fmt.Sprintf("图片 %s OCR 失败: %v", asset.ID, err))
+				continue
+			}
+			text := strings.TrimSpace(strings.Join(result.Lines, "\n"))
+			if text == "" {
+				continue
+			}
+			if asset.Metadata == nil {
+				asset.Metadata = make(map[string]any)
+			}
+			asset.Metadata["ocr_text"] = text
+		}
+		return state, nil
+	})
+	if err := g.AddLambdaNode("ocr_assets", ocrLambda); err != nil {
+		return nil, fmt.Errorf("注册 ocr_assets 节点失败: %w", err)
 	}
 
 	// persist_artifact：assets → parsed-document → manifest 原子完成。
@@ -368,7 +426,7 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		return nil, err
 	}
 	chain := []string{
-		"load_source", "resolve_artifact", "parse_if_missing", "validate_parsed_document", "persist_artifact",
+		"load_source", "resolve_artifact", "parse_if_missing", "validate_parsed_document", "ocr_assets", "persist_artifact",
 		"document_normalize", "asset_enrich", "structure_chunk", "chunk_clean",
 		"token_count", "persist_chunks",
 	}
@@ -441,6 +499,9 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 
 func processOutput(state *pipelineState, chunkCount int) ProcessOutput {
 	output := ProcessOutput{ChunkCount: chunkCount, SourceHash: state.input.DocMeta.SourceHash}
+	if state.doc != nil && len(state.doc.Warnings) > 0 {
+		output.Warnings = append([]string(nil), state.doc.Warnings...)
+	}
 	if state.input.DocMeta.SourceLocation != nil {
 		if value, ok := state.input.DocMeta.SourceLocation["final_url"].(string); ok {
 			output.FinalURL = value

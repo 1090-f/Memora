@@ -1,6 +1,8 @@
 package service
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,6 +12,7 @@ import (
 	"mime"
 	"net/url"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 
@@ -39,8 +42,14 @@ const (
 
 // 支持的文件扩展名。
 var supportedExtensions = map[string]bool{
-	".md": true, ".txt": true, ".pdf": true, ".docx": true,
+	".md": true, ".txt": true, ".pdf": true, ".docx": true, ".zip": true,
 }
+
+// zip 导入限制。
+const (
+	// maxZipEntries 是 zip 内条目数上限（含目录）。
+	maxZipEntries = 100
+)
 
 // ObjectStore 是文档服务依赖的对象存储能力接口，便于测试注入。
 type ObjectStore interface {
@@ -177,10 +186,60 @@ func (s *documentService) Preview(ctx context.Context, userID, documentID string
 	if doc.Content != nil {
 		return &dto.DocumentPreviewResponse{Content: *doc.Content, Format: "txt"}, nil
 	}
+	parsed, err := s.loadParsedDocument(ctx, userID, doc)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(parsed.Document.Markdown) == "" {
+		return nil, apperrors.ErrNotFound
+	}
+	content := parsed.Document.Markdown
+	if strings.EqualFold(parsed.Source.Format, "markdown") {
+		content = rewriteMarkdownImageRefs(content, parsed.Assets, documentID)
+	}
+	return &dto.DocumentPreviewResponse{Content: content, Format: parsed.Source.Format}, nil
+}
+
+// markdownImageRefRe 匹配 Markdown 图片引用 ![alt](ref)。
+var markdownImageRefRe = regexp.MustCompile(`!\[([^\]]*)\]\(([^)\s]+)\)`)
+
+// rewriteMarkdownImageRefs 把已解析资产的图片引用重写为资产下载 URL；
+// 未解析（unresolved）的引用保持原样，便于前端展示与后续排查。
+// URL 与前端 API 前缀一致（internal/api/router.go 挂载于 /api/v1）。
+func rewriteMarkdownImageRefs(content string, assets []parser.Asset, documentID string) string {
+	byRef := make(map[string]string, len(assets))
+	for _, asset := range assets {
+		if asset.Omitted || strings.TrimSpace(asset.SourceRef) == "" || strings.TrimSpace(asset.ObjectKey) == "" {
+			continue
+		}
+		byRef[asset.SourceRef] = asset.ID
+	}
+	if len(byRef) == 0 {
+		return content
+	}
+	return markdownImageRefRe.ReplaceAllStringFunc(content, func(match string) string {
+		sub := markdownImageRefRe.FindStringSubmatch(match)
+		if len(sub) != 3 {
+			return match
+		}
+		assetID, ok := byRef[sub[2]]
+		if !ok {
+			return match
+		}
+		alt := sub[1]
+		if alt == "" {
+			alt = "图片"
+		}
+		return "![" + alt + "](/api/v1/documents/" + url.PathEscape(documentID) + "/assets/" + url.PathEscape(assetID) + ")"
+	})
+}
+
+// loadParsedDocument 按当前解析配置加载完整解析产物（Artifact）；缺失视为 NotFound。
+func (s *documentService) loadParsedDocument(ctx context.Context, userID string, doc *entity.Document) (*parser.ParsedDocument, error) {
 	if doc.ActiveIndexVersion == nil || strings.TrimSpace(s.parseConfigHash) == "" {
 		return nil, apperrors.ErrNotFound
 	}
-	prefix := parser.ArtifactKeyPrefix(userID, documentID, doc.ContentVersion, s.parseConfigHash)
+	prefix := parser.ArtifactKeyPrefix(userID, doc.ID, doc.ContentVersion, s.parseConfigHash)
 	artifactStore := parser.NewArtifactStore(&documentArtifactObjectStore{inner: s.store}, parser.DefaultValidateLimits())
 	expectedHash := ""
 	if doc.FileHash != nil {
@@ -197,10 +256,44 @@ func (s *documentService) Preview(ctx context.Context, userID, documentID string
 	if err != nil {
 		return nil, apperrors.New(contracts.ErrInternal, err)
 	}
-	if strings.TrimSpace(parsed.Document.Markdown) == "" {
+	return parsed, nil
+}
+
+// OpenAsset 流式返回文档资产（图片等）字节；权限与文档所有权一致。
+func (s *documentService) OpenAsset(ctx context.Context, userID, documentID, assetID string) (*OriginalDocumentFile, error) {
+	doc, err := s.docs.FindByID(ctx, userID, documentID)
+	if errors.Is(err, repository.ErrDocumentNotFound) {
 		return nil, apperrors.ErrNotFound
 	}
-	return &dto.DocumentPreviewResponse{Content: parsed.Document.Markdown, Format: parsed.Source.Format}, nil
+	if err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	parsed, err := s.loadParsedDocument(ctx, userID, doc)
+	if err != nil {
+		return nil, err
+	}
+	var asset *parser.Asset
+	for i := range parsed.Assets {
+		if parsed.Assets[i].ID == assetID {
+			asset = &parsed.Assets[i]
+			break
+		}
+	}
+	if asset == nil || asset.Omitted || strings.TrimSpace(asset.ObjectKey) == "" {
+		return nil, apperrors.ErrNotFound
+	}
+	reader, err := s.store.OpenObject(ctx, asset.ObjectKey)
+	if err != nil {
+		if errors.Is(err, objectstore.ErrObjectNotFound) {
+			return nil, apperrors.ErrNotFound
+		}
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	contentType := strings.TrimSpace(asset.MIMEType)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return &OriginalDocumentFile{Reader: reader, FileName: assetID + ".img", ContentType: contentType, Size: -1}, nil
 }
 
 // documentArtifactObjectStore 适配文档服务对象存储与 parser ArtifactStore 的元信息类型。
@@ -317,7 +410,14 @@ func (s *documentService) UploadFiles(ctx context.Context, userID, kbID string, 
 	// 任务创建与对象上传之间不共享数据库事务：MinIO 属外部 I/O 无法纳入事务原子性，
 	// 任一步失败改走显式补偿删除（见 compensateUploads），避免长事务持锁与不可回滚的问题。
 	for _, file := range files {
-		item, objectKey, err := s.uploadOne(ctx, userID, kbID, directoryID, duplicatePolicy, file, bucket)
+		var item *dto.UploadTaskItem
+		var objectKey string
+		var err error
+		if strings.EqualFold(path.Ext(file.FileName), ".zip") {
+			item, objectKey, err = s.uploadZip(ctx, userID, kbID, directoryID, duplicatePolicy, file, bucket)
+		} else {
+			item, objectKey, err = s.uploadOne(ctx, userID, kbID, directoryID, duplicatePolicy, file, bucket)
+		}
 		if err != nil {
 			// 补偿：删除本次请求中已创建的任务与已上传对象，避免残留半成品。
 			s.compensateUploads(ctx, userID, createdTaskIDs)
@@ -451,6 +551,188 @@ func (s *documentService) uploadOne(ctx context.Context, userID, kbID string, di
 	return &dto.UploadTaskItem{TaskID: task.ID, FileName: file.FileName, Status: task.Status}, objectKey, nil
 }
 
+// uploadZip 处理 zip 打包导入：zip 内主文档（md/txt/pdf/docx）走正常导入流程，
+// 图片附件上传 MinIO 并记录相对路径 → object key 映射，供 Worker 解析 Markdown 图片引用。
+// 任一步失败时补偿删除任务与已上传对象。
+func (s *documentService) uploadZip(ctx context.Context, userID, kbID string, directoryID *string, duplicatePolicy string, file UploadFileInput, bucket string) (*dto.UploadTaskItem, string, error) {
+	data, err := io.ReadAll(io.LimitReader(file.Reader, MaxUploadFileSize+1))
+	if err != nil {
+		return nil, "", apperrors.New(contracts.ErrServiceUnavailable, err)
+	}
+	if int64(len(data)) > MaxUploadFileSize {
+		return nil, "", apperrors.New(contracts.ErrPayloadTooLarge, nil)
+	}
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, "", apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("不是有效的 zip 文件 %q", file.FileName))
+	}
+	if len(reader.File) > maxZipEntries {
+		return nil, "", apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("zip 内条目数超过上限 %d", maxZipEntries))
+	}
+
+	// 第一遍：定位主文档并收集图片附件条目（zip 内顺序即相对引用顺序）。
+	var mainEntry *zip.File
+	type imageEntry struct {
+		file *zip.File
+		name string
+	}
+	var imageEntries []imageEntry
+	for _, entry := range reader.File {
+		name := safeZipPath(entry.Name)
+		if name == "" {
+			continue
+		}
+		ext := strings.ToLower(path.Ext(name))
+		switch {
+		case isMainDocumentExt(ext):
+			if mainEntry == nil {
+				mainEntry = entry
+			}
+		case isImageExt(ext):
+			imageEntries = append(imageEntries, imageEntry{file: entry, name: name})
+		}
+	}
+	if mainEntry == nil {
+		return nil, "", apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("zip %q 内没有主文档（md/txt/pdf/docx）", file.FileName))
+	}
+
+	// 创建 pending 任务（主文档信息）。
+	mainName := safeZipPath(mainEntry.Name)
+	mimeType := mimeTypeOf(strings.ToLower(path.Ext(mainName)))
+	mainSize := int64(mainEntry.UncompressedSize64)
+	task := &entity.ImportTask{
+		UserID: userID, KnowledgeBaseID: kbID, TargetDirectoryID: directoryID,
+		SourceType:      string(contracts.DocumentSourceFile),
+		FileName:        &mainName,
+		FileSize:        &mainSize,
+		MIMEType:        &mimeType,
+		DuplicatePolicy: duplicatePolicy,
+		Status:          string(contracts.TaskStatusPending),
+	}
+	if err := s.tasks.Create(ctx, task); err != nil {
+		return nil, "", apperrors.New(contracts.ErrInternal, err)
+	}
+	cleanup := func() {
+		_ = s.tasks.Delete(ctx, userID, task.ID)
+	}
+
+	// 上传图片附件并收集映射；失败时补偿删除附件对象。
+	attachments := make(map[string]string, len(imageEntries))
+	uploadedKeys := make([]string, 0, len(imageEntries))
+	for _, entry := range imageEntries {
+		rc, openErr := entry.file.Open()
+		if openErr != nil {
+			cleanup()
+			s.removeObjects(ctx, uploadedKeys)
+			return nil, "", apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("读取 zip 条目 %q 失败: %w", entry.name, openErr))
+		}
+		entryData, readErr := io.ReadAll(io.LimitReader(rc, MaxUploadFileSize+1))
+		_ = rc.Close()
+		if readErr != nil {
+			cleanup()
+			s.removeObjects(ctx, uploadedKeys)
+			return nil, "", apperrors.New(contracts.ErrServiceUnavailable, readErr)
+		}
+		if int64(len(entryData)) > MaxUploadFileSize {
+			cleanup()
+			s.removeObjects(ctx, uploadedKeys)
+			return nil, "", apperrors.New(contracts.ErrPayloadTooLarge, nil)
+		}
+		ext := strings.ToLower(path.Ext(entry.name))
+		key := objectstore.BuildObjectKey(userID, kbID, task.ID, "attachments/"+entry.name)
+		if putErr := s.store.PutObject(ctx, key, bytes.NewReader(entryData), int64(len(entryData)), mimeTypeOf(ext)); putErr != nil {
+			cleanup()
+			s.removeObjects(ctx, uploadedKeys)
+			return nil, "", apperrors.New(contracts.ErrServiceUnavailable, putErr)
+		}
+		uploadedKeys = append(uploadedKeys, key)
+		attachments[entry.name] = key
+	}
+
+	// 上传主文档内容（流式 + 哈希）。
+	mainReader, openErr := mainEntry.Open()
+	if openErr != nil {
+		cleanup()
+		s.removeObjects(ctx, uploadedKeys)
+		return nil, "", apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("读取主文档 %q 失败: %w", mainName, openErr))
+	}
+	objectKey := objectstore.BuildObjectKey(userID, kbID, task.ID, mainName)
+	hash, putErr := s.putObjectWithHash(ctx, objectKey, mainReader, mainSize, mimeType)
+	_ = mainReader.Close()
+	if putErr != nil {
+		cleanup()
+		s.removeObjects(ctx, uploadedKeys)
+		return nil, "", apperrors.New(contracts.ErrServiceUnavailable, putErr)
+	}
+
+	if updateErr := s.tasks.UpdateObjectInfo(ctx, userID, task.ID, bucket, objectKey, &hash); updateErr != nil {
+		s.removeObjects(ctx, append(uploadedKeys, objectKey))
+		cleanup()
+		return nil, "", apperrors.New(contracts.ErrInternal, updateErr)
+	}
+	if updateErr := s.tasks.UpdateAttachments(ctx, userID, task.ID, attachments); updateErr != nil {
+		s.removeObjects(ctx, append(uploadedKeys, objectKey))
+		cleanup()
+		return nil, "", apperrors.New(contracts.ErrInternal, updateErr)
+	}
+	logger.Info("zip 导入上传完成",
+		zap.String("user_id", userID), zap.String("task_id", task.ID),
+		zap.String("object_key", objectKey), zap.Int("attachments", len(attachments)))
+	return &dto.UploadTaskItem{TaskID: task.ID, FileName: mainName, Status: task.Status}, objectKey, nil
+}
+
+// removeObjects 批量删除对象（补偿用，失败仅记录）。
+func (s *documentService) removeObjects(ctx context.Context, keys []string) {
+	for _, key := range keys {
+		if err := s.store.RemoveObject(ctx, key); err != nil {
+			logger.Error("补偿删除 MinIO 对象失败",
+				zap.String("object_key", key), zap.Error(err))
+		}
+	}
+}
+
+// safeZipPath 净化 zip 条目路径：统一分隔符、拒绝绝对路径与 .. 穿越。
+// 返回 "" 表示应忽略该条目。
+func safeZipPath(name string) string {
+	cleaned := strings.ReplaceAll(name, "\\", "/")
+	if strings.HasPrefix(cleaned, "/") {
+		return ""
+	}
+	if len(cleaned) >= 2 && cleaned[1] == ':' {
+		return ""
+	}
+	parts := strings.Split(cleaned, "/")
+	var kept []string
+	for _, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			return ""
+		}
+		kept = append(kept, part)
+	}
+	return strings.Join(kept, "/")
+}
+
+// isMainDocumentExt 判断 zip 内的主文档扩展名。
+func isMainDocumentExt(ext string) bool {
+	switch ext {
+	case ".md", ".markdown", ".txt", ".pdf", ".docx":
+		return true
+	}
+	return false
+}
+
+// isImageExt 判断 zip 内的图片附件扩展名。
+func isImageExt(ext string) bool {
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg":
+		return true
+	}
+	return false
+}
+
 // putObjectWithHash 流式上传并计算 SHA-256，不把完整文件读入内存。
 // 上传设置显式超时，避免大文件或网络故障导致请求无限挂起。
 func (s *documentService) putObjectWithHash(ctx context.Context, objectKey string, reader io.Reader, size int64, contentType string) (string, error) {
@@ -490,6 +772,7 @@ func documentResponse(doc *entity.Document) *dto.DocumentResponse {
 		SourceURL: doc.SourceURL, OriginalFileName: doc.OriginalFileName,
 		FileSize: doc.FileSize, MIMEType: doc.MIMEType,
 		ProcessingStatus: doc.ProcessingStatus, IndexMode: documentIndexMode(doc), FailureStep: doc.FailureStep, FailureReason: doc.FailureReason,
+		ParseWarnings: doc.ParseWarnings,
 		ContentVersion: doc.ContentVersion, ChunkVersion: doc.ChunkVersion,
 		ActiveIndexVersion: doc.ActiveIndexVersion, CreatedAt: doc.CreatedAt, UpdatedAt: doc.UpdatedAt,
 	}

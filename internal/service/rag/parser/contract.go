@@ -139,7 +139,9 @@ type Asset struct {
 	DataBase64 string         `json:"data_base64,omitempty"`
 	ObjectKey  string         `json:"object_key,omitempty"`
 	Omitted    bool           `json:"omitted"`
-	Metadata   map[string]any `json:"metadata"`
+	// SourceRef 是 Markdown 图片的原始引用（预览重写用）；PDF/DOCX 资产为空。
+	SourceRef string         `json:"source_ref,omitempty"`
+	Metadata  map[string]any `json:"metadata"`
 }
 
 // ArtifactManifest 是 Parsed Artifact 的完整性清单：
@@ -171,6 +173,7 @@ type ParseOptions struct {
 	SchemaVersion   string   `json:"schema_version"`
 	OCRLanguages    []string `json:"ocr_languages"`
 	DoOCR           bool     `json:"do_ocr"`
+	DoImageOCR      bool     `json:"do_image_ocr"`
 	TableStructure  bool     `json:"table_structure"`
 	ExtractPictures bool     `json:"extract_pictures"`
 	IncludeBBoxes   bool     `json:"include_bboxes"`
@@ -182,6 +185,7 @@ func DefaultParseOptions() ParseOptions {
 		SchemaVersion:   SchemaVersion,
 		OCRLanguages:    []string{"zh", "en"},
 		DoOCR:           true,
+		DoImageOCR:      true,
 		TableStructure:  true,
 		ExtractPictures: true,
 		IncludeBBoxes:   true,

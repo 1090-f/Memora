@@ -18,7 +18,11 @@ from typing import Any
 
 from docling.backend.docling_parse_backend import DoclingParseDocumentBackend
 from docling.datamodel.base_models import ConversionStatus, DocumentStream, InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions
+from docling.datamodel.pipeline_options import (
+    LayoutObjectDetectionOptions,
+    PdfPipelineOptions,
+    RapidOcrOptions,
+)
 from docling.document_converter import DocumentConverter, FormatOption
 from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline
 from docling_core.types.doc.document import DoclingDocument
@@ -128,12 +132,41 @@ class DoclingAdapter:
         self.max_pages = max_pages
         self._lock = threading.Lock()
         self._converters: dict[tuple[object, ...], DocumentConverter] = {}
+        self._ocr_engine: Any | None = None
 
     # ---------------------------------------------------------------- 初始化
 
     def initialize(self) -> None:
         """按默认解析选项构造并常驻 DocumentConverter（幂等，线程安全）。"""
         _ = self.converter_for(schemas.ParseOptions())
+        self._ocr_engine = self._build_ocr_engine()
+
+    def _build_ocr_engine(self) -> Any:
+        """构造常驻 RapidOCR 引擎（模型随包内置，首次调用会下载/校验模型文件）。"""
+        try:
+            from rapidocr import RapidOCR
+
+            return RapidOCR()
+        except Exception as exc:  # 图片 OCR 不可用时仅降级，不阻断文档解析
+            _log = logging.getLogger("document-parser")
+            _log.warning("RapidOCR 初始化失败，图片 OCR 将降级跳过: %s", exc)
+            return None
+
+    def ocr_image(self, image_bytes: bytes) -> list[str]:
+        """识别单张图片中的文字，按行返回（空图/失败返回空列表）。
+
+        使用常驻 RapidOCR 引擎；引擎不可用时返回空列表，调用方自行降级。
+        """
+        if self._ocr_engine is None or not image_bytes:
+            return []
+        try:
+            output = self._ocr_engine(image_bytes)
+            if output is None:
+                return []
+            lines = list(output.txts or ())
+            return [line.strip() for line in lines if line and line.strip()]
+        except Exception:  # 单图 OCR 失败不影响文档整体
+            return []
 
     def converter_for(self, options: schemas.ParseOptions) -> DocumentConverter:
         """按解析选项获取常驻 converter（相同选项复用同一实例）。"""
@@ -151,6 +184,9 @@ class DoclingAdapter:
 
     def _build_converter(self, options: schemas.ParseOptions) -> DocumentConverter:
         lang_codes = _ocr_lang_codes(options.ocr_languages)
+        # 默认 layout 引擎启用 torch.compile（需要 MSVC cl.exe）；关闭编译换取无编译器依赖。
+        layout_options = LayoutObjectDetectionOptions()
+        layout_options.engine_options.compile_model = False
         pdf_options = PdfPipelineOptions(
             do_ocr=options.do_ocr,
             do_table_structure=options.table_structure,
@@ -158,6 +194,7 @@ class DoclingAdapter:
             do_code_enrichment=False,
             ocr_options=RapidOcrOptions(lang=lang_codes, backend="onnxruntime"),
             table_structure_options=DoclingAdapter._table_options(),
+            layout_options=layout_options,
         )
         return DocumentConverter(
             allowed_formats=[InputFormat.PDF, InputFormat.DOCX],

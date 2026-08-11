@@ -252,7 +252,6 @@ func (r *importTaskRepository) UpdateObjectInfo(ctx context.Context, userID, tas
 		return enqueueTaskEvent(tx, taskID)
 	})
 }
-
 func (r *importTaskRepository) UpdateURLResult(ctx context.Context, taskID, finalURL, sourceHash string) error {
 	updates := map[string]any{}
 	if finalURL != "" {
@@ -268,6 +267,22 @@ func (r *importTaskRepository) UpdateURLResult(ctx context.Context, taskID, fina
 		Where("id = ? AND source_type = 'url'", taskID).Updates(updates)
 	if result.Error != nil {
 		return fmt.Errorf("更新 URL 导入结果失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrImportTaskNotFound
+	}
+	return nil
+}
+
+// UpdateAttachments 保存 zip 导入的附件映射（相对路径 → MinIO object key）。
+func (r *importTaskRepository) UpdateAttachments(ctx context.Context, userID, taskID string, attachments map[string]string) error {
+	if len(attachments) == 0 {
+		return nil
+	}
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.ImportTask{}).
+		Where("id = ? AND user_id = ?", taskID, userID).Update("attachments", attachments)
+	if result.Error != nil {
+		return fmt.Errorf("更新导入任务附件映射失败: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return ErrImportTaskNotFound

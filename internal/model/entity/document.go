@@ -26,6 +26,8 @@ type Document struct {
 	ActiveIndexVersion *int    `gorm:"column:active_index_version" json:"active_index_version,omitempty"` // ActiveIndexVersion 当前生效的索引版本，可选
 	EmbeddingModelID   *string `gorm:"column:embedding_model_id" json:"embedding_model_id,omitempty"`     // EmbeddingModelID 向量化使用的模型配置 ID，可选
 	ChunkConfigHash    *string `gorm:"column:chunk_config_hash" json:"chunk_config_hash,omitempty"`       // ChunkConfigHash 分块配置哈希，用于判断配置是否变化，可选
+	// ParseWarnings 是解析阶段的非致命提示（如 unresolved 图片），可选。
+	ParseWarnings []string `gorm:"column:parse_warnings;type:jsonb" json:"parse_warnings,omitempty"`
 }
 
 // TableName 返回文档实体对应的数据库表名。

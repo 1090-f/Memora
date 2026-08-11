@@ -115,14 +115,14 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
 
         {sourceMode === 'file' ? (
           <>
-            <Typography color="text.secondary">支持 Markdown、TXT、PDF、DOCX；单文件最大 50 MB，单次最多 20 个。</Typography>
+            <Typography color="text.secondary">支持 Markdown、TXT、PDF、DOCX；ZIP 打包（md + 图片）；单文件最大 50 MB，单次最多 20 个。</Typography>
             <Button variant="outlined" disabled={disabled} onClick={() => fileInputRef.current?.click()}>选择文件</Button>
             <input
               ref={fileInputRef}
               type="file"
               multiple
               hidden
-              accept=".md,.txt,.pdf,.docx,text/markdown,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              accept=".md,.txt,.pdf,.docx,.zip,text/markdown,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/zip"
               onChange={(event) => selectFiles(Array.from(event.target.files ?? []))}
             />
             {files.length > 0 && (

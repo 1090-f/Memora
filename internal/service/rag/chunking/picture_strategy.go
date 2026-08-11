@@ -16,6 +16,15 @@ type pictureStrategy struct {
 	tokenizer Tokenizer
 }
 
+// ocrText 从资产元数据提取图片 OCR 文字（OCR 节点写入）。
+func ocrTextOf(asset parser.Asset) string {
+	if asset.Metadata == nil {
+		return ""
+	}
+	value, _ := asset.Metadata["ocr_text"].(string)
+	return strings.TrimSpace(value)
+}
+
 // description 从资产元数据提取增强描述（AssetEnricher 写入）。
 func descriptionOf(asset parser.Asset) string {
 	if asset.Metadata == nil {
@@ -25,9 +34,12 @@ func descriptionOf(asset parser.Asset) string {
 	return strings.TrimSpace(value)
 }
 
-// pictureText 生成图片检索文本（caption + description）。
+// pictureText 生成图片检索文本（OCR 文字优先，其次 caption，最后增强描述）。
 func pictureText(asset parser.Asset) string {
 	var parts []string
+	if ocr := ocrTextOf(asset); ocr != "" {
+		parts = append(parts, ocr)
+	}
 	if caption := strings.TrimSpace(asset.Caption); caption != "" {
 		parts = append(parts, caption)
 	}

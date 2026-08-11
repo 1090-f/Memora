@@ -88,6 +88,8 @@ type ImportTaskRepository interface {
 	UpdateObjectInfo(ctx context.Context, userID, taskID string, bucket, objectKey string, sourceHash *string) error
 	// UpdateURLResult 保存 Worker 安全抓取后的最终 URL 与正文哈希。
 	UpdateURLResult(ctx context.Context, taskID, finalURL, sourceHash string) error
+	// UpdateAttachments 保存 zip 导入的附件映射（相对路径 → MinIO object key）。
+	UpdateAttachments(ctx context.Context, userID, taskID string, attachments map[string]string) error
 	// AttachDocument 在长处理开始前持久化任务与文档关联，保证失败重试复用同一文档。
 	AttachDocument(ctx context.Context, taskID, documentID string) error
 	// ReservePending 使用 FOR UPDATE SKIP LOCKED 领取一个 pending 任务并置为 running。

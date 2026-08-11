@@ -43,6 +43,7 @@ export interface Document {
   index_mode: DocumentIndexMode;
   failure_step?: string;
   failure_reason?: string;
+  parse_warnings?: string[];
   content_version: number;
   chunk_version: number;
   active_index_version?: number;

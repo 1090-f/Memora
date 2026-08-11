@@ -131,6 +131,27 @@ func (ctrl *Controller) Original(c *gin.Context) {
 	c.DataFromReader(http.StatusOK, file.Size, file.ContentType, file.Reader, headers)
 }
 
+// Asset 流式返回文档资产（图片等）字节，用于预览 Markdown 图片。
+func (ctrl *Controller) Asset(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	file, err := ctrl.docs.OpenAsset(c.Request.Context(), user.ID, c.Param("document_id"), c.Param("asset_id"))
+	if err != nil {
+		response.Failure(c, err)
+		return
+	}
+	defer file.Reader.Close()
+	headers := map[string]string{
+		"Content-Disposition":    mime.FormatMediaType("inline", map[string]string{"filename": file.FileName}),
+		"Cache-Control":          "private, max-age=3600",
+		"X-Content-Type-Options": "nosniff",
+	}
+	c.DataFromReader(http.StatusOK, file.Size, file.ContentType, file.Reader, headers)
+}
+
 // ReadContent 使用受限正文读取服务按 token 分页返回已索引文档内容和引用。
 func (ctrl *Controller) ReadContent(c *gin.Context) {
 	user, ok := middleware.GetUser(c)

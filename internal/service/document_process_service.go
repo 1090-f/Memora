@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -322,6 +323,7 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 		SourceURL:        valueOrEmpty(task.SourceURL),
 		FileName:         valueOrEmpty(task.FileName),
 		MIMEType:         valueOrEmpty(task.MIMEType),
+		Attachments:      task.Attachments,
 		Embedder:         embedder,
 		EmbeddingModelID: embeddingModelID,
 		DocMeta: transformer.DocMeta{
@@ -360,6 +362,15 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 	}
 	if strings.TrimSpace(out.Title) != "" {
 		updates["title"] = strings.TrimSpace(out.Title)
+	}
+	if len(out.Warnings) > 0 {
+		warningsJSON, marshalErr := json.Marshal(out.Warnings)
+		if marshalErr != nil {
+			return fmt.Errorf("序列化解析警告失败: %w", marshalErr)
+		}
+		updates["parse_warnings"] = string(warningsJSON)
+	} else {
+		updates["parse_warnings"] = nil
 	}
 	if task.SourceType == string(contracts.DocumentSourceURL) {
 		if err := s.tasks.UpdateURLResult(ctx, task.ID, out.FinalURL, out.SourceHash); err != nil {

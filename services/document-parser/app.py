@@ -153,6 +153,79 @@ def _looks_like_pdf_or_docx(file_name: str) -> bool:
     return lower.endswith(".pdf") or lower.endswith(".docx")
 
 
+_IMAGE_SIGNATURES: list[tuple[bytes, str]] = [
+    (b"\x89PNG\r\n\x1a\n", "png"),
+    (b"\xff\xd8\xff", "jpeg"),
+    (b"RIFF", "webp"),
+    (b"GIF8", "gif"),
+    (b"BM", "bmp"),
+]
+
+
+def _looks_like_image(content: bytes) -> bool:
+    """按魔数判断常见图片格式，禁止伪造格式。"""
+    for signature, _name in _IMAGE_SIGNATURES:
+        if content.startswith(signature):
+            return True
+    return False
+
+
+@app.post("/v1/ocr", response_model=schemas.OcrResult)
+async def ocr_image(
+    request: Request,
+    file: UploadFile = File(...),  # noqa: B008
+    languages: str = Form('["zh", "en"]'),  # noqa: B008
+) -> schemas.OcrResult:
+    """识别单张图片中的文字（RapidOCR）。
+
+    multipart 字段：
+      - file: PNG/JPEG/WebP/GIF/BMP 图片字节；
+      - languages: 语言代码 JSON 数组（仅元信息，模型固定为中英混合）。
+    响应为 OcrResult JSON。图片无法解码或 OCR 失败时返回空 lines（不报错）。
+    """
+    if not _ready.is_set():
+        raise HTTPException(status_code=503, detail="document-parser 正在初始化模型")
+    if _init_error is not None:
+        raise HTTPException(status_code=503, detail="document-parser 模型初始化失败")
+
+    content = await _read_limited(request, file, MAX_ASSET_BYTES)
+    if len(content) == 0:
+        raise HTTPException(status_code=422, detail="空图片")
+    if not _looks_like_image(content):
+        raise HTTPException(status_code=422, detail="不支持的图片格式")
+
+    try:
+        langs = _parse_languages(languages)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"languages 无效: {exc}") from exc
+
+    if not _semaphore.acquire(timeout=MAX_REQUEST_TIMEOUT_S):
+        raise HTTPException(status_code=429, detail="并发解析超限，请稍后重试")
+    try:
+        lines = await asyncio.to_thread(adapter.ocr_image, content)
+    finally:
+        _semaphore.release()
+    return schemas.OcrResult(lines=lines, languages=langs, engine="rapidocr")
+
+
+def _parse_languages(raw: str) -> list[str]:
+    import json
+
+    try:
+        value = json.loads(raw)
+    except Exception as exc:
+        raise ValueError(f"JSON 解析失败: {exc}") from exc
+    if not isinstance(value, list) or not value:
+        raise ValueError("必须是非空数组")
+    langs: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError("语言代码必须是非空字符串")
+        if item not in langs:
+            langs.append(item)
+    return langs
+
+
 async def _read_limited(request: Request, file: UploadFile, limit: int) -> bytes:
     """读取上传文件并强制大小限制。"""
     try:
