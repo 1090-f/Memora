@@ -53,23 +53,18 @@ import { CreateManualDocumentDialog } from '../components/CreateManualDocumentDi
 import { DocumentViewer } from '../components/DocumentViewer';
 import { ImportDrawer } from '../components/ImportDrawer';
 import { KnowledgeTree } from '../components/KnowledgeTree';
+import {
+  documentStatusFilterParams,
+  documentStatusLabel,
+  documentStatusOptions,
+  type DocumentStatusFilter,
+} from '../status';
 import type {
   DocumentListItem,
   DocumentProcessingStatus,
   DocumentSourceType,
   ImportTask,
 } from '../types';
-
-const processingLabel: Record<DocumentProcessingStatus, string> = {
-  pending: '待处理',
-  parsing: '解析中',
-  cleaning: '清洗中',
-  chunking: '分段中',
-  embedding: '向量化中',
-  keyword_indexing: '关键词索引中',
-  succeeded: '已完成',
-  failed: '失败',
-};
 
 const sourceLabel: Record<DocumentSourceType, string> = {
   manual: '手工',
@@ -113,7 +108,7 @@ function DocumentList({
   kbId: string;
   directoryId: string | null;
   keyword: string;
-  status: '' | DocumentProcessingStatus;
+  status: DocumentStatusFilter;
   sourceType: '' | DocumentSourceType;
   selectedId: string | null;
   onSelect: (id: string) => void;
@@ -128,7 +123,7 @@ function DocumentList({
       page_size: 100,
       directory_id: directoryId || undefined,
       keyword: keyword.trim() || undefined,
-      processing_status: status || undefined,
+      ...documentStatusFilterParams(status),
       source_type: sourceType || undefined,
     }),
     // 仅存在处理中记录时轮询；进入终态后自动停止，避免无意义请求。
@@ -149,7 +144,7 @@ function DocumentList({
         <ListItemButton key={document.id} selected={selectedId === document.id} onClick={() => onSelect(document.id)}>
           <ListItemText
             primary={document.title}
-            secondary={`${processingLabel[document.processing_status]} · ${sourceLabel[document.source_type]}`}
+            secondary={`${documentStatusLabel(document.processing_status, document.index_mode)} · ${sourceLabel[document.source_type]}`}
           />
           {isProcessing(document.processing_status) && <Chip size="small" color="info" label="处理中" sx={{ mr: 0.5 }} />}
           <Tooltip title={document.processing_status === 'failed' ? '重试处理' : '仅失败文档可重试'}>
@@ -243,7 +238,7 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
   const [directoryId, setDirectoryId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(documentId ?? null);
   const [keyword, setKeyword] = useState('');
-  const [processingStatus, setProcessingStatus] = useState<'' | DocumentProcessingStatus>('');
+  const [processingStatus, setProcessingStatus] = useState<DocumentStatusFilter>('');
   const [sourceType, setSourceType] = useState<'' | DocumentSourceType>('');
   const [deleteTarget, setDeleteTarget] = useState<DocumentListItem | null>(null);
   const [notice, setNotice] = useState('');
@@ -355,9 +350,9 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
                   InputProps={{ startAdornment: <InputAdornment position="start"><SearchOutlined fontSize="small" /></InputAdornment> }}
                   sx={{ flexGrow: 1 }}
                 />
-                <TextField select size="small" label="状态" value={processingStatus} onChange={(event) => setProcessingStatus(event.target.value as '' | DocumentProcessingStatus)} sx={{ minWidth: 150 }}>
+                <TextField select size="small" label="状态" value={processingStatus} onChange={(event) => setProcessingStatus(event.target.value as DocumentStatusFilter)} sx={{ minWidth: 190 }}>
                   <MenuItem value="">全部状态</MenuItem>
-                  {Object.entries(processingLabel).map(([value, label]) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
+                  {documentStatusOptions.map(({ value, label }) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
                 </TextField>
                 <TextField select size="small" label="来源" value={sourceType} onChange={(event) => setSourceType(event.target.value as '' | DocumentSourceType)} sx={{ minWidth: 130 }}>
                   <MenuItem value="">全部来源</MenuItem>

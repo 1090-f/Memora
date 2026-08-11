@@ -79,7 +79,11 @@ services:
       MEMORA_DOCUMENT_CONSUMER_MAX_ATTEMPTS: ${MEMORA_DOCUMENT_CONSUMER_MAX_ATTEMPTS:-3}
       MEMORA_OUTBOX_POLL_INTERVAL: ${MEMORA_OUTBOX_POLL_INTERVAL:-500ms}
       MEMORA_OUTBOX_BATCH_SIZE: ${MEMORA_OUTBOX_BATCH_SIZE:-100}
-      MEMORA_DOCUMENT_PARSER_BASE_URL: "http://document-parser:5001"
+      MEMORA_DOCUMENT_PARSER_BASE_URL: "http://127.0.0.1:5001"
+      MEMORA_DOCUMENT_PARSER_AUTO_START: "true"
+      MEMORA_DOCUMENT_PARSER_AUTO_START_COMMAND: "uv"
+      MEMORA_DOCUMENT_PARSER_AUTO_START_WORKING_DIRECTORY: "/app/services/document-parser"
+      MEMORA_DOCUMENT_PARSER_AUTO_START_TIMEOUT: ${MEMORA_DOCUMENT_PARSER_AUTO_START_TIMEOUT:-10m}
       MEMORA_DOCUMENT_PARSER_TIMEOUT: ${MEMORA_DOCUMENT_PARSER_TIMEOUT:-8m}
       MEMORA_DOCUMENT_PARSER_MAX_RESPONSE_SIZE: ${MEMORA_DOCUMENT_PARSER_MAX_RESPONSE_SIZE:-134217728}
       MEMORA_DOCUMENT_PARSER_MAX_FILE_BYTES: ${MEMORA_DOCUMENT_PARSER_MAX_FILE_BYTES:-67108864}
@@ -89,6 +93,8 @@ services:
       MEMORA_DOCUMENT_PARSER_TABLE_STRUCTURE: ${MEMORA_DOCUMENT_PARSER_TABLE_STRUCTURE:-true}
       MEMORA_DOCUMENT_PARSER_EXTRACT_PICTURES: ${MEMORA_DOCUMENT_PARSER_EXTRACT_PICTURES:-true}
       MEMORA_DOCUMENT_PARSER_INCLUDE_BBOXES: ${MEMORA_DOCUMENT_PARSER_INCLUDE_BBOXES:-true}
+      DOCUMENT_PARSER_LOG_LEVEL: ${DOCUMENT_PARSER_LOG_LEVEL:-info}
+      DOCUMENT_PARSER_MAX_CONCURRENCY: ${DOCUMENT_PARSER_MAX_CONCURRENCY:-2}
       MEMORA_CHUNKING_STRATEGY_VERSION: ${MEMORA_CHUNKING_STRATEGY_VERSION:-structure-v1}
       MEMORA_CHUNKING_MAX_TOKENS: ${MEMORA_CHUNKING_MAX_TOKENS:-1000}
       MEMORA_CHUNKING_MIN_TOKENS: ${MEMORA_CHUNKING_MIN_TOKENS:-100}
@@ -116,36 +122,22 @@ services:
     command: ["memora-server"]
     environment: *memora-environment
     ports: ["8080:8080"]
+    volumes:
+      - docling-models:/models/huggingface
     depends_on: &application-dependencies
       bootstrap-admin: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
       minio-init: {condition: service_completed_successfully}
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/health/ready"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health/ready', timeout=3)"]
       interval: 5s
       timeout: 3s
+      start_period: 300s
       retries: 10
     restart: unless-stopped
     networks:
       default:
         aliases: [memora-server]
-
-  document-parser:
-    build: {context: ../services/document-parser, dockerfile: Dockerfile}
-    environment:
-      DOCUMENT_PARSER_LOG_LEVEL: info
-      DOCUMENT_PARSER_MAX_CONCURRENCY: ${DOCUMENT_PARSER_MAX_CONCURRENCY:-2}
-      HF_HOME: /models/huggingface
-    volumes:
-      - docling-models:/models/huggingface
-    ports: ["5001:5001"]
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5001/health/ready', timeout=4)"]
-      interval: 30s
-      timeout: 5s
-      start_period: 300s
-      retries: 5
-    restart: unless-stopped
     deploy:
       resources:
         limits:

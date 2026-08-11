@@ -65,6 +65,14 @@ type MCPToolSummary struct {
 	Enabled     bool    `json:"enabled"`
 }
 
+// MCPEnabledTool 表示当前用户已启用（Server 与 Tool 均启用）的 MCP 工具，
+// 供 Agent 准备阶段过滤模型可见工具集合（第一层拦截）。
+type MCPEnabledTool struct {
+	ServerID string `json:"server_id"` // 所属 MCP Server ID，对应 ToolSpec.SourceID
+	ToolName string `json:"tool_name"` // 工具名称，对应 ToolSpec.Name
+	ReadOnly bool   `json:"read_only"` // 是否只读
+}
+
 // MCPServerDetailResponse 是获取单个 MCP Server 详情的响应。
 type MCPServerDetailResponse struct {
 	Server MCPServerSummary `json:"server"`

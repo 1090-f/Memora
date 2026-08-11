@@ -2,6 +2,7 @@ package document
 
 import (
 	"io"
+	"mime"
 	"net/http"
 	"strconv"
 
@@ -60,6 +61,9 @@ func (ctrl *Controller) List(c *gin.Context) {
 	if value := c.Query("processing_status"); value != "" {
 		filter.ProcessingStatus = &value
 	}
+	if value := c.Query("index_mode"); value != "" {
+		filter.IndexMode = &value
+	}
 	if value := c.Query("source_type"); value != "" {
 		filter.SourceType = &value
 	}
@@ -85,6 +89,46 @@ func (ctrl *Controller) Get(c *gin.Context) {
 		return
 	}
 	response.Success(c, http.StatusOK, result)
+}
+
+// Preview 返回完整解析产物中的阅读版正文，不使用检索 Chunk 拼接。
+func (ctrl *Controller) Preview(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	result, err := ctrl.docs.Preview(c.Request.Context(), user.ID, c.Param("document_id"))
+	if err != nil {
+		response.Failure(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
+}
+
+// Original 流式返回文件导入文档的原始文件；inline=true 时优先交给浏览器预览。
+func (ctrl *Controller) Original(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	file, err := ctrl.docs.OpenOriginal(c.Request.Context(), user.ID, c.Param("document_id"))
+	if err != nil {
+		response.Failure(c, err)
+		return
+	}
+	defer file.Reader.Close()
+	disposition := "attachment"
+	if c.Query("inline") == "true" {
+		disposition = "inline"
+	}
+	headers := map[string]string{
+		"Content-Disposition":    mime.FormatMediaType(disposition, map[string]string{"filename": file.FileName}),
+		"Cache-Control":          "private, no-store",
+		"X-Content-Type-Options": "nosniff",
+	}
+	c.DataFromReader(http.StatusOK, file.Size, file.ContentType, file.Reader, headers)
 }
 
 // ReadContent 使用受限正文读取服务按 token 分页返回已索引文档内容和引用。

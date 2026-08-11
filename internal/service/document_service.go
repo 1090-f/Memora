@@ -19,6 +19,7 @@ import (
 	dto "github.com/1090-f/Memora/internal/model/dto/response"
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/1090-f/Memora/internal/repository"
+	"github.com/1090-f/Memora/internal/service/rag/parser"
 	"github.com/1090-f/Memora/pkg/logger"
 	"github.com/1090-f/Memora/pkg/objectstore"
 	"go.uber.org/zap"
@@ -47,6 +48,10 @@ type ObjectStore interface {
 	Bucket() string
 	// PutObject 将 reader 流式上传到指定 key，超时由调用方控制。
 	PutObject(ctx context.Context, objectKey string, reader io.Reader, size int64, contentType string) error
+	// OpenObject 返回对象读取流，调用方负责关闭。
+	OpenObject(ctx context.Context, objectKey string) (io.ReadCloser, error)
+	// StatObject 返回对象元信息。
+	StatObject(ctx context.Context, objectKey string) (*objectstore.ObjectInfo, error)
 	// RemoveObject 删除指定对象，用于上传失败的补偿清理。
 	RemoveObject(ctx context.Context, objectKey string) error
 }
@@ -55,11 +60,12 @@ type ObjectStore interface {
 // 注意：上传流程不得使用数据库事务包裹 MinIO I/O（规范红线），
 // 因此本服务不持有 Transactor；补偿通过显式删除实现。
 type documentService struct {
-	docs  repository.DocumentRepository
-	tasks repository.ImportTaskRepository
-	kbs   repository.KnowledgeBaseRepository
-	dirs  repository.DocumentDirectoryRepository
-	store ObjectStore
+	docs            repository.DocumentRepository
+	tasks           repository.ImportTaskRepository
+	kbs             repository.KnowledgeBaseRepository
+	dirs            repository.DocumentDirectoryRepository
+	store           ObjectStore
+	parseConfigHash string
 }
 
 // NewDocumentService 创建一个新的文档服务实例。
@@ -69,8 +75,9 @@ func NewDocumentService(
 	kbs repository.KnowledgeBaseRepository,
 	dirs repository.DocumentDirectoryRepository,
 	store ObjectStore,
+	parseConfigHash string,
 ) DocumentService {
-	return &documentService{docs: docs, tasks: tasks, kbs: kbs, dirs: dirs, store: store}
+	return &documentService{docs: docs, tasks: tasks, kbs: kbs, dirs: dirs, store: store, parseConfigHash: parseConfigHash}
 }
 
 // CreateManual 手工创建只读知识文档。
@@ -121,9 +128,16 @@ func (s *documentService) List(ctx context.Context, userID, kbID string, page, p
 	if pageSize <= 0 || pageSize > 100 {
 		pageSize = 20
 	}
+	if filter.IndexMode != nil {
+		switch contracts.DocumentIndexMode(*filter.IndexMode) {
+		case contracts.DocumentIndexNone, contracts.DocumentIndexKeyword, contracts.DocumentIndexHybrid:
+		default:
+			return nil, apperrors.ErrInvalidArgument
+		}
+	}
 	items, total, err := s.docs.ListByKB(ctx, userID, kbID, page, pageSize, repository.DocumentFilter{
 		Keyword: filter.Keyword, DirectoryID: filter.DirectoryID,
-		ProcessingStatus: filter.ProcessingStatus, SourceType: filter.SourceType,
+		ProcessingStatus: filter.ProcessingStatus, IndexMode: filter.IndexMode, SourceType: filter.SourceType,
 	})
 	if err != nil {
 		return nil, apperrors.New(contracts.ErrInternal, err)
@@ -132,7 +146,7 @@ func (s *documentService) List(ctx context.Context, userID, kbID string, page, p
 	for _, doc := range items {
 		result.Items = append(result.Items, &dto.DocumentListItem{
 			ID: doc.ID, Title: doc.Title, DirectoryID: doc.DirectoryID,
-			SourceType: doc.SourceType, ProcessingStatus: doc.ProcessingStatus,
+			SourceType: doc.SourceType, ProcessingStatus: doc.ProcessingStatus, IndexMode: documentIndexMode(doc),
 			FileSize: doc.FileSize, CreatedAt: doc.CreatedAt, UpdatedAt: doc.UpdatedAt,
 		})
 	}
@@ -149,6 +163,103 @@ func (s *documentService) Get(ctx context.Context, userID, documentID string) (*
 		return nil, apperrors.New(contracts.ErrInternal, err)
 	}
 	return documentResponse(doc), nil
+}
+
+// Preview 从解析 Artifact 读取完整 Markdown/纯文本，避免用检索 Chunk 反向拼接正文造成结构损失。
+func (s *documentService) Preview(ctx context.Context, userID, documentID string) (*dto.DocumentPreviewResponse, error) {
+	doc, err := s.docs.FindByID(ctx, userID, documentID)
+	if errors.Is(err, repository.ErrDocumentNotFound) {
+		return nil, apperrors.ErrNotFound
+	}
+	if err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	if doc.Content != nil {
+		return &dto.DocumentPreviewResponse{Content: *doc.Content, Format: "txt"}, nil
+	}
+	if doc.ActiveIndexVersion == nil || strings.TrimSpace(s.parseConfigHash) == "" {
+		return nil, apperrors.ErrNotFound
+	}
+	prefix := parser.ArtifactKeyPrefix(userID, documentID, doc.ContentVersion, s.parseConfigHash)
+	artifactStore := parser.NewArtifactStore(&documentArtifactObjectStore{inner: s.store}, parser.DefaultValidateLimits())
+	expectedHash := ""
+	if doc.FileHash != nil {
+		expectedHash = *doc.FileHash
+	}
+	ref, err := artifactStore.Resolve(ctx, prefix, expectedHash)
+	if err != nil {
+		if errors.Is(err, parser.ErrArtifactNotFound) {
+			return nil, apperrors.ErrNotFound
+		}
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	parsed, err := artifactStore.Load(ctx, ref)
+	if err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	if strings.TrimSpace(parsed.Document.Markdown) == "" {
+		return nil, apperrors.ErrNotFound
+	}
+	return &dto.DocumentPreviewResponse{Content: parsed.Document.Markdown, Format: parsed.Source.Format}, nil
+}
+
+// documentArtifactObjectStore 适配文档服务对象存储与 parser ArtifactStore 的元信息类型。
+type documentArtifactObjectStore struct{ inner ObjectStore }
+
+func (s *documentArtifactObjectStore) OpenObject(ctx context.Context, key string) (io.ReadCloser, error) {
+	return s.inner.OpenObject(ctx, key)
+}
+
+func (s *documentArtifactObjectStore) PutObject(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
+	return s.inner.PutObject(ctx, key, reader, size, contentType)
+}
+
+func (s *documentArtifactObjectStore) StatObject(ctx context.Context, key string) (*parser.ObjectInfo, error) {
+	info, err := s.inner.StatObject(ctx, key)
+	if err != nil {
+		if errors.Is(err, objectstore.ErrObjectNotFound) {
+			return nil, parser.ErrObjectNotFound
+		}
+		return nil, err
+	}
+	return &parser.ObjectInfo{Key: info.Key, Size: info.Size, ContentType: info.ContentType, ETag: info.ETag}, nil
+}
+
+func (s *documentArtifactObjectStore) RemoveObject(ctx context.Context, key string) error {
+	return s.inner.RemoveObject(ctx, key)
+}
+
+func (s *documentArtifactObjectStore) Bucket() string { return s.inner.Bucket() }
+
+// OpenOriginal 在校验文档所有权后流式返回原始上传文件。
+func (s *documentService) OpenOriginal(ctx context.Context, userID, documentID string) (*OriginalDocumentFile, error) {
+	doc, err := s.docs.FindByID(ctx, userID, documentID)
+	if errors.Is(err, repository.ErrDocumentNotFound) {
+		return nil, apperrors.ErrNotFound
+	}
+	if err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	if doc.SourceType != string(contracts.DocumentSourceFile) || doc.MinIOObjectKey == nil || strings.TrimSpace(*doc.MinIOObjectKey) == "" {
+		return nil, apperrors.ErrNotFound
+	}
+	reader, err := s.store.OpenObject(ctx, *doc.MinIOObjectKey)
+	if err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	fileName := doc.Title
+	if doc.OriginalFileName != nil && strings.TrimSpace(*doc.OriginalFileName) != "" {
+		fileName = strings.TrimSpace(*doc.OriginalFileName)
+	}
+	contentType := "application/octet-stream"
+	if doc.MIMEType != nil && strings.TrimSpace(*doc.MIMEType) != "" {
+		contentType = strings.TrimSpace(*doc.MIMEType)
+	}
+	size := int64(-1)
+	if doc.FileSize != nil {
+		size = *doc.FileSize
+	}
+	return &OriginalDocumentFile{Reader: reader, FileName: fileName, ContentType: contentType, Size: size}, nil
 }
 
 // Delete 软删除文档。
@@ -378,8 +489,18 @@ func documentResponse(doc *entity.Document) *dto.DocumentResponse {
 		Title: doc.Title, Content: doc.Content, SourceType: doc.SourceType,
 		SourceURL: doc.SourceURL, OriginalFileName: doc.OriginalFileName,
 		FileSize: doc.FileSize, MIMEType: doc.MIMEType,
-		ProcessingStatus: doc.ProcessingStatus, FailureStep: doc.FailureStep, FailureReason: doc.FailureReason,
+		ProcessingStatus: doc.ProcessingStatus, IndexMode: documentIndexMode(doc), FailureStep: doc.FailureStep, FailureReason: doc.FailureReason,
 		ContentVersion: doc.ContentVersion, ChunkVersion: doc.ChunkVersion,
 		ActiveIndexVersion: doc.ActiveIndexVersion, CreatedAt: doc.CreatedAt, UpdatedAt: doc.UpdatedAt,
 	}
+}
+
+func documentIndexMode(doc *entity.Document) string {
+	if doc == nil || doc.ActiveIndexVersion == nil {
+		return string(contracts.DocumentIndexNone)
+	}
+	if doc.EmbeddingModelID != nil && strings.TrimSpace(*doc.EmbeddingModelID) != "" {
+		return string(contracts.DocumentIndexHybrid)
+	}
+	return string(contracts.DocumentIndexKeyword)
 }

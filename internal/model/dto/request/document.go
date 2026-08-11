@@ -14,6 +14,7 @@ type DocumentListFilter struct {
 	Keyword          string  // 按标题关键词模糊搜索
 	DirectoryID      *string // 按目录 ID 过滤
 	ProcessingStatus *string // 按处理状态过滤（pending/processing/succeeded/failed）
+	IndexMode        *string // 按活动索引能力过滤（none/keyword/hybrid）
 	SourceType       *string // 按来源类型过滤（manual/file/url）
 }
 

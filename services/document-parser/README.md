@@ -35,10 +35,15 @@ services/document-parser/
 
 前置：安装 [uv](https://docs.astral.sh/uv/)，Python >= 3.10。
 
+从仓库根目录运行 `go run ./cmd/server` 时，主程序默认自动托管本服务。主程序会检查
+`/health/ready`，仅在服务不可达时执行配置的启动命令，并在退出时回收其启动的进程。
+已由其他方式启动的解析服务只会被复用，不会被关闭。首次运行仍需等待 `uv` 同步依赖
+和 Docling 初始化模型。
+
 ```bash
 cd services/document-parser
 uv sync
-uv run uvicorn app:app --host 0.0.0.0 --port 5001
+uv run --frozen --no-dev uvicorn app:app --host 0.0.0.0 --port 5001
 ```
 
 > **Windows 中文路径限制**：docling-parse 的 C++ 组件用窄字符路径打开字体资源，
@@ -107,11 +112,8 @@ uv run pytest                 # 模型用例默认跳过
 $env:DOCLING_MODELS_READY="1"; uv run pytest   # 启用真实模型用例
 ```
 
-## Docker
+## 部署
 
-```bash
-docker build -t memora/document-parser .
-docker run -p 5001:5001 -v docling-models:/root/.cache/huggingface memora/document-parser
-```
-
-镜像使用固定 Python/依赖版本（uv.lock），默认 CPU；模型缓存挂载独立 volume。
+解析服务不再构建或运行独立 Docker 容器。仓库根目录的主 `Dockerfile` 会将 Python
+3.11、`uv`、固定依赖（`uv.lock`）和本目录源码一并打包到 API 镜像，由
+`memora-server` 启动和关闭解析进程。模型缓存通过 API 容器的 `docling-models` 卷持久化。

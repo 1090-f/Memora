@@ -757,23 +757,23 @@ asset_enrichment:
 - Python 和 Go 大小限制一致或 Python 更严格；
 - 密钥只来自环境变量/secret。
 
-## 17. Docker 与 Windows
+## 17. 主程序托管与部署
 
-Python 服务保持常驻，但启动方式可选：
+Python 服务保持常驻，并统一由 `memora-server` 管理生命周期：
 
 ```text
-Windows 本地调试：venv + uvicorn，Go 使用 http://localhost:5001
-Compose 联调/部署：document-parser 容器，Worker 使用 http://document-parser:5001
+Windows 本地调试：memora-server → uv → uvicorn，使用 http://127.0.0.1:5001
+Compose 联调/部署：API 容器内 memora-server → uv → uvicorn，使用容器内回环地址
 ```
 
 Compose 要求：
 
-- 构建 `services/document-parser/Dockerfile`；
-- 固定 Python、Docling 和基础镜像版本；
-- 默认 CPU，可提供独立 GPU profile；
-- 模型缓存使用独立 volume；
-- healthcheck 调用 `/health/ready`；
-- 只有 Worker 依赖 parser，API 不依赖；
+- 根 `Dockerfile` 同时打包 Go 主程序、Python 3.11、uv、Docling 和解析源码；
+- 不创建独立 `document-parser` 容器，不暴露 5001 端口；
+- 默认 CPU，Python 与 Docling 依赖由 `uv.lock` 固定；
+- API 容器挂载独立模型缓存 volume；
+- `memora-server` 等待 parser `/health/ready` 后再启动 HTTP 服务；
+- 主程序退出时回收自己启动的解析进程；
 - 不挂载 Docker socket；
 - 默认禁止远程模型服务。
 
@@ -954,8 +954,8 @@ go vet ./...
 
 ```bash
 docker compose -f deploy/docker-compose.yml config
-docker compose -f deploy/docker-compose.yml build document-parser
-docker compose -f deploy/docker-compose.yml up -d document-parser
+docker compose -f deploy/docker-compose.yml build api
+docker compose -f deploy/docker-compose.yml up -d api
 ```
 
 ## 22. 完成定义

@@ -10,11 +10,28 @@ import (
 
 const maxToolArgumentBytes = 64 * 1024
 
+// ToolAvailabilityChecker 在工具真正执行前动态复核工具是否仍可用。
+// 内置工具的启用状态由注册时快照固化即可；MCP 工具的启用状态可在前端动态修改，
+// 因此需要在每次调用前向数据层复核 Server 与 Tool 的启用状态（第二层拦截）。
+// 该接口由上层（如 MCP 服务）注入实现，工具模块自身不依赖数据层。
+type ToolAvailabilityChecker interface {
+	CheckToolAvailable(ctx context.Context, userID contracts.ID, spec contracts.ToolSpec) (bool, error)
+}
+
 // Executor 是 contracts.ToolExecutor 的唯一安全执行入口。
-type Executor struct{ registry *Registry }
+type Executor struct {
+	registry  *Registry
+	available ToolAvailabilityChecker // 可选的调用前动态可用性检查器
+}
 
 // NewExecutor 创建绑定指定注册表的执行器。
 func NewExecutor(registry *Registry) *Executor { return &Executor{registry: registry} }
+
+// SetAvailabilityChecker 注入调用前动态可用性检查器（如 MCP 工具的启用状态复核）。
+// 内置工具可省略；注入后 Executor 会对带 SourceID 的工具（MCP）在真正执行前动态复检。
+func (e *Executor) SetAvailabilityChecker(checker ToolAvailabilityChecker) {
+	e.available = checker
+}
 
 // Execute 统一执行前置授权、参数大小/合法性、超时和结果归一化检查。
 func (e *Executor) Execute(ctx context.Context, toolContext contracts.ToolContext, call contracts.ToolCall) (contracts.ToolResult, error) {
@@ -37,6 +54,18 @@ func (e *Executor) Execute(ctx context.Context, toolContext contracts.ToolContex
 	}
 	if spec.NetworkRequired && !toolContext.NetworkEnabled {
 		return failure(call, contracts.ErrNetworkDisabled, "network tool is disabled")
+	}
+	// 第二层拦截：MCP 工具启用状态可在前端动态修改，注册时快照已不可信，
+	// 因此对带 SourceID 的 MCP 工具在真正执行前向数据层动态复核一次。
+	// 内置工具 SourceID 为空，跳过动态检查，仅依赖注册时的静态快照。
+	if e.available != nil && spec.SourceID != "" {
+		available, err := e.available.CheckToolAvailable(ctx, toolContext.UserID, spec)
+		if err != nil {
+			return failure(call, contracts.ErrInternal, "failed to check tool availability")
+		}
+		if !available {
+			return failure(call, contracts.ErrMCPToolDisabled, "tool is no longer available")
+		}
 	}
 	if len(call.Arguments) > maxToolArgumentBytes {
 		return failure(call, contracts.ErrPayloadTooLarge, "tool arguments are too large")

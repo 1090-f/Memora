@@ -52,6 +52,7 @@ type Dependencies struct {
 	PostgresHealth  HealthCheck
 	RedisHealth     HealthCheck
 	MinIOHealth     HealthCheck
+	ParserHealth    HealthCheck
 	WorkerCount     WorkerCount
 }
 
@@ -106,7 +107,12 @@ func workerHealth(countWorkers WorkerCount) gin.HandlerFunc {
 // readiness 返回一个处理器，并发检查所有基础设施依赖的就绪状态。
 func readiness(deps Dependencies) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		checks := map[string]HealthCheck{"postgres": deps.PostgresHealth, "redis": deps.RedisHealth, "minio": deps.MinIOHealth}
+		checks := map[string]HealthCheck{
+			"postgres":        deps.PostgresHealth,
+			"redis":           deps.RedisHealth,
+			"minio":           deps.MinIOHealth,
+			"document_parser": deps.ParserHealth,
+		}
 		results := make(map[string]string, len(checks))
 		var mutex sync.Mutex
 		var wait sync.WaitGroup

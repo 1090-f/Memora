@@ -370,6 +370,9 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 		updates["embedding_model_id"] = embeddingModelID
 	} else if modelID := s.processor.EmbeddingModelID(); modelID != "" {
 		updates["embedding_model_id"] = modelID
+	} else {
+		// 新活动版本未生成向量时清空旧模型，避免把关键词索引误报为混合索引。
+		updates["embedding_model_id"] = nil
 	}
 	if err := s.docs.UpdateProcessing(ctx, doc.ID, updates); err != nil {
 		return fmt.Errorf("切换活动索引版本失败: %w", err)

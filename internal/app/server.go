@@ -15,6 +15,7 @@ import (
 	"github.com/1090-f/Memora/internal/background"
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service"
+	"github.com/1090-f/Memora/internal/service/rag/parser"
 	ragpipeline "github.com/1090-f/Memora/internal/service/rag/pipeline"
 	ragretrieval "github.com/1090-f/Memora/internal/service/rag/retrieval"
 	"github.com/1090-f/Memora/internal/service/rag/tokenizer"
@@ -31,12 +32,13 @@ import (
 
 // ServerApp 管理 HTTP 服务器应用的生命周期，包括初始化、运行和关闭。
 type ServerApp struct {
-	cfg        *config.Config
-	db         *gorm.DB
-	redis      *redis.Client
-	store      *objectstore.Client
-	server     *http.Server
-	background *background.Manager
+	cfg            *config.Config
+	db             *gorm.DB
+	redis          *redis.Client
+	store          *objectstore.Client
+	server         *http.Server
+	background     *background.Manager
+	documentParser *documentParserProcess
 }
 
 // NewServer 创建一个新的 ServerApp 实例。
@@ -79,6 +81,11 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		_ = a.redis.Close()
 		_ = database.ClosePostgres(a.db)
 		return err
+	}
+	a.documentParser = newDocumentParserProcess(cfg.DocumentParser)
+	if err := a.documentParser.Ensure(ctx); err != nil {
+		_ = a.Close()
+		return fmt.Errorf("启动文档解析服务失败: %w", err)
 	}
 
 	users := repository.NewUserRepository(a.db)
@@ -127,7 +134,12 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	importTasks := repository.NewImportTaskRepository(a.db)
 	chunks := repository.NewDocumentChunkRepository(a.db)
 	vectors := repository.NewVectorRepository(a.db)
-	documentService := service.NewDocumentService(docs, importTasks, kbs, dirs, a.store)
+	parseConfigHash, err := parser.ParseConfigHash(documentParseOptions(cfg))
+	if err != nil {
+		_ = a.Close()
+		return fmt.Errorf("计算文档预览解析配置哈希失败: %w", err)
+	}
+	documentService := service.NewDocumentService(docs, importTasks, kbs, dirs, a.store, parseConfigHash)
 	citationService := service.NewCitationService()
 	documentReader, err := service.NewDocumentReader(chunks, citationService, cfg.JWT.Secret)
 	if err != nil {
@@ -192,6 +204,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		PostgresHealth: func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
 		RedisHealth:    func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
 		MinIOHealth:    a.store.Health,
+		ParserHealth:   a.documentParser.Health,
 		WorkerCount: func(context.Context) (int64, error) {
 			if cfg.DocumentConsumer.Enabled {
 				return int64(cfg.DocumentConsumer.Concurrency), nil
@@ -243,6 +256,9 @@ func (a *ServerApp) Run(ctx context.Context) error {
 // Close 释放服务器应用持有的所有资源。
 func (a *ServerApp) Close() error {
 	var closeErr error
+	if a.documentParser != nil {
+		closeErr = errors.Join(closeErr, a.documentParser.Close())
+	}
 	if a.redis != nil {
 		closeErr = errors.Join(closeErr, a.redis.Close())
 	}
