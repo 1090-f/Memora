@@ -36,7 +36,7 @@ func buildDocumentProcessService(cfg *config.Config, store *objectstore.Client, 
 	if err != nil {
 		return nil, fmt.Errorf("构造文档加工流水线失败: %w", err)
 	}
-	return service.NewDocumentProcessService(tasks, docs, chunks, vectors, documentPipeline, embeddings), nil
+	return service.NewDocumentProcessService(tasks, docs, chunks, vectors, documentPipeline, embeddings, store), nil
 }
 
 func documentParseOptions(cfg *config.Config) parser.ParseOptions {

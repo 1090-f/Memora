@@ -127,19 +127,21 @@ type TableCell struct {
 // Asset 是文档中提取的图片等二进制资产。
 // 保存 Artifact 时 data_base64 被替换为 ObjectKey；日志禁止记录 base64。
 type Asset struct {
-	ID         string         `json:"id"`
-	Kind       string         `json:"kind"`
-	MIMEType   string         `json:"mime_type"`
-	SHA256     string         `json:"sha256"`
-	Width      int            `json:"width"`
-	Height     int            `json:"height"`
-	Page       int            `json:"page"`
-	BBox       []float64      `json:"bbox"`
-	Caption    string         `json:"caption"`
-	DataBase64 string         `json:"data_base64,omitempty"`
-	ObjectKey  string         `json:"object_key,omitempty"`
-	Omitted    bool           `json:"omitted"`
-	Metadata   map[string]any `json:"metadata"`
+	ID         string    `json:"id"`
+	Kind       string    `json:"kind"`
+	MIMEType   string    `json:"mime_type"`
+	SHA256     string    `json:"sha256"`
+	Width      int       `json:"width"`
+	Height     int       `json:"height"`
+	Page       int       `json:"page"`
+	BBox       []float64 `json:"bbox"`
+	Caption    string    `json:"caption"`
+	DataBase64 string    `json:"data_base64,omitempty"`
+	ObjectKey  string    `json:"object_key,omitempty"`
+	Omitted    bool      `json:"omitted"`
+	// SourceRef 是 Markdown 图片的原始引用（预览重写用）；PDF/DOCX 资产为空。
+	SourceRef string         `json:"source_ref,omitempty"`
+	Metadata  map[string]any `json:"metadata"`
 }
 
 // ArtifactManifest 是 Parsed Artifact 的完整性清单：
@@ -171,6 +173,7 @@ type ParseOptions struct {
 	SchemaVersion   string   `json:"schema_version"`
 	OCRLanguages    []string `json:"ocr_languages"`
 	DoOCR           bool     `json:"do_ocr"`
+	DoImageOCR      bool     `json:"do_image_ocr"`
 	TableStructure  bool     `json:"table_structure"`
 	ExtractPictures bool     `json:"extract_pictures"`
 	IncludeBBoxes   bool     `json:"include_bboxes"`
@@ -182,6 +185,7 @@ func DefaultParseOptions() ParseOptions {
 		SchemaVersion:   SchemaVersion,
 		OCRLanguages:    []string{"zh", "en"},
 		DoOCR:           true,
+		DoImageOCR:      true,
 		TableStructure:  true,
 		ExtractPictures: true,
 		IncludeBBoxes:   true,

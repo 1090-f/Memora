@@ -43,6 +43,7 @@ export interface Document {
   index_mode: DocumentIndexMode;
   failure_step?: string;
   failure_reason?: string;
+  parse_warnings?: string[];
   content_version: number;
   chunk_version: number;
   active_index_version?: number;
@@ -79,6 +80,18 @@ export interface DocumentReadPage {
 export interface DocumentPreview {
   content: string;
   format: 'markdown' | 'txt' | 'pdf' | 'docx' | string;
+}
+
+export type ImageRefStatus = 'inline' | 'network' | 'matched' | 'pending';
+
+export interface ImageScanItem {
+  alt: string;
+  ref: string;
+  status: ImageRefStatus;
+}
+
+export interface ImageScanResult {
+  refs: ImageScanItem[];
 }
 
 export interface ImportTask {

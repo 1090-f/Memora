@@ -11,6 +11,11 @@ func (ctrl *Controller) RegisterRoutes(v1 *gin.RouterGroup, authRequired gin.Han
 	docs.GET("/documents/:document_id/original", ctrl.Original)
 	docs.DELETE("/documents/:document_id", ctrl.Delete)
 
+	// 资产下载不走 Bearer 认证：浏览器 <img> 无法携带 header，
+	// 改为 HMAC 签名 URL（Preview 重写时生成），路由内校验 exp/sig。
+	assets := v1.Group("/documents/:document_id/assets")
+	assets.GET("/:asset_id", ctrl.Asset)
+
 	// 知识库域下的文档集合操作（创建/列表）与导入上传分别成组。
 	kbDocs := v1.Group("/knowledge-bases/:kb_id/documents", authRequired)
 	kbDocs.POST("", ctrl.CreateManual)

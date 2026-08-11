@@ -9,6 +9,9 @@ func (ctrl *Controller) RegisterRoutes(v1 *gin.RouterGroup, authRequired gin.Han
 	tasks.GET("/knowledge-bases/:kb_id/import-tasks", ctrl.List)
 	tasks.GET("/import-tasks/:task_id", ctrl.Get)
 	tasks.POST("/import-tasks/:task_id/retry", ctrl.Retry)
+	tasks.POST("/import-tasks/:task_id/start", ctrl.Start)
+	tasks.POST("/import-tasks/:task_id/scan", ctrl.Scan)
+	tasks.POST("/import-tasks/:task_id/attachments", ctrl.Attachments)
 
 	// 文档处理：按文档 ID 查询处理状态、重试与重新索引。
 	docs := v1.Group("/documents/:document_id", authRequired)

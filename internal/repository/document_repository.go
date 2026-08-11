@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/model/entity"
 	"gorm.io/gorm"
 )
@@ -50,6 +51,15 @@ func (r *documentRepository) FindByID(ctx context.Context, userID, documentID st
 	// 查询强制带 user_id 与 deleted_at，防止越权访问他人文档或命中已删除记录。
 	err := dbFromContext(ctx, r.db).WithContext(ctx).
 		Where("id = ? AND user_id = ? AND deleted_at IS NULL", documentID, userID).
+		First(&doc).Error
+	return mapDocumentResult(&doc, err)
+}
+
+// FindByIDInternal 按文档 ID 查询未删除文档（资产签名 URL 校验后使用）。
+func (r *documentRepository) FindByIDInternal(ctx context.Context, documentID string) (*entity.Document, error) {
+	var doc entity.Document
+	err := dbFromContext(ctx, r.db).WithContext(ctx).
+		Where("id = ? AND deleted_at IS NULL", documentID).
 		First(&doc).Error
 	return mapDocumentResult(&doc, err)
 }
@@ -233,6 +243,16 @@ func (r *importTaskRepository) FindByIDInternal(ctx context.Context, taskID stri
 
 // UpdateObjectInfo 更新任务的 MinIO 对象信息与源哈希。
 func (r *importTaskRepository) UpdateObjectInfo(ctx context.Context, userID, taskID string, bucket, objectKey string, sourceHash *string) error {
+	return r.updateObjectInfo(ctx, userID, taskID, bucket, objectKey, sourceHash, true)
+}
+
+// UpdateObjectInfoNoEnqueue 更新对象信息但不入队：Markdown/ZIP 需用户确认补传图片后
+// 通过 StartPendingTask 显式触发解析。
+func (r *importTaskRepository) UpdateObjectInfoNoEnqueue(ctx context.Context, userID, taskID string, bucket, objectKey string, sourceHash *string) error {
+	return r.updateObjectInfo(ctx, userID, taskID, bucket, objectKey, sourceHash, false)
+}
+
+func (r *importTaskRepository) updateObjectInfo(ctx context.Context, userID, taskID string, bucket, objectKey string, sourceHash *string, enqueue bool) error {
 	updates := map[string]any{
 		"minio_bucket":     bucket,
 		"minio_object_key": objectKey,
@@ -249,10 +269,30 @@ func (r *importTaskRepository) UpdateObjectInfo(ctx context.Context, userID, tas
 		if result.RowsAffected == 0 {
 			return ErrImportTaskNotFound
 		}
-		return enqueueTaskEvent(tx, taskID)
+		if enqueue {
+			return enqueueTaskEvent(tx, taskID)
+		}
+		return nil
 	})
 }
 
+// StartPendingTask 将 pending 任务入队（触发 Worker 处理）；仅允许未处理的任务。
+// 供 Markdown/ZIP 导入在用户确认图片补传后显式触发。
+func (r *importTaskRepository) StartPendingTask(ctx context.Context, userID, taskID string) error {
+	return dbFromContext(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var task entity.ImportTask
+		if err := tx.Where("id = ? AND user_id = ?", taskID, userID).First(&task).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrImportTaskNotFound
+			}
+			return fmt.Errorf("查询导入任务失败: %w", err)
+		}
+		if task.Status != string(contracts.TaskStatusPending) {
+			return fmt.Errorf("任务状态 %q 不允许开始（仅 pending）", task.Status)
+		}
+		return enqueueTaskEvent(tx, taskID)
+	})
+}
 func (r *importTaskRepository) UpdateURLResult(ctx context.Context, taskID, finalURL, sourceHash string) error {
 	updates := map[string]any{}
 	if finalURL != "" {
@@ -268,6 +308,22 @@ func (r *importTaskRepository) UpdateURLResult(ctx context.Context, taskID, fina
 		Where("id = ? AND source_type = 'url'", taskID).Updates(updates)
 	if result.Error != nil {
 		return fmt.Errorf("更新 URL 导入结果失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrImportTaskNotFound
+	}
+	return nil
+}
+
+// UpdateAttachments 保存 zip 导入的附件映射（相对路径 → MinIO object key）。
+func (r *importTaskRepository) UpdateAttachments(ctx context.Context, userID, taskID string, attachments map[string]string) error {
+	if len(attachments) == 0 {
+		return nil
+	}
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.ImportTask{}).
+		Where("id = ? AND user_id = ?", taskID, userID).Update("attachments", attachments)
+	if result.Error != nil {
+		return fmt.Errorf("更新导入任务附件映射失败: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return ErrImportTaskNotFound

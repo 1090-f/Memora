@@ -1,6 +1,7 @@
 package importtask
 
 import (
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -177,6 +178,79 @@ func (ctrl *Controller) ListIndexVersions(c *gin.Context) {
 		return
 	}
 	response.Success(c, http.StatusOK, gin.H{"items": versions})
+}
+
+// Start 显式触发 pending 任务进入解析（Markdown/ZIP 上传后默认等待确认）。
+func (ctrl *Controller) Start(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	if err := ctrl.process.StartImportTask(c.Request.Context(), contracts.ID(user.ID), contracts.ID(c.Param("task_id"))); err != nil {
+		response.Failure(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"started": true})
+}
+
+// Scan 扫描 Markdown 任务的图片引用并分类（内联/网络/已匹配/待补传）。
+func (ctrl *Controller) Scan(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	result, err := ctrl.process.ScanImportTask(c.Request.Context(), contracts.ID(user.ID), contracts.ID(c.Param("task_id")))
+	if err != nil {
+		response.Failure(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
+}
+
+// Attachments 向任务补传图片附件（multipart files 字段）。
+func (ctrl *Controller) Attachments(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	form, err := c.MultipartForm()
+	if err != nil {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+	headers := form.File["files"]
+	if len(headers) == 0 || len(headers) > 20 {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+	files := make([]service.UploadFileInput, 0, len(headers))
+	closers := make([]io.Closer, 0, len(headers))
+	defer func() {
+		for _, closer := range closers {
+			_ = closer.Close()
+		}
+	}()
+	for _, header := range headers {
+		if header.Size > 32*1024*1024 {
+			response.Failure(c, apperrors.New(contracts.ErrPayloadTooLarge, nil))
+			return
+		}
+		file, openErr := header.Open()
+		if openErr != nil {
+			response.Failure(c, apperrors.New(contracts.ErrInternal, openErr))
+			return
+		}
+		closers = append(closers, file)
+		files = append(files, service.UploadFileInput{FileName: header.Filename, Size: header.Size, Reader: file})
+	}
+	if err := ctrl.process.UploadTaskAttachments(c.Request.Context(), contracts.ID(user.ID), contracts.ID(c.Param("task_id")), files); err != nil {
+		response.Failure(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"uploaded": len(files)})
 }
 
 // taskResponse 是导入任务的 API 响应结构。
