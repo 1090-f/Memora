@@ -46,6 +46,8 @@ type DocumentRepository interface {
 	Create(ctx context.Context, doc *entity.Document) error
 	// FindByID 按文档 ID 与用户查询文档（跨知识库详情）。
 	FindByID(ctx context.Context, userID, documentID string) (*entity.Document, error)
+	// FindByIDInternal 按文档 ID 查询文档（资产签名 URL 校验后使用）。
+	FindByIDInternal(ctx context.Context, documentID string) (*entity.Document, error)
 	// FindByIDInKB 按文档 ID、用户与知识库查询文档。
 	FindByIDInKB(ctx context.Context, userID, kbID, documentID string) (*entity.Document, error)
 	// ListByKB 分页查询知识库文档列表。

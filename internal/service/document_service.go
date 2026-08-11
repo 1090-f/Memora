@@ -23,6 +23,7 @@ import (
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service/rag/parser"
+	"github.com/1090-f/Memora/pkg/asseturl"
 	"github.com/1090-f/Memora/pkg/logger"
 	"github.com/1090-f/Memora/pkg/objectstore"
 	"go.uber.org/zap"
@@ -75,9 +76,11 @@ type documentService struct {
 	dirs            repository.DocumentDirectoryRepository
 	store           ObjectStore
 	parseConfigHash string
+	assetSignKey    string
 }
 
 // NewDocumentService 创建一个新的文档服务实例。
+// assetSignKey 用于签名资产下载 URL（浏览器 <img> 无法携带 Bearer header）。
 func NewDocumentService(
 	docs repository.DocumentRepository,
 	tasks repository.ImportTaskRepository,
@@ -85,8 +88,9 @@ func NewDocumentService(
 	dirs repository.DocumentDirectoryRepository,
 	store ObjectStore,
 	parseConfigHash string,
+	assetSignKey string,
 ) DocumentService {
-	return &documentService{docs: docs, tasks: tasks, kbs: kbs, dirs: dirs, store: store, parseConfigHash: parseConfigHash}
+	return &documentService{docs: docs, tasks: tasks, kbs: kbs, dirs: dirs, store: store, parseConfigHash: parseConfigHash, assetSignKey: assetSignKey}
 }
 
 // CreateManual 手工创建只读知识文档。
@@ -195,7 +199,7 @@ func (s *documentService) Preview(ctx context.Context, userID, documentID string
 	}
 	content := parsed.Document.Markdown
 	if strings.EqualFold(parsed.Source.Format, "markdown") {
-		content = rewriteMarkdownImageRefs(content, parsed.Assets, documentID)
+		content = s.rewriteMarkdownImageRefs(content, parsed.Assets, documentID)
 	}
 	return &dto.DocumentPreviewResponse{Content: content, Format: parsed.Source.Format}, nil
 }
@@ -203,10 +207,10 @@ func (s *documentService) Preview(ctx context.Context, userID, documentID string
 // markdownImageRefRe 匹配 Markdown 图片引用 ![alt](ref)。
 var markdownImageRefRe = regexp.MustCompile(`!\[([^\]]*)\]\(([^)\s]+)\)`)
 
-// rewriteMarkdownImageRefs 把已解析资产的图片引用重写为资产下载 URL；
+// rewriteMarkdownImageRefs 把已解析资产的图片引用重写为签名下载 URL；
 // 未解析（unresolved）的引用保持原样，便于前端展示与后续排查。
 // URL 与前端 API 前缀一致（internal/api/router.go 挂载于 /api/v1）。
-func rewriteMarkdownImageRefs(content string, assets []parser.Asset, documentID string) string {
+func (s *documentService) rewriteMarkdownImageRefs(content string, assets []parser.Asset, documentID string) string {
 	byRef := make(map[string]string, len(assets))
 	for _, asset := range assets {
 		if asset.Omitted || strings.TrimSpace(asset.SourceRef) == "" || strings.TrimSpace(asset.ObjectKey) == "" {
@@ -230,7 +234,11 @@ func rewriteMarkdownImageRefs(content string, assets []parser.Asset, documentID 
 		if alt == "" {
 			alt = "图片"
 		}
-		return "![" + alt + "](/api/v1/documents/" + url.PathEscape(documentID) + "/assets/" + url.PathEscape(assetID) + ")"
+		assetURL, err := asseturl.BuildAssetURL(s.assetSignKey, documentID, assetID, asseturl.DefaultTTL)
+		if err != nil {
+			return match
+		}
+		return "![" + alt + "](" + assetURL + ")"
 	})
 }
 
@@ -259,9 +267,10 @@ func (s *documentService) loadParsedDocument(ctx context.Context, userID string,
 	return parsed, nil
 }
 
-// OpenAsset 流式返回文档资产（图片等）字节；权限与文档所有权一致。
+// OpenAsset 流式返回文档资产（图片等）字节。
+// 调用方必须已通过签名 URL 校验（浏览器 <img> 无法携带 Bearer header）。
 func (s *documentService) OpenAsset(ctx context.Context, userID, documentID, assetID string) (*OriginalDocumentFile, error) {
-	doc, err := s.docs.FindByID(ctx, userID, documentID)
+	doc, err := s.docs.FindByIDInternal(ctx, documentID)
 	if errors.Is(err, repository.ErrDocumentNotFound) {
 		return nil, apperrors.ErrNotFound
 	}

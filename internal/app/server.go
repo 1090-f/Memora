@@ -139,7 +139,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		_ = a.Close()
 		return fmt.Errorf("计算文档预览解析配置哈希失败: %w", err)
 	}
-	documentService := service.NewDocumentService(docs, importTasks, kbs, dirs, a.store, parseConfigHash)
+	documentService := service.NewDocumentService(docs, importTasks, kbs, dirs, a.store, parseConfigHash, cfg.JWT.Secret)
 	citationService := service.NewCitationService()
 	documentReader, err := service.NewDocumentReader(chunks, citationService, cfg.JWT.Secret)
 	if err != nil {
@@ -195,6 +195,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		Documents: documentService, DocumentReader: documentReader, DocumentProcess: documentProcessService,
 		Retrieval:      retrievalService,
 		ContextBuilder: contextBuilder,
+		AssetSignKey:   cfg.JWT.Secret,
 		PostgresHealth: func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
 		RedisHealth:    func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
 		MinIOHealth:    a.store.Health,

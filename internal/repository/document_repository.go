@@ -55,6 +55,15 @@ func (r *documentRepository) FindByID(ctx context.Context, userID, documentID st
 	return mapDocumentResult(&doc, err)
 }
 
+// FindByIDInternal 按文档 ID 查询未删除文档（资产签名 URL 校验后使用）。
+func (r *documentRepository) FindByIDInternal(ctx context.Context, documentID string) (*entity.Document, error) {
+	var doc entity.Document
+	err := dbFromContext(ctx, r.db).WithContext(ctx).
+		Where("id = ? AND deleted_at IS NULL", documentID).
+		First(&doc).Error
+	return mapDocumentResult(&doc, err)
+}
+
 // FindByIDInKB 按文档 ID、用户与知识库查询文档。
 func (r *documentRepository) FindByIDInKB(ctx context.Context, userID, kbID, documentID string) (*entity.Document, error) {
 	var doc entity.Document

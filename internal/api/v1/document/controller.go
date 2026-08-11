@@ -12,18 +12,21 @@ import (
 	"github.com/1090-f/Memora/internal/middleware"
 	"github.com/1090-f/Memora/internal/model/dto/request"
 	"github.com/1090-f/Memora/internal/service"
+	"github.com/1090-f/Memora/pkg/asseturl"
 	"github.com/gin-gonic/gin"
 )
 
 // Controller 处理文档管理相关的 HTTP 请求。
 type Controller struct {
-	docs   service.DocumentService
-	reader contracts.DocumentService
+	docs         service.DocumentService
+	reader       contracts.DocumentService
+	assetSignKey string
 }
 
 // NewController 创建一个新的文档控制器实例。
-func NewController(docs service.DocumentService, reader contracts.DocumentService) *Controller {
-	return &Controller{docs: docs, reader: reader}
+// assetSignKey 用于校验资产下载签名 URL（与 documentService 使用同一密钥）。
+func NewController(docs service.DocumentService, reader contracts.DocumentService, assetSignKey string) *Controller {
+	return &Controller{docs: docs, reader: reader, assetSignKey: assetSignKey}
 }
 
 // CreateManual 手工创建只读知识文档。
@@ -132,13 +135,16 @@ func (ctrl *Controller) Original(c *gin.Context) {
 }
 
 // Asset 流式返回文档资产（图片等）字节，用于预览 Markdown 图片。
+// 不依赖 Bearer 认证（浏览器 <img> 无法携带 header），改用 HMAC 签名 URL 校验。
 func (ctrl *Controller) Asset(c *gin.Context) {
-	user, ok := middleware.GetUser(c)
-	if !ok {
+	documentID := c.Param("document_id")
+	assetID := c.Param("asset_id")
+	exp, sig := c.Query("exp"), c.Query("sig")
+	if !asseturl.Verify(ctrl.assetSignKey, documentID, assetID, exp, sig) {
 		response.Failure(c, apperrors.ErrUnauthorized)
 		return
 	}
-	file, err := ctrl.docs.OpenAsset(c.Request.Context(), user.ID, c.Param("document_id"), c.Param("asset_id"))
+	file, err := ctrl.docs.OpenAsset(c.Request.Context(), "", documentID, assetID)
 	if err != nil {
 		response.Failure(c, err)
 		return
