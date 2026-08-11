@@ -2,7 +2,7 @@ import DownloadOutlined from '@mui/icons-material/DownloadOutlined';
 import OpenInNewOutlined from '@mui/icons-material/OpenInNewOutlined';
 import { Alert, Box, Button, Chip, Divider, Paper, Stack, Typography } from '@mui/material';
 import { useInfiniteQuery, useMutation, useQuery } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { errorMessage } from '@/api/errors';
@@ -88,14 +88,14 @@ export function DocumentViewer({ document, processing }: { document: Document; p
     staleTime: Infinity,
   });
   const [renderedURL, setRenderedURL] = useState<string | null>(null);
-  useEffect(() => {
-    if (!renderedQuery.data) {
-      setRenderedURL(null);
-      return;
-    }
+  // 注意：StrictMode 下 useEffect cleanup 会立即 revoke，导致 iframe 偶发加载已回收的
+  // blob URL（"未能加载 PDF"）。改为 useMemo 创建 + 延迟 60s 回收（iframe 早已加载完成），
+  // 彻底绕开该竞态。
+  const renderedURL = useMemo(() => {
+    if (!renderedQuery.data) return null;
     const url = URL.createObjectURL(renderedQuery.data);
-    setRenderedURL(url);
-    return () => URL.revokeObjectURL(url);
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    return url;
   }, [renderedQuery.data]);
   // Office 文档（DOCX/XLSX/PPTX）预览经 LibreOffice 转为 PDF 后内联打开。
   const renderedMutation = useMutation({
