@@ -48,6 +48,25 @@ func Migrate(databaseURL, direction string) error {
 	return nil
 }
 
+// ForceVersion 强制设置迁移版本号，用于修复脏版本
+func ForceVersion(databaseURL string, version int) error {
+	source, err := migrationSource()
+	if err != nil {
+		return err
+	}
+	migrator, err := migrate.New(source, databaseURL)
+	if err != nil {
+		return fmt.Errorf("创建迁移器失败: %w", err)
+	}
+	defer func() { _, _ = migrator.Close() }()
+
+	if err := migrator.Force(version); err != nil {
+		return fmt.Errorf("强制设置版本失败: %w", err)
+	}
+	fmt.Printf("已强制设置迁移版本为 %d\n", version)
+	return nil
+}
+
 func migrationSource() (string, error) {
 	candidates := []string{"scripts/migrations"}
 	if executable, err := os.Executable(); err == nil {

@@ -44,7 +44,7 @@ func NewService(runner ReactRunner, router contracts.Router, repository RunRepos
 	return &Service{runner: runner, router: router, repository: repository, events: events, cancel: make(map[contracts.ID]context.CancelFunc)}
 }
 
-// SetPlanRunner 注入可选的 Plan-Execute 执行器。
+// SetPlanRunner 注入 Plan-Execute 执行器。
 func (s *Service) SetPlanRunner(runner PlanRunner) { s.planRunner = runner }
 
 func (s *Service) Run(ctx context.Context, request contracts.AgentRunRequest) (contracts.AgentRunResult, error) {
