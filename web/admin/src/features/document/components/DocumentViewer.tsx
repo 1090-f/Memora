@@ -7,7 +7,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { errorMessage } from '@/api/errors';
 import { queryKeys } from '@/api/queryKeys';
-import { getDocumentPreview, getOriginalDocument, listDocumentIndexVersions, readDocumentContent } from '../api';
+import { getDocumentPreview, getOriginalDocument, getRenderedDocument, listDocumentIndexVersions, readDocumentContent } from '../api';
 import { documentStatusLabel } from '../status';
 import type { Document, DocumentProcessing } from '../types';
 
@@ -78,7 +78,20 @@ export function DocumentViewer({ document, processing }: { document: Document; p
   const isMarkdown = mimeType === 'text/markdown' || mimeType === 'text/x-markdown' || fileName.endsWith('.md') || fileName.endsWith('.markdown');
   const previewFormat = (previewQuery.data?.format || '').toLowerCase();
   const renderAsMarkdown = document.source_type !== 'url' && (isMarkdown || isPdf || isOffice || ['markdown', 'pdf', 'docx', 'xlsx', 'pptx'].includes(previewFormat));
-  const canOpenOriginal = document.source_type === 'file' && (isPdf || isDocx);
+  const canOpenOriginal = document.source_type === 'file' && (isPdf || isOffice);
+  // Office 文档（DOCX/XLSX/PPTX）预览经 LibreOffice 转为 PDF 后内联打开。
+  const renderedMutation = useMutation({
+    mutationFn: () => getRenderedDocument(document.id),
+    onSuccess: (blob) => {
+      const objectURL = URL.createObjectURL(blob);
+      const previewWindow = window.open('about:blank', '_blank');
+      if (previewWindow) {
+        previewWindow.opener = null;
+        previewWindow.location.href = objectURL;
+      }
+      window.setTimeout(() => URL.revokeObjectURL(objectURL), 60_000);
+    },
+  });
   const originalMutation = useMutation({
     mutationFn: ({ inline }: { inline: boolean; previewWindow: Window | null }) => getOriginalDocument(document.id, inline),
     onSuccess: (blob, { inline, previewWindow }) => {
@@ -101,6 +114,10 @@ export function DocumentViewer({ document, processing }: { document: Document; p
   });
 
   const openOriginal = () => {
+    if (isOffice) {
+      renderedMutation.mutate();
+      return;
+    }
     const inline = isPdf;
     const previewWindow = inline ? window.open('about:blank', '_blank') : null;
     originalMutation.mutate({ inline, previewWindow });
@@ -127,11 +144,11 @@ export function DocumentViewer({ document, processing }: { document: Document; p
           <Button
             size="small"
             variant="outlined"
-            startIcon={isPdf ? <OpenInNewOutlined /> : <DownloadOutlined />}
-            disabled={originalMutation.isPending}
+            startIcon={isPdf || isOffice ? <OpenInNewOutlined /> : <DownloadOutlined />}
+            disabled={originalMutation.isPending || renderedMutation.isPending}
             onClick={openOriginal}
           >
-            {originalMutation.isPending ? '正在读取…' : isPdf ? '查看原文件' : '下载原文件'}
+            {originalMutation.isPending || renderedMutation.isPending ? '正在读取…' : isPdf ? '查看原文件' : isOffice ? '预览文档' : '下载原文件'}
           </Button>
         )}
       </Stack>

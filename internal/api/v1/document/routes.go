@@ -9,6 +9,7 @@ func (ctrl *Controller) RegisterRoutes(v1 *gin.RouterGroup, authRequired gin.Han
 	docs.GET("/documents/:document_id", ctrl.Get)
 	docs.GET("/documents/:document_id/preview", ctrl.Preview)
 	docs.GET("/documents/:document_id/original", ctrl.Original)
+	docs.GET("/documents/:document_id/rendered", ctrl.Rendered)
 	docs.DELETE("/documents/:document_id", ctrl.Delete)
 
 	// 资产下载不走 Bearer 认证：浏览器 <img> 无法携带 header，

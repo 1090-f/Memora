@@ -11,7 +11,9 @@ import (
 	"io"
 	"mime"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -77,10 +79,12 @@ type documentService struct {
 	store           ObjectStore
 	parseConfigHash string
 	assetSignKey    string
+	office          *OfficeConverter
 }
 
 // NewDocumentService 创建一个新的文档服务实例。
-// assetSignKey 用于签名资产下载 URL（浏览器 <img> 无法携带 Bearer header）。
+// assetSignKey 用于签名资产下载 URL（浏览器 <img> 无法携带 Bearer header）；
+// office 为 nil 时 Office 文档的渲染预览返回明确错误。
 func NewDocumentService(
 	docs repository.DocumentRepository,
 	tasks repository.ImportTaskRepository,
@@ -89,8 +93,9 @@ func NewDocumentService(
 	store ObjectStore,
 	parseConfigHash string,
 	assetSignKey string,
+	office *OfficeConverter,
 ) DocumentService {
-	return &documentService{docs: docs, tasks: tasks, kbs: kbs, dirs: dirs, store: store, parseConfigHash: parseConfigHash, assetSignKey: assetSignKey}
+	return &documentService{docs: docs, tasks: tasks, kbs: kbs, dirs: dirs, store: store, parseConfigHash: parseConfigHash, assetSignKey: assetSignKey, office: office}
 }
 
 // CreateManual 手工创建只读知识文档。
@@ -381,6 +386,110 @@ func (s *documentArtifactObjectStore) RemoveObject(ctx context.Context, key stri
 }
 
 func (s *documentArtifactObjectStore) Bucket() string { return s.inner.Bucket() }
+
+// OpenOriginal 在校验文档所有权后流式返回原始上传文件。
+// OpenRendered 返回适合在线预览的 PDF：PDF 直接返回原文件，
+// Office 文档（PPTX/DOCX/XLSX）通过 LibreOffice 转换并缓存到 MinIO。
+func (s *documentService) OpenRendered(ctx context.Context, userID, documentID string) (*OriginalDocumentFile, error) {
+	doc, err := s.docs.FindByID(ctx, userID, documentID)
+	if errors.Is(err, repository.ErrDocumentNotFound) {
+		return nil, apperrors.ErrNotFound
+	}
+	if err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	if doc.SourceType != string(contracts.DocumentSourceFile) || doc.MinIOObjectKey == nil || strings.TrimSpace(*doc.MinIOObjectKey) == "" {
+		return nil, apperrors.ErrNotFound
+	}
+	fileName := doc.Title
+	if doc.OriginalFileName != nil && strings.TrimSpace(*doc.OriginalFileName) != "" {
+		fileName = strings.TrimSpace(*doc.OriginalFileName)
+	}
+	ext := strings.ToLower(path.Ext(fileName))
+	// PDF 直接返回原始文件。
+	if ext == ".pdf" {
+		return s.OpenOriginal(ctx, userID, documentID)
+	}
+	if !isOfficeRenderableExt(ext) {
+		return nil, apperrors.New(contracts.ErrInvalidState, fmt.Errorf("文档类型 %q 不支持渲染预览", ext))
+	}
+
+	// 缓存 key 按内容版本隔离：文档重新导入后渲染结果自动失效。
+	renderedKey := path.Join("rendered", userID, doc.ID, fmt.Sprintf("v%d.pdf", doc.ContentVersion))
+	if reader, statErr := s.store.OpenObject(ctx, renderedKey); statErr == nil {
+		return &OriginalDocumentFile{Reader: reader, FileName: strings.TrimSuffix(fileName, ext) + ".pdf", ContentType: "application/pdf", Size: -1}, nil
+	}
+
+	if s.office == nil || !s.office.Available() {
+		return nil, apperrors.New(contracts.ErrServiceUnavailable, fmt.Errorf("LibreOffice 不可用，无法生成预览"))
+	}
+	rendered, err := s.renderOfficeDocument(ctx, doc, renderedKey)
+	if err != nil {
+		return nil, err
+	}
+	return rendered, nil
+}
+
+// renderOfficeDocument 下载原文件 → LibreOffice 转 PDF → 上传 MinIO 缓存 → 返回流。
+func (s *documentService) renderOfficeDocument(ctx context.Context, doc *entity.Document, renderedKey string) (*OriginalDocumentFile, error) {
+	tempDir, err := os.MkdirTemp("", "memora-render-*")
+	if err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	sourceReader, err := s.store.OpenObject(ctx, *doc.MinIOObjectKey)
+	if err != nil {
+		if errors.Is(err, objectstore.ErrObjectNotFound) {
+			return nil, apperrors.ErrNotFound
+		}
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	sourceName := "source"
+	if doc.OriginalFileName != nil && strings.TrimSpace(*doc.OriginalFileName) != "" {
+		sourceName = filepath.Base(strings.ReplaceAll(strings.TrimSpace(*doc.OriginalFileName), "\\", "/"))
+	}
+	sourcePath := filepath.Join(tempDir, sourceName)
+	sourceFile, err := os.Create(sourcePath)
+	if err != nil {
+		_ = sourceReader.Close()
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	if _, err := io.Copy(sourceFile, sourceReader); err != nil {
+		_ = sourceReader.Close()
+		_ = sourceFile.Close()
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	_ = sourceReader.Close()
+	_ = sourceFile.Close()
+
+	pdfPath, err := s.office.ConvertToPDF(ctx, sourcePath, tempDir)
+	if err != nil {
+		return nil, apperrors.New(contracts.ErrServiceUnavailable, err)
+	}
+	pdfData, err := os.ReadFile(pdfPath)
+	if err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	if err := s.store.PutObject(ctx, renderedKey, bytes.NewReader(pdfData), int64(len(pdfData)), "application/pdf"); err != nil {
+		return nil, apperrors.New(contracts.ErrServiceUnavailable, err)
+	}
+	reader, err := s.store.OpenObject(ctx, renderedKey)
+	if err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	ext := strings.ToLower(path.Ext(sourceName))
+	return &OriginalDocumentFile{Reader: reader, FileName: strings.TrimSuffix(sourceName, ext) + ".pdf", ContentType: "application/pdf", Size: -1}, nil
+}
+
+// isOfficeRenderableExt 判断扩展名是否支持 LibreOffice 渲染预览。
+func isOfficeRenderableExt(ext string) bool {
+	switch ext {
+	case ".docx", ".xlsx", ".pptx":
+		return true
+	}
+	return false
+}
 
 // OpenOriginal 在校验文档所有权后流式返回原始上传文件。
 func (s *documentService) OpenOriginal(ctx context.Context, userID, documentID string) (*OriginalDocumentFile, error) {

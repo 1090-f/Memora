@@ -134,6 +134,27 @@ func (ctrl *Controller) Original(c *gin.Context) {
 	c.DataFromReader(http.StatusOK, file.Size, file.ContentType, file.Reader, headers)
 }
 
+// Rendered 流式返回渲染预览 PDF（PDF 原文件 / Office 文档转 PDF）。
+func (ctrl *Controller) Rendered(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	file, err := ctrl.docs.OpenRendered(c.Request.Context(), user.ID, c.Param("document_id"))
+	if err != nil {
+		response.Failure(c, err)
+		return
+	}
+	defer file.Reader.Close()
+	headers := map[string]string{
+		"Content-Disposition":    mime.FormatMediaType("inline", map[string]string{"filename": file.FileName}),
+		"Cache-Control":          "private, no-store",
+		"X-Content-Type-Options": "nosniff",
+	}
+	c.DataFromReader(http.StatusOK, file.Size, file.ContentType, file.Reader, headers)
+}
+
 // Asset 流式返回文档资产（图片等）字节，用于预览 Markdown 图片。
 // 不依赖 Bearer 认证（浏览器 <img> 无法携带 header），改用 HMAC 签名 URL 校验。
 func (ctrl *Controller) Asset(c *gin.Context) {

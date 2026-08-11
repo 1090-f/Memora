@@ -39,6 +39,10 @@ export const getDocumentPreview = (documentId: string) =>
 export const getOriginalDocument = (documentId: string, inline = false) =>
   apiBlobRequest({ url: `/documents/${documentId}/original`, params: inline ? { inline: true } : undefined });
 
+// getRenderedDocument 返回渲染预览 PDF（PDF 原文件 / Office 文档经 LibreOffice 转换）。
+export const getRenderedDocument = (documentId: string) =>
+  apiBlobRequest({ url: `/documents/${documentId}/rendered` });
+
 export const deleteDocument = (documentId: string) =>
   apiRequest<{ deleted: boolean }>({ url: `/documents/${documentId}`, method: 'DELETE' });
 

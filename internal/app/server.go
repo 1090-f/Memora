@@ -139,7 +139,13 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		_ = a.Close()
 		return fmt.Errorf("计算文档预览解析配置哈希失败: %w", err)
 	}
-	documentService := service.NewDocumentService(docs, importTasks, kbs, dirs, a.store, parseConfigHash, cfg.JWT.Secret)
+	officeConverter, officeErr := service.NewOfficeConverter()
+	if officeErr != nil {
+		// LibreOffice 缺失不阻断启动：Office 文档渲染预览返回明确错误。
+		logger.Warnf("Office 渲染预览不可用，请安装 LibreOffice: %v", officeErr)
+		officeConverter = nil
+	}
+	documentService := service.NewDocumentService(docs, importTasks, kbs, dirs, a.store, parseConfigHash, cfg.JWT.Secret, officeConverter)
 	citationService := service.NewCitationService()
 	documentReader, err := service.NewDocumentReader(chunks, citationService, cfg.JWT.Secret)
 	if err != nil {
