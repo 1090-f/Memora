@@ -465,12 +465,19 @@ func (s *documentService) renderOfficeDocument(ctx context.Context, doc *entity.
 
 	pdfPath, err := s.office.ConvertToPDF(ctx, sourcePath, tempDir)
 	if err != nil {
+		logger.Warn("Office 转 PDF 失败", zap.String("document_id", doc.ID), zap.Error(err))
 		return nil, apperrors.New(contracts.ErrServiceUnavailable, err)
 	}
 	pdfData, err := os.ReadFile(pdfPath)
 	if err != nil {
 		return nil, apperrors.New(contracts.ErrInternal, err)
 	}
+	// PDF 魔数校验：LibreOffice 可能输出损坏文件，避免缓存无效 PDF 导致预览永久失败。
+	if !bytes.HasPrefix(pdfData, []byte("%PDF-")) || len(pdfData) < 8 {
+		logger.Warn("Office 转 PDF 输出无效", zap.String("document_id", doc.ID), zap.Int("size", len(pdfData)))
+		return nil, apperrors.New(contracts.ErrServiceUnavailable, fmt.Errorf("转换生成的 PDF 无效"))
+	}
+	logger.Info("Office 转 PDF 完成", zap.String("document_id", doc.ID), zap.Int("size", len(pdfData)))
 	if err := s.store.PutObject(ctx, renderedKey, bytes.NewReader(pdfData), int64(len(pdfData)), "application/pdf"); err != nil {
 		return nil, apperrors.New(contracts.ErrServiceUnavailable, err)
 	}
