@@ -48,6 +48,7 @@ import {
   reindexDocument,
   retryDocumentProcessing,
   retryImportTask,
+  startImportTask,
 } from '../api';
 import { CreateManualDocumentDialog } from '../components/CreateManualDocumentDialog';
 import { DocumentViewer } from '../components/DocumentViewer';
@@ -187,6 +188,12 @@ function ImportTasks({ kbId, onOpenDocument }: { kbId: string; onOpenDocument: (
       void queryClient.invalidateQueries({ queryKey: queryKeys.documents(kbId) });
     },
   });
+  const start = useMutation({
+    mutationFn: (taskId: string) => startImportTask(taskId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
+    },
+  });
 
   useEffect(() => {
     // Worker 创建出文档或完成任务后，主动刷新文档列表以展示最新结果。
@@ -218,6 +225,13 @@ function ImportTasks({ kbId, onOpenDocument }: { kbId: string; onOpenDocument: (
             </Box>
             <Chip size="small" color={task.status === 'failed' ? 'error' : task.status === 'succeeded' ? 'success' : task.status === 'running' ? 'info' : 'default'} label={taskLabel[task.status]} />
             {task.document_id && <Button size="small" onClick={() => onOpenDocument(task.document_id as string)}>查看文档</Button>}
+            {task.status === 'pending' && (
+              <Tooltip title="开始解析（Markdown 可先补传图片）">
+                <Button size="small" variant="outlined" disabled={start.isPending} onClick={() => start.mutate(task.id)}>
+                  开始
+                </Button>
+              </Tooltip>
+            )}
             {task.status === 'failed' && (
               <Tooltip title="重试导入"><IconButton size="small" disabled={retry.isPending} onClick={() => retry.mutate(task.id)}><RefreshOutlined fontSize="small" /></IconButton></Tooltip>
             )}

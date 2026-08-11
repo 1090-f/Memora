@@ -35,6 +35,13 @@ type ObjectInfo struct {
 // ErrObjectNotFound 表示对象不存在。
 var ErrObjectNotFound = fmt.Errorf("对象不存在")
 
+// AssetLoader 按引用解析 Markdown 图片资源（http(s) URL 或随包附件相对路径）。
+// 由调用方注入安全实现；nil 时 TextParser 对无法内联的图片标记 unresolved。
+type AssetLoader interface {
+	// Open 返回资源内容流与 MIME 类型；资源不存在/不可访问时返回错误。
+	Open(ctx context.Context, ref string) (io.ReadCloser, string, error)
+}
+
 // ParseInput 是 Parser.Parse 的输入。
 type ParseInput struct {
 	// FileName 是原始文件名（用于格式路由与协议 source.file_name）。
@@ -45,6 +52,8 @@ type ParseInput struct {
 	Size int64
 	// Options 是解析选项（进入 parse_config_hash）。
 	Options ParseOptions
+	// AssetLoader 解析 Markdown 引用的外部图片（http URL / 附件相对路径）。
+	AssetLoader AssetLoader
 }
 
 // Parser 将原始文件解析为 ParsedDocument。实现不得输出 Chunk。

@@ -144,6 +144,7 @@ class Asset(BaseModel):
     data_base64: str | None = None
     object_key: str | None = None
     omitted: bool = False
+    source_ref: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -172,6 +173,7 @@ class ParseOptions(BaseModel):
     schema_version: str = SCHEMA_VERSION
     ocr_languages: list[str] = Field(default_factory=lambda: ["zh", "en"])
     do_ocr: bool = True
+    do_image_ocr: bool = True
     table_structure: bool = True
     extract_pictures: bool = True
     include_bboxes: bool = True
@@ -190,3 +192,11 @@ class ParseOptions(BaseModel):
 class ParseError(BaseModel):
     code: str
     message: str
+
+
+class OcrResult(BaseModel):
+    """单张图片的 OCR 识别结果（行级文本）。"""
+
+    lines: list[str] = Field(default_factory=list)
+    languages: list[str] = Field(default_factory=lambda: ["zh", "en"])
+    engine: str = "rapidocr"

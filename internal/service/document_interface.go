@@ -35,6 +35,8 @@ type DocumentService interface {
 	Preview(ctx context.Context, userID, documentID string) (*dto.DocumentPreviewResponse, error)
 	// OpenOriginal 打开文件导入文档的原始文件流，调用方负责关闭 Reader。
 	OpenOriginal(ctx context.Context, userID, documentID string) (*OriginalDocumentFile, error)
+	// OpenAsset 打开文档资产（图片等）字节流，调用方负责关闭 Reader。
+	OpenAsset(ctx context.Context, userID, documentID, assetID string) (*OriginalDocumentFile, error)
 	// Delete 软删除文档。
 	Delete(ctx context.Context, userID, documentID string) error
 	// UploadFiles 文件导入：先创建 import_tasks，再流式上传 MinIO，最后更新任务对象信息。

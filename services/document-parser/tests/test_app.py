@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,10 +14,22 @@ from app import app
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
+INIT_TIMEOUT_S = 120
+
+
+def _wait_ready() -> None:
+    """等待常驻模型初始化完成（首次启动需要下载/加载模型）。"""
+    deadline = time.monotonic() + INIT_TIMEOUT_S
+    while not app_module._ready.is_set():
+        if time.monotonic() > deadline:
+            raise TimeoutError("document-parser 模型初始化超时")
+        time.sleep(0.2)
+
 
 @pytest.fixture(scope="module")
 def client():
     with TestClient(app) as c:
+        _wait_ready()
         yield c
 
 
@@ -79,6 +92,7 @@ def test_invalid_options_rejected(client):
 def test_oversize_file_rejected(monkeypatch):
     monkeypatch.setattr(app_module, "MAX_FILE_BYTES", 8)
     with TestClient(app) as c:
+        _wait_ready()
         resp = c.post(
             "/v1/parse",
             files={"file": ("big.pdf", b"x" * 64, "application/pdf")},

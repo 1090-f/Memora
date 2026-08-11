@@ -144,6 +144,13 @@ export function DocumentViewer({ document, processing }: { document: Document; p
       </Stack>
       {document.source_url && <Typography mt={1} variant="body2" color="text.secondary">来源：{document.source_url}</Typography>}
       {failureReason && <Alert severity="error" sx={{ mt: 2 }}>失败步骤：{failureStep || '未知'}；{failureReason}</Alert>}
+      {document.parse_warnings && document.parse_warnings.length > 0 && (
+        <Alert severity="warning" sx={{ mt: 2 }}>
+          {document.parse_warnings.map((warning) => (
+            <Box key={warning} component="div">{warning}</Box>
+          ))}
+        </Alert>
+      )}
       {originalMutation.error && <Alert severity="warning" sx={{ mt: 2 }}>原文件读取失败：{errorMessage(originalMutation.error)}</Alert>}
 
       {versionsQuery.data?.items && versionsQuery.data.items.length > 0 && (

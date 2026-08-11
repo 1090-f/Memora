@@ -27,8 +27,40 @@ type DocumentProcessService interface {
 	GetImportTask(ctx context.Context, userID, taskID contracts.ID) (ImportTaskView, error)
 	// ProcessImportTask 由 Worker 调用：领取后的任务编排（创建文档行并执行文档加工流水线）。
 	ProcessImportTask(ctx context.Context, taskID contracts.ID) error
+	// StartImportTask 显式触发 pending 任务进入解析（Markdown/ZIP 上传后默认不自动入队）。
+	StartImportTask(ctx context.Context, userID, taskID contracts.ID) error
+	// ScanImportTask 扫描 Markdown 任务的图片引用并分类（内联/网络/已匹配/待补传）。
+	ScanImportTask(ctx context.Context, userID, taskID contracts.ID) (*ImageScanResult, error)
+	// UploadTaskAttachments 向任务补传图片附件（存 MinIO 并更新引用映射）。
+	UploadTaskAttachments(ctx context.Context, userID, taskID contracts.ID, files []UploadFileInput) error
 	// RecoverStaleTasks 恢复卡在 running 且超过租约的任务，返回恢复数量。
 	RecoverStaleTasks(ctx context.Context) (int64, error)
+}
+
+// ImageRefStatus 是图片引用的扫描分类。
+type ImageRefStatus string
+
+const (
+	// ImageRefInline 是 data URI 内联图片（自动接收）。
+	ImageRefInline ImageRefStatus = "inline"
+	// ImageRefNetwork 是网络图片（后端自动下载）。
+	ImageRefNetwork ImageRefStatus = "network"
+	// ImageRefMatched 是已与附件匹配的本地图片。
+	ImageRefMatched ImageRefStatus = "matched"
+	// ImageRefPending 是待补传的本地图片。
+	ImageRefPending ImageRefStatus = "pending"
+)
+
+// ImageScanItem 是单个图片引用的扫描结果。
+type ImageScanItem struct {
+	Alt    string         `json:"alt"`
+	Ref    string         `json:"ref"`
+	Status ImageRefStatus `json:"status"`
+}
+
+// ImageScanResult 是 Markdown 图片引用扫描结果。
+type ImageScanResult struct {
+	Refs []ImageScanItem `json:"refs"`
 }
 
 // DocumentIndexVersionView 是文档索引版本的服务层只读视图。

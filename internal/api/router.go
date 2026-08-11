@@ -36,6 +36,7 @@ type WorkerCount func(context.Context) (int64, error)
 // Dependencies 持有 API 路由所需的所有外部依赖。
 type Dependencies struct {
 	Config          config.CORSConfig
+	AssetSignKey    string
 	Auth            service.AuthService
 	Users           service.UserService
 	KnowledgeBases  service.KnowledgeBaseService
@@ -76,7 +77,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	if deps.AIModelConfigs != nil {
 		modelconfigapi.NewController(deps.AIModelConfigs, deps.AIEncryption).RegisterRoutes(v1, authRequired)
 	}
-	document.NewController(deps.Documents, deps.DocumentReader).RegisterRoutes(v1, authRequired)
+	document.NewController(deps.Documents, deps.DocumentReader, deps.AssetSignKey).RegisterRoutes(v1, authRequired)
 	importtask.NewController(deps.DocumentProcess).RegisterRoutes(v1, authRequired)
 	if deps.Retrieval != nil {
 		searchapi.NewController(deps.Retrieval).RegisterRoutes(v1, authRequired)
