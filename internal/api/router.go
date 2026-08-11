@@ -48,6 +48,7 @@ type Dependencies struct {
 	AIModelConfigs  repository.AIModelConfigRepository
 	AIEncryption    encryption.Service
 	ContextBuilder  contracts.ContextBuilder
+	Router          contracts.Router
 	PostgresHealth  HealthCheck
 	RedisHealth     HealthCheck
 	MinIOHealth     HealthCheck
