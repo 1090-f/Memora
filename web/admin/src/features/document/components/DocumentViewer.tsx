@@ -25,7 +25,7 @@ const markdownSx = {
   '& table': { display: 'block', maxWidth: '100%', overflowX: 'auto', borderCollapse: 'collapse', my: 2 },
   '& th, & td': { border: 1, borderColor: 'divider', px: 1.25, py: 0.75, textAlign: 'left' },
   '& blockquote': { ml: 0, pl: 2, borderLeft: 4, borderColor: 'divider', color: 'text.secondary' },
-  '& img': { maxWidth: '100%', height: 'auto' },
+  '& img': { maxWidth: '100%', height: 'auto', cursor: 'zoom-in' },
 } as const;
 
 function formatBytes(value?: number) {
@@ -174,7 +174,23 @@ export function DocumentViewer({ document, processing }: { document: Document; p
         <>
           {renderAsMarkdown ? (
             <Box sx={markdownSx}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayedContent}</ReactMarkdown>
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  img: ({ node: _node, ...props }) => (
+                    // 点击图片在新标签页打开原图（asset URL 已带签名）。
+                    <img
+                      {...props}
+                      onClick={() => {
+                        const src = props.src;
+                        if (src && !src.startsWith('data:')) window.open(src, '_blank', 'noopener');
+                      }}
+                    />
+                  ),
+                }}
+              >
+                {displayedContent}
+              </ReactMarkdown>
             </Box>
           ) : (
             <Typography component="pre" sx={{ m: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: 'inherit' }}>
