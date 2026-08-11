@@ -2,7 +2,7 @@ import DownloadOutlined from '@mui/icons-material/DownloadOutlined';
 import OpenInNewOutlined from '@mui/icons-material/OpenInNewOutlined';
 import { Alert, Box, Button, Chip, Divider, Paper, Stack, Typography } from '@mui/material';
 import { useInfiniteQuery, useMutation, useQuery } from '@tanstack/react-query';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { errorMessage } from '@/api/errors';
@@ -79,6 +79,24 @@ export function DocumentViewer({ document, processing }: { document: Document; p
   const previewFormat = (previewQuery.data?.format || '').toLowerCase();
   const renderAsMarkdown = document.source_type !== 'url' && (isMarkdown || isPdf || isOffice || ['markdown', 'pdf', 'docx', 'xlsx', 'pptx'].includes(previewFormat));
   const canOpenOriginal = document.source_type === 'file' && (isPdf || isOffice);
+  // Office 文档默认嵌入渲染 PDF（LibreOffice 转换，blob URL 解决 iframe 无法带 Bearer header）。
+  const renderedQuery = useQuery({
+    queryKey: [...queryKeys.documentContent(document.id), 'rendered', document.content_version],
+    queryFn: () => getRenderedDocument(document.id),
+    enabled: canOpenOriginal && isOffice && effectiveStatus === 'succeeded',
+    retry: false,
+    staleTime: Infinity,
+  });
+  const [renderedURL, setRenderedURL] = useState<string | null>(null);
+  useEffect(() => {
+    if (!renderedQuery.data) {
+      setRenderedURL(null);
+      return;
+    }
+    const url = URL.createObjectURL(renderedQuery.data);
+    setRenderedURL(url);
+    return () => URL.revokeObjectURL(url);
+  }, [renderedQuery.data]);
   // Office 文档（DOCX/XLSX/PPTX）预览经 LibreOffice 转为 PDF 后内联打开。
   const renderedMutation = useMutation({
     mutationFn: () => getRenderedDocument(document.id),
@@ -188,7 +206,29 @@ export function DocumentViewer({ document, processing }: { document: Document; p
       {versionsQuery.error && <Alert severity="warning" sx={{ mt: 2 }}>索引版本加载失败：{errorMessage(versionsQuery.error)}</Alert>}
 
       <Divider sx={{ my: 2 }} />
-      {displayedContent ? (
+      {isOffice && renderedURL ? (
+        // Office 文档默认展示渲染后的 PDF（幻灯片/表格原样排版）。
+        <Box sx={{ '& iframe': { width: '100%', height: '72vh', border: 'none', borderRadius: 1 } }}>
+          <iframe src={renderedURL} title="文档预览" />
+        </Box>
+      ) : isOffice && renderedQuery.isPending ? (
+        <Stack spacing={1} py={5} alignItems="center">
+          <Typography color="text.secondary">正在生成 PDF 预览（首次需转换，可能稍慢）…</Typography>
+        </Stack>
+      ) : isOffice && renderedQuery.isError ? (
+        <>
+          <Alert severity="warning" sx={{ mb: 2 }}>PDF 预览不可用：{errorMessage(renderedQuery.error)}，已回退解析文本。</Alert>
+          {renderTextPreview()}
+        </>
+      ) : (
+        renderTextPreview()
+      )}
+    </Paper>
+  );
+
+  function renderTextPreview() {
+    if (displayedContent) {
+      return (
         <>
           {renderAsMarkdown ? (
             <Box sx={markdownSx}>
@@ -226,15 +266,17 @@ export function DocumentViewer({ document, processing }: { document: Document; p
             </Alert>
           )}
         </>
-      ) : previewQuery.isPending && shouldReadPreview ? (
-        <Typography color="text.secondary">正在读取完整解析正文…</Typography>
-      ) : contentQuery.isPending && shouldReadIndexedContent ? (
-        <Typography color="text.secondary">正在读取已索引正文…</Typography>
-      ) : contentQuery.error ? (
-        <Alert severity="warning">正文读取失败：{errorMessage(contentQuery.error)}</Alert>
-      ) : (
-        <Box py={5} textAlign="center"><Typography color="text.secondary">该文档暂时没有可显示的正文。</Typography></Box>
-      )}
-    </Paper>
-  );
+      );
+    }
+    if (previewQuery.isPending && shouldReadPreview) {
+      return <Typography color="text.secondary">正在读取完整解析正文…</Typography>;
+    }
+    if (contentQuery.isPending && shouldReadIndexedContent) {
+      return <Typography color="text.secondary">正在读取已索引正文…</Typography>;
+    }
+    if (contentQuery.error) {
+      return <Alert severity="warning">正文读取失败：{errorMessage(contentQuery.error)}</Alert>;
+    }
+    return <Box py={5} textAlign="center"><Typography color="text.secondary">该文档暂时没有可显示的正文。</Typography></Box>;
+  }
 }
