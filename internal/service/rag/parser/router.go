@@ -8,7 +8,7 @@ import (
 )
 
 // ParserRouter 按扩展名路由到具体 Parser。
-// TXT/Markdown → TextParser；PDF/DOCX → PythonDocumentParser；
+// TXT/Markdown → TextParser；PDF/DOCX/XLSX/PPTX → PythonDocumentParser；
 // 其余格式直接报错，禁止静默回退到其它解析器。
 type ParserRouter struct {
 	textParser   Parser
@@ -28,10 +28,10 @@ func (r *ParserRouter) Route(fileName string) (Parser, error) {
 		return r.textParser, nil
 	case ".md", ".markdown":
 		return r.textParser, nil
-	case ".pdf", ".docx":
+	case ".pdf", ".docx", ".xlsx", ".pptx":
 		return r.pythonParser, nil
 	default:
-		return nil, ParseErrorf(ParseErrorUnsupportedFormat, "不支持的文件格式 %q（仅支持 txt/md/pdf/docx）", fileName)
+		return nil, ParseErrorf(ParseErrorUnsupportedFormat, "不支持的文件格式 %q（仅支持 txt/md/pdf/docx/xlsx/pptx）", fileName)
 	}
 }
 

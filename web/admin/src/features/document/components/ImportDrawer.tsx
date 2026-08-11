@@ -23,7 +23,7 @@ import type { DirectoryNode, ImageScanResult, ImageRefStatus, ImportSubmission }
 
 const MAX_FILES = 20;
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
-const allowedExtensions = ['.md', '.txt', '.pdf', '.docx'];
+const allowedExtensions = ['.md', '.txt', '.pdf', '.docx', '.xlsx', '.pptx'];
 const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'];
 
 // 浏览器目录选择（webkitdirectory 为非标准属性，这里显式声明）。
@@ -273,7 +273,7 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
 
         {sourceMode === 'file' ? (
           <>
-            <Typography color="text.secondary">支持 Markdown、TXT、PDF、DOCX、ZIP；Markdown 上传后自动扫描图片引用，可随时补传本机图片。</Typography>
+            <Typography color="text.secondary">支持 Markdown、TXT、PDF、DOCX、XLSX、PPTX、ZIP；Markdown 上传后自动扫描图片引用，可随时补传本机图片。</Typography>
             <Stack direction="row" spacing={1}>
               <Button variant="outlined" disabled={disabled || packing || pendingCount > 0} onClick={() => fileInputRef.current?.click()}>选择文件</Button>
               <Button variant="outlined" disabled={disabled || packing || pendingCount > 0} onClick={() => folderInputRef.current?.click()}>
@@ -285,7 +285,7 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
               type="file"
               multiple
               hidden
-              accept=".md,.txt,.pdf,.docx,.zip,text/markdown,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/zip"
+              accept=".md,.txt,.pdf,.docx,.xlsx,.pptx,.zip,text/markdown,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/zip"
               onChange={(event) => selectFiles(Array.from(event.target.files ?? []))}
             />
             <input

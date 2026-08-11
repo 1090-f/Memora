@@ -124,7 +124,7 @@ async def parse_document(
         raise HTTPException(status_code=422, detail=f"options 无效: {exc}") from exc
 
     file_name = file.filename or ""
-    if file_name == "" or not _looks_like_pdf_or_docx(file_name):
+    if file_name == "" or not _is_supported_document(file_name):
         raise HTTPException(status_code=422, detail=f"不支持的格式: {file_name!r}")
 
     content = await _read_limited(request, file, MAX_FILE_BYTES)
@@ -148,9 +148,9 @@ async def parse_document(
         _semaphore.release()
 
 
-def _looks_like_pdf_or_docx(file_name: str) -> bool:
+def _is_supported_document(file_name: str) -> bool:
     lower = file_name.lower()
-    return lower.endswith(".pdf") or lower.endswith(".docx")
+    return lower.endswith((".pdf", ".docx", ".xlsx", ".pptx"))
 
 
 _IMAGE_SIGNATURES: list[tuple[bytes, str]] = [

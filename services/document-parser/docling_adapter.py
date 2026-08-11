@@ -89,7 +89,7 @@ def _ocr_lang_codes(langs: list[str]) -> list[str]:
 def _detect_format(file_name: str, content: bytes) -> InputFormat | None:
     """按扩展名 + 文件签名/容器格式双重判断，禁止伪造格式。
 
-    仅返回 PDF / DOCX，其余一律视为不支持。
+    仅返回 PDF / DOCX / XLSX / PPTX，其余一律视为不支持。
     """
     lower = file_name.lower()
     if lower.endswith(".pdf"):
@@ -97,20 +97,28 @@ def _detect_format(file_name: str, content: bytes) -> InputFormat | None:
             return InputFormat.PDF
         return None
     if lower.endswith(".docx"):
-        if _is_docx_container(content):
+        if _is_zip_container(content, "[Content_Types].xml", "word/document.xml"):
             return InputFormat.DOCX
+        return None
+    if lower.endswith(".xlsx"):
+        if _is_zip_container(content, "[Content_Types].xml", "xl/workbook.xml"):
+            return InputFormat.XLSX
+        return None
+    if lower.endswith(".pptx"):
+        if _is_zip_container(content, "[Content_Types].xml", "ppt/presentation.xml"):
+            return InputFormat.PPTX
         return None
     return None
 
 
-def _is_docx_container(content: bytes) -> bool:
-    """DOCX 是 ZIP 容器：必须存在 [Content_Types].xml 与 word/document.xml。"""
+def _is_zip_container(content: bytes, *required_names: str) -> bool:
+    """ZIP 容器校验：必须同时存在全部必需条目。"""
     import zipfile
 
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
             names = set(zf.namelist())
-            return "[Content_Types].xml" in names and "word/document.xml" in names
+            return all(name in names for name in required_names)
     except (zipfile.BadZipFile, OSError):
         return False
 
@@ -197,7 +205,7 @@ class DoclingAdapter:
             layout_options=layout_options,
         )
         return DocumentConverter(
-            allowed_formats=[InputFormat.PDF, InputFormat.DOCX],
+            allowed_formats=[InputFormat.PDF, InputFormat.DOCX, InputFormat.XLSX, InputFormat.PPTX],
             format_options={
                 InputFormat.PDF: FormatOption(
                     pipeline_cls=StandardPdfPipeline,

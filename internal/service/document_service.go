@@ -43,7 +43,7 @@ const (
 
 // 支持的文件扩展名。
 var supportedExtensions = map[string]bool{
-	".md": true, ".txt": true, ".pdf": true, ".docx": true, ".zip": true,
+	".md": true, ".txt": true, ".pdf": true, ".docx": true, ".xlsx": true, ".pptx": true, ".zip": true,
 }
 
 // zip 导入限制。
@@ -775,7 +775,7 @@ func safeZipPath(name string) string {
 // isMainDocumentExt 判断 zip 内的主文档扩展名。
 func isMainDocumentExt(ext string) bool {
 	switch ext {
-	case ".md", ".markdown", ".txt", ".pdf", ".docx":
+	case ".md", ".markdown", ".txt", ".pdf", ".docx", ".xlsx", ".pptx":
 		return true
 	}
 	return false
@@ -813,6 +813,10 @@ func mimeTypeOf(ext string) string {
 			contentType = "text/markdown"
 		case ".txt":
 			contentType = "text/plain"
+		case ".xlsx":
+			contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+		case ".pptx":
+			contentType = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 		}
 	}
 	if contentType == "" {

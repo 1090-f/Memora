@@ -74,9 +74,10 @@ export function DocumentViewer({ document, processing }: { document: Document; p
   const mimeType = (document.mime_type || '').toLowerCase();
   const isPdf = mimeType === 'application/pdf' || fileName.endsWith('.pdf');
   const isDocx = mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || fileName.endsWith('.docx');
+  const isOffice = isDocx || fileName.endsWith('.xlsx') || fileName.endsWith('.pptx');
   const isMarkdown = mimeType === 'text/markdown' || mimeType === 'text/x-markdown' || fileName.endsWith('.md') || fileName.endsWith('.markdown');
   const previewFormat = (previewQuery.data?.format || '').toLowerCase();
-  const renderAsMarkdown = document.source_type !== 'url' && (isMarkdown || isPdf || isDocx || ['markdown', 'pdf', 'docx'].includes(previewFormat));
+  const renderAsMarkdown = document.source_type !== 'url' && (isMarkdown || isPdf || isOffice || ['markdown', 'pdf', 'docx', 'xlsx', 'pptx'].includes(previewFormat));
   const canOpenOriginal = document.source_type === 'file' && (isPdf || isDocx);
   const originalMutation = useMutation({
     mutationFn: ({ inline }: { inline: boolean; previewWindow: Window | null }) => getOriginalDocument(document.id, inline),
