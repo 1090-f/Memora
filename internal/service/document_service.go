@@ -828,7 +828,7 @@ func documentResponse(doc *entity.Document) *dto.DocumentResponse {
 		SourceURL: doc.SourceURL, OriginalFileName: doc.OriginalFileName,
 		FileSize: doc.FileSize, MIMEType: doc.MIMEType,
 		ProcessingStatus: doc.ProcessingStatus, IndexMode: documentIndexMode(doc), FailureStep: doc.FailureStep, FailureReason: doc.FailureReason,
-		ParseWarnings: doc.ParseWarnings,
+		ParseWarnings:  doc.ParseWarnings,
 		ContentVersion: doc.ContentVersion, ChunkVersion: doc.ChunkVersion,
 		ActiveIndexVersion: doc.ActiveIndexVersion, CreatedAt: doc.CreatedAt, UpdatedAt: doc.UpdatedAt,
 	}
