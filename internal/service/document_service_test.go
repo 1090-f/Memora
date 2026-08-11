@@ -65,6 +65,41 @@ func TestRewriteMarkdownImageRefs(t *testing.T) {
 	}
 }
 
+func TestRewriteDoclingImagePlaceholders(t *testing.T) {
+	assets := []parser.Asset{
+		{ID: "asset-aaaa", ObjectKey: "o1"},
+		{ID: "asset-omitted", ObjectKey: "", Omitted: true},
+		{ID: "asset-bbbb", ObjectKey: "o2"},
+	}
+	blocks := []parser.Block{
+		{Type: parser.BlockTypeHeading},
+		{Type: parser.BlockTypePicture, AssetRefs: []string{"asset-aaaa"}},
+		{Type: parser.BlockTypePicture, AssetRefs: []string{"asset-omitted"}},
+		{Type: parser.BlockTypePicture, AssetRefs: []string{"asset-bbbb"}},
+	}
+	markdown := strings.Join([]string{
+		"# 标题",
+		"<!-- image -->",
+		"中间文字",
+		"<!-- image -->",
+		"<!-- image -->",
+	}, "\n")
+
+	svc := &documentService{assetSignKey: "test-secret"}
+	got := svc.rewriteDoclingImagePlaceholders(markdown, blocks, assets, "doc-1")
+
+	lines := strings.Split(got, "\n")
+	if !strings.Contains(lines[1], "/api/v1/documents/doc-1/assets/asset-aaaa?exp=") {
+		t.Errorf("第一个占位符应替换为 asset-aaaa 签名 URL: %q", lines[1])
+	}
+	if lines[3] != "<!-- image -->" {
+		t.Errorf("omitted 图片的占位符应保持原样: %q", lines[3])
+	}
+	if !strings.Contains(lines[4], "/api/v1/documents/doc-1/assets/asset-bbbb?exp=") {
+		t.Errorf("第三个占位符应替换为 asset-bbbb 签名 URL: %q", lines[4])
+	}
+}
+
 func TestAssetURLSignAndVerify(t *testing.T) {
 	exp, sig, err := asseturl.Sign("secret", "doc-1", "asset-1", time.Hour)
 	if err != nil {

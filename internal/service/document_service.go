@@ -198,10 +198,58 @@ func (s *documentService) Preview(ctx context.Context, userID, documentID string
 		return nil, apperrors.ErrNotFound
 	}
 	content := parsed.Document.Markdown
+	// Docling 输出中图片为 <!-- image --> 占位符（PDF/DOCX/XLSX/PPTX），
+	// 按文档顺序替换为签名图片 URL；Markdown 的 ![alt](ref) 引用单独重写。
+	content = s.rewriteDoclingImagePlaceholders(content, parsed.Blocks, parsed.Assets, documentID)
 	if strings.EqualFold(parsed.Source.Format, "markdown") {
 		content = s.rewriteMarkdownImageRefs(content, parsed.Assets, documentID)
 	}
 	return &dto.DocumentPreviewResponse{Content: content, Format: parsed.Source.Format}, nil
+}
+
+// doclingImagePlaceholderRe 匹配 Docling markdown 的图片占位符（<!-- image --> 等）。
+var doclingImagePlaceholderRe = regexp.MustCompile(`<!--\s*image[^>]*-->`)
+
+// rewriteDoclingImagePlaceholders 把 Docling 图片占位符按文档顺序替换为签名图片 URL。
+// 占位符序号与 picture Block 顺序严格对齐：omitted/无对象的图片保持占位原样。
+func (s *documentService) rewriteDoclingImagePlaceholders(markdown string, blocks []parser.Block, assets []parser.Asset, documentID string) string {
+	if !doclingImagePlaceholderRe.MatchString(markdown) || s.assetSignKey == "" {
+		return markdown
+	}
+	byID := make(map[string]parser.Asset, len(assets))
+	for _, asset := range assets {
+		byID[asset.ID] = asset
+	}
+	var pictureIDs []string
+	for _, block := range blocks {
+		if block.Type != parser.BlockTypePicture {
+			continue
+		}
+		for _, ref := range block.AssetRefs {
+			if _, ok := byID[ref]; ok {
+				pictureIDs = append(pictureIDs, ref)
+			}
+		}
+	}
+	if len(pictureIDs) == 0 {
+		return markdown
+	}
+	idx := 0
+	return doclingImagePlaceholderRe.ReplaceAllStringFunc(markdown, func(match string) string {
+		if idx >= len(pictureIDs) {
+			return match
+		}
+		asset := byID[pictureIDs[idx]]
+		idx++
+		if asset.Omitted || strings.TrimSpace(asset.ObjectKey) == "" {
+			return match
+		}
+		assetURL, err := asseturl.BuildAssetURL(s.assetSignKey, documentID, asset.ID, asseturl.DefaultTTL)
+		if err != nil {
+			return match
+		}
+		return "![图片](" + assetURL + ")"
+	})
 }
 
 // markdownImageRefRe 匹配 Markdown 图片引用 ![alt](ref)。
