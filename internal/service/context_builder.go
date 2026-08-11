@@ -49,6 +49,7 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 
 		// 系统配置（来自 AgentConfig）
 		SystemPrompt:   derefString(agentConfig.SystemPrompt),
+		ChatModelID:    agentConfig.ChatModelID,
 		NetworkEnabled: agentConfig.NetworkEnabled,
 		MemoryEnabled:  agentConfig.MemoryEnabled,
 		MaxReactRounds: agentConfig.MaxReactRounds,

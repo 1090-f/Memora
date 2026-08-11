@@ -189,12 +189,18 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 
 	contextBuilder := service.NewContextBuilder(agentConfigs, convCtxService, memoryRetriever)
 
+	// 初始化 RouterService（Phase 4）
+	// 使用用户配置的 ChatModelID 做路由判断
+	llmRouter := service.NewLLMRouter(modelFactory)
+	routerService := service.NewRouterService(llmRouter)
+
 	router := api.NewRouter(api.Dependencies{
 		Config: cfg.CORS, Auth: authService, Users: userService, MCP: mcpService,
 		KnowledgeBases: kbService, Directories: directoryService, AIModelConfigs: aiModelConfigs, AIEncryption: aiEncryption,
 		Documents: documentService, DocumentReader: documentReader, DocumentProcess: documentProcessService,
 		Retrieval:      retrievalService,
 		ContextBuilder: contextBuilder,
+		Router:         routerService,
 		PostgresHealth: func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
 		RedisHealth:    func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
 		MinIOHealth:    a.store.Health,

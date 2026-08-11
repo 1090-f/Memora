@@ -22,6 +22,7 @@ type AgentContext struct {
 
 	// 系统配置（来自 AgentConfig）
 	SystemPrompt   string   `json:"system_prompt"`    // 系统提示词
+	ChatModelID    string   `json:"chat_model_id"`    // ChatModelID 关联的对话模型配置 ID
 	NetworkEnabled bool     `json:"network_enabled"`  // 是否允许联网搜索
 	MemoryEnabled  bool     `json:"memory_enabled"`   // 是否启用记忆功能
 	MaxReactRounds int      `json:"max_react_rounds"` // ReAct 模式最大轮数
