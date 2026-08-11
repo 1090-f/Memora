@@ -26,14 +26,14 @@ const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const allowedExtensions = ['.md', '.txt', '.pdf', '.docx', '.xlsx', '.pptx', '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.gif', '.webp'];
 const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'];
 
-// 浏览器目录选择（webkitdirectory 为非标准属性，这里显式声明）。
+// 浏览器目录选择（webkitdirectory 为非标准属性，这里显式声明与 DOM 库类型对齐）。
 interface DirectoryInputElement extends HTMLInputElement {
-  webkitdirectory?: string;
-  directory?: string;
+  webkitdirectory: boolean;
+  directory: boolean;
 }
 
 interface FolderFile extends File {
-  webkitRelativePath?: string;
+  webkitRelativePath: string;
 }
 
 // 上传后待确认的任务（Markdown 需扫描图片引用，补传后可开始解析）。

@@ -137,7 +137,7 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		return nil, fmt.Errorf("计算解析配置哈希失败: %w", err)
 	}
 
-	router := parser.NewParserRouter(parser.NewTextParser(64*1024*1024), newPythonParser(cfg))
+	router := parser.NewParserRouter(parser.NewTextParser(64*1024*1024), parser.NewMarkdownParser(64*1024*1024), newPythonParser(cfg))
 	artifactStore := parser.NewArtifactStore(cfg.Store, cfg.ValidateLimits)
 	docNormalizer := normalizer.NewDocumentNormalizer()
 	enricher := cfg.AssetEnricher

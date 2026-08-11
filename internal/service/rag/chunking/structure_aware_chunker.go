@@ -16,10 +16,33 @@ import (
 //   - 过短相邻 Chunk 只与结构兼容的相邻 Chunk 合并；
 //   - code/formula 优先保持完整，超限才拆；
 //   - caption 与其表格/图片尽量保持同一 Chunk；
-//   - 每个 Chunk 保留 Block IDs、页码与 bbox。
+//   - 每个 Chunk 保留 Block IDs、页码与 bbox；
+//   - 按来源格式差异化策略（见 strategyForFormat）：
+//     DOCX 保留标题/段落/表格结构；PPTX 页码即 slide number；
+//     XLSX 按 Sheet/Table 独立分块，不与正文合并。
 type StructureAwareChunker struct {
 	tokenizer       Tokenizer
 	strategyVersion string
+}
+
+// formatStrategy 描述按来源格式差异化的分块行为。
+type formatStrategy struct {
+	// sheetMode 是电子表格模式（xlsx）：每个 Sheet/Table 独立成块，不与正文合并。
+	sheetMode bool
+}
+
+// strategyForFormat 按来源格式返回分块策略。
+// 与解析表格（ParserRouter/docling SourceInfo.Format）对应：
+//   - xlsx：按 Sheet/Table 独立分块（保留表格整体性）；
+//   - pptx：页码即 slide number，保留在 chunk source_location.page；
+//   - docx/其他：默认结构策略（标题/段落/表格）。
+func strategyForFormat(format string) formatStrategy {
+	switch strings.ToLower(format) {
+	case "xlsx":
+		return formatStrategy{sheetMode: true}
+	default:
+		return formatStrategy{}
+	}
 }
 
 // NewStructureAwareChunker 构造结构感知分块器。
@@ -73,6 +96,7 @@ func (c *StructureAwareChunker) buildUnits(doc *parser.ParsedDocument, opts Chun
 		assetsByID[asset.ID] = asset
 	}
 
+	strategy := strategyForFormat(doc.Source.Format)
 	text := &blockStrategy{}
 	markdown := &markdownStrategy{}
 	tableStrategy := &tableStrategy{tokenizer: c.tokenizer}
@@ -89,7 +113,7 @@ func (c *StructureAwareChunker) buildUnits(doc *parser.ParsedDocument, opts Chun
 			if !ok {
 				continue
 			}
-			tableUnits, err := tableStrategy.toUnits(block, table, opts)
+			tableUnits, err := tableStrategy.toUnits(block, table, opts, strategy.sheetMode)
 			if err != nil {
 				return nil, err
 			}

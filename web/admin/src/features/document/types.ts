@@ -34,6 +34,7 @@ export interface Document {
   directory_id?: string;
   title: string;
   content?: string;
+  content_format?: 'txt' | 'markdown';
   source_type: DocumentSourceType;
   source_url?: string;
   original_file_name?: string;
@@ -118,6 +119,7 @@ export interface CreateDirectoryInput {
 export interface CreateManualDocumentInput {
   title: string;
   content?: string;
+  format?: 'txt' | 'markdown';
   directory_id?: string;
   source_type: 'manual';
   source_url?: string;

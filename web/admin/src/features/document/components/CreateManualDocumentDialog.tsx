@@ -18,6 +18,7 @@ export function CreateManualDocumentDialog({ open, onClose, kbId, directories, i
   const queryClient = useQueryClient();
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
+  const [format, setFormat] = useState<'txt' | 'markdown'>('markdown');
   const [sourceUrl, setSourceUrl] = useState('');
   const [directoryId, setDirectoryId] = useState('');
   const options = flattenDirectories(directories);
@@ -31,6 +32,7 @@ export function CreateManualDocumentDialog({ open, onClose, kbId, directories, i
     mutationFn: () => createManualDocument(kbId, {
       title: title.trim(),
       content: content || undefined,
+      format,
       directory_id: directoryId || undefined,
       source_type: 'manual',
       source_url: sourceUrl.trim() || undefined,
@@ -39,6 +41,7 @@ export function CreateManualDocumentDialog({ open, onClose, kbId, directories, i
       void queryClient.invalidateQueries({ queryKey: queryKeys.documents(kbId) });
       setTitle('');
       setContent('');
+      setFormat('markdown');
       setSourceUrl('');
       onCreated(document.id);
       onClose();
@@ -60,6 +63,16 @@ export function CreateManualDocumentDialog({ open, onClose, kbId, directories, i
             helperText={`${new Blob([content]).size.toLocaleString()} / 2,097,152 字节`}
             error={new Blob([content]).size > 2 * 1024 * 1024}
           />
+          <TextField
+            select
+            label="正文格式"
+            value={format}
+            onChange={(event) => setFormat(event.target.value as 'txt' | 'markdown')}
+            helperText={format === 'markdown' ? '支持标题、列表、代码块与图片引用渲染' : '按纯文本段落显示'}
+          >
+            <MenuItem value="markdown">Markdown（推荐，支持标题/列表/代码/图片）</MenuItem>
+            <MenuItem value="txt">纯文本</MenuItem>
+          </TextField>
           <TextField select label="目标目录" value={directoryId} onChange={(event) => setDirectoryId(event.target.value)}>
             <MenuItem value="">（不归入目录）</MenuItem>
             {options.map((option) => (

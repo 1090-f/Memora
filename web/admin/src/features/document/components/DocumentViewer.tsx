@@ -1,5 +1,4 @@
 import DownloadOutlined from '@mui/icons-material/DownloadOutlined';
-import OpenInNewOutlined from '@mui/icons-material/OpenInNewOutlined';
 import { Alert, Box, Button, Chip, Divider, Paper, Stack, Typography } from '@mui/material';
 import { useInfiniteQuery, useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
@@ -75,70 +74,62 @@ export function DocumentViewer({ document, processing }: { document: Document; p
   const isPdf = mimeType === 'application/pdf' || fileName.endsWith('.pdf');
   const isDocx = mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || fileName.endsWith('.docx');
   const isOffice = isDocx || fileName.endsWith('.xlsx') || fileName.endsWith('.pptx');
+  const isImage = mimeType.startsWith('image/') ||
+    ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.gif', '.webp'].some((ext) => fileName.endsWith(ext));
   const isMarkdown = mimeType === 'text/markdown' || mimeType === 'text/x-markdown' || fileName.endsWith('.md') || fileName.endsWith('.markdown');
   const previewFormat = (previewQuery.data?.format || '').toLowerCase();
-  const renderAsMarkdown = document.source_type !== 'url' && (isMarkdown || isPdf || isOffice || ['markdown', 'pdf', 'docx', 'xlsx', 'pptx'].includes(previewFormat));
-  const canOpenOriginal = document.source_type === 'file' && (isPdf || isOffice);
-  // Office 文档默认嵌入渲染 PDF（LibreOffice 转换，blob URL 解决 iframe 无法带 Bearer header）。
+  const renderAsMarkdown = document.source_type !== 'url' && (isMarkdown || isPdf || isOffice || document.content_format === 'markdown' || ['markdown', 'pdf', 'docx', 'xlsx', 'pptx'].includes(previewFormat));
+  const canDownloadOriginal = document.source_type === 'file';
+  const hasFilePreview = canDownloadOriginal && (isPdf || isOffice || isImage);
+  const [previewMode, setPreviewMode] = useState<'file' | 'reading'>(hasFilePreview ? 'file' : 'reading');
+
+  // 切换文档时恢复该格式的默认模式：PDF/Office/图片看原始版式，其他格式看阅读正文。
+  useEffect(() => {
+    setPreviewMode(hasFilePreview ? 'file' : 'reading');
+  }, [document.id, hasFilePreview]);
+
+  // PDF 直接读取 MinIO 原文件；Office 文档经 LibreOffice 转 PDF；图片返回原图。
+  // blob URL 解决 iframe 无法携带 Bearer header 的问题。
   const renderedQuery = useQuery({
     queryKey: [...queryKeys.documentContent(document.id), 'rendered', document.content_version],
     queryFn: () => getRenderedDocument(document.id),
-    enabled: canOpenOriginal && isOffice && effectiveStatus === 'succeeded',
+    enabled: hasFilePreview && previewMode === 'file' && !isImage,
     retry: false,
     staleTime: Infinity,
   });
+  // 图片原图预览：直接读取原始文件（不走 LibreOffice 渲染）。
+  const imageQuery = useQuery({
+    queryKey: [...queryKeys.documentContent(document.id), 'image', document.content_version],
+    queryFn: () => getOriginalDocument(document.id, true),
+    enabled: hasFilePreview && previewMode === 'file' && isImage,
+    retry: false,
+    staleTime: Infinity,
+  });
+  const filePreviewData = isImage ? imageQuery.data : renderedQuery.data;
   // 注意：StrictMode 下 useEffect cleanup 会立即 revoke，导致 iframe 偶发加载已回收的
   // blob URL（"未能加载 PDF"）。改为 useMemo 创建 + 延迟 60s 回收（iframe 早已加载完成），
   // 彻底绕开该竞态。
-  const renderedURL = useMemo(() => {
-    if (!renderedQuery.data) return null;
-    const url = URL.createObjectURL(renderedQuery.data);
+  const filePreviewURL = useMemo(() => {
+    if (!filePreviewData || previewMode !== 'file') return null;
+    const url = URL.createObjectURL(filePreviewData);
     window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
     return url;
-  }, [renderedQuery.data]);
-  // Office 文档（DOCX/XLSX/PPTX）预览经 LibreOffice 转为 PDF 后内联打开。
-  const renderedMutation = useMutation({
-    mutationFn: () => getRenderedDocument(document.id),
+  }, [previewMode, filePreviewData]);
+
+  // 下载始终走原文件接口；Office 的版式预览 PDF 不替代源文件下载。
+  const originalMutation = useMutation({
+    mutationFn: () => getOriginalDocument(document.id),
     onSuccess: (blob) => {
       const objectURL = URL.createObjectURL(blob);
-      const previewWindow = window.open('about:blank', '_blank');
-      if (previewWindow) {
-        previewWindow.opener = null;
-        previewWindow.location.href = objectURL;
-      }
+      const anchor = window.document.createElement('a');
+      anchor.href = objectURL;
+      anchor.download = document.original_file_name || document.title;
+      window.document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
       window.setTimeout(() => URL.revokeObjectURL(objectURL), 60_000);
     },
   });
-  const originalMutation = useMutation({
-    mutationFn: ({ inline }: { inline: boolean; previewWindow: Window | null }) => getOriginalDocument(document.id, inline),
-    onSuccess: (blob, { inline, previewWindow }) => {
-      const objectURL = URL.createObjectURL(blob);
-      if (inline && previewWindow) {
-        previewWindow.opener = null;
-        previewWindow.location.href = objectURL;
-      } else {
-        previewWindow?.close();
-        const anchor = window.document.createElement('a');
-        anchor.href = objectURL;
-        anchor.download = document.original_file_name || document.title;
-        window.document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-      }
-      window.setTimeout(() => URL.revokeObjectURL(objectURL), 60_000);
-    },
-    onError: (_error, { previewWindow }) => previewWindow?.close(),
-  });
-
-  const openOriginal = () => {
-    if (isOffice) {
-      renderedMutation.mutate();
-      return;
-    }
-    const inline = isPdf;
-    const previewWindow = inline ? window.open('about:blank', '_blank') : null;
-    originalMutation.mutate({ inline, previewWindow });
-  };
 
   // 文档预览面向人工阅读：保留后端的安全分页，但在前端自动连续读取，不暴露工具游标和分页操作。
   useEffect(() => {
@@ -157,15 +148,15 @@ export function DocumentViewer({ document, processing }: { document: Document; p
           color={effectiveStatus === 'failed' ? 'error' : effectiveStatus === 'succeeded' ? 'success' : 'info'}
           label={documentStatusLabel(effectiveStatus, document.index_mode)}
         />
-        {canOpenOriginal && (
+        {canDownloadOriginal && (
           <Button
             size="small"
             variant="outlined"
-            startIcon={isPdf || isOffice ? <OpenInNewOutlined /> : <DownloadOutlined />}
-            disabled={originalMutation.isPending || renderedMutation.isPending}
-            onClick={openOriginal}
+            startIcon={<DownloadOutlined />}
+            disabled={originalMutation.isPending}
+            onClick={() => originalMutation.mutate()}
           >
-            {originalMutation.isPending || renderedMutation.isPending ? '正在读取…' : isPdf ? '查看原文件' : isOffice ? '预览文档' : '下载原文件'}
+            {originalMutation.isPending ? '正在下载…' : '下载原文件'}
           </Button>
         )}
       </Stack>
@@ -205,18 +196,44 @@ export function DocumentViewer({ document, processing }: { document: Document; p
       {versionsQuery.error && <Alert severity="warning" sx={{ mt: 2 }}>索引版本加载失败：{errorMessage(versionsQuery.error)}</Alert>}
 
       <Divider sx={{ my: 2 }} />
-      {isOffice && renderedURL ? (
-        // Office 文档默认展示渲染后的 PDF（幻灯片/表格原样排版）。
-        <Box sx={{ '& iframe': { width: '100%', height: '72vh', border: 'none', borderRadius: 1 } }}>
-          <iframe src={renderedURL} title="文档预览" />
-        </Box>
-      ) : isOffice && renderedQuery.isPending ? (
-        <Stack spacing={1} py={5} alignItems="center">
-          <Typography color="text.secondary">正在生成 PDF 预览（首次需转换，可能稍慢）…</Typography>
+      {hasFilePreview && (
+        <Stack direction="row" spacing={1} mb={2}>
+          <Button
+            size="small"
+            variant={previewMode === 'file' ? 'contained' : 'outlined'}
+            onClick={() => setPreviewMode('file')}
+          >
+            {isPdf ? '原文件预览' : isImage ? '原图预览' : '版式预览'}
+          </Button>
+          <Button
+            size="small"
+            variant={previewMode === 'reading' ? 'contained' : 'outlined'}
+            onClick={() => setPreviewMode('reading')}
+          >
+            阅读模式
+          </Button>
         </Stack>
-      ) : isOffice && renderedQuery.isError ? (
+      )}
+      {hasFilePreview && previewMode === 'file' && filePreviewURL ? (
+        // PDF 展示 MinIO 原文件；Office 展示转换后的 PDF；图片展示原图。
+        isImage ? (
+          <Box sx={{ textAlign: 'center' }}>
+            <img src={filePreviewURL} alt={document.title} style={{ maxWidth: '100%', maxHeight: '72vh' }} />
+          </Box>
+        ) : (
+          <Box sx={{ '& iframe': { width: '100%', height: '72vh', border: 'none', borderRadius: 1 } }}>
+            <iframe src={filePreviewURL} title={isPdf ? 'PDF 原文件预览' : 'Office 文档版式预览'} />
+          </Box>
+        )
+      ) : hasFilePreview && previewMode === 'file' && (renderedQuery.isPending || imageQuery.isPending) ? (
+        <Stack spacing={1} py={5} alignItems="center">
+          <Typography color="text.secondary">
+            {isPdf ? '正在加载原始 PDF…' : isImage ? '正在加载原图…' : '正在生成 PDF 版式预览（首次需转换，可能稍慢）…'}
+          </Typography>
+        </Stack>
+      ) : hasFilePreview && previewMode === 'file' && (renderedQuery.isError || imageQuery.isError) ? (
         <>
-          <Alert severity="warning" sx={{ mb: 2 }}>PDF 预览不可用：{errorMessage(renderedQuery.error)}，已回退解析文本。</Alert>
+          <Alert severity="warning" sx={{ mb: 2 }}>版式预览不可用：{errorMessage(isImage ? imageQuery.error : renderedQuery.error)}，已回退阅读模式。</Alert>
           {renderTextPreview()}
         </>
       ) : (
@@ -234,16 +251,20 @@ export function DocumentViewer({ document, processing }: { document: Document; p
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
-                  img: ({ node: _node, ...props }) => (
-                    // 点击图片在新标签页打开原图（asset URL 已带签名）。
-                    <img
-                      {...props}
-                      onClick={() => {
-                        const src = props.src;
-                        if (src && !src.startsWith('data:')) window.open(src, '_blank', 'noopener');
-                      }}
-                    />
-                  ),
+                  img: ({ node, ...props }) => {
+                    // ReactMarkdown 的 node 不是 img DOM 属性，不向下透传。
+                    void node;
+                    return (
+                      // 点击图片在新标签页打开原图（asset URL 已带签名）。
+                      <img
+                        {...props}
+                        onClick={() => {
+                          const src = props.src;
+                          if (src && !src.startsWith('data:')) window.open(src, '_blank', 'noopener');
+                        }}
+                      />
+                    );
+                  },
                 }}
               >
                 {displayedContent}

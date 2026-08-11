@@ -10,6 +10,7 @@ type DocumentResponse struct {
 	DirectoryID        *string   `json:"directory_id,omitempty"`         // DirectoryID 所属目录 ID，为空表示未归入目录
 	Title              string    `json:"title"`                          // Title 文档标题
 	Content            *string   `json:"content,omitempty"`              // Content 文档正文内容，可选
+	ContentFormat      string    `json:"content_format"`                 // ContentFormat 手工文档正文格式（txt/markdown）
 	SourceType         string    `json:"source_type"`                    // SourceType 文档来源类型（manual/file/url）
 	SourceURL          *string   `json:"source_url,omitempty"`           // SourceURL 原始来源 URL，可选
 	OriginalFileName   *string   `json:"original_file_name,omitempty"`   // OriginalFileName 原始文件名，可选

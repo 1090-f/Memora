@@ -422,7 +422,7 @@ class DoclingAdapter:
             ),
             source=schemas.SourceInfo(
                 file_name=file_name,
-                format="pdf" if file_name.lower().endswith(".pdf") else "docx",
+                format=_source_format(file_name),
                 sha256=_sha256_hex(content),
                 size=len(content),
             ),
@@ -600,6 +600,24 @@ def _safe_markdown(doc: DoclingDocument) -> str:
 
 def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _source_format(file_name: str) -> str:
+    """按扩展名返回来源格式标识：pdf/docx/xlsx/pptx/image。
+
+    format 参与 Go 侧解析缓存（parse_config_hash 之外的 Artifact 检索）与
+    分块策略选择，必须与 Go 侧 SourceInfo.Format 语义一致。
+    """
+    lower = file_name.lower()
+    if lower.endswith(".pdf"):
+        return "pdf"
+    if lower.endswith(".docx"):
+        return "docx"
+    if lower.endswith(".xlsx"):
+        return "xlsx"
+    if lower.endswith(".pptx"):
+        return "pptx"
+    return "image"
 
 
 def _picture_pil(item: PictureItem, doc: DoclingDocument) -> PILImage.Image | None:

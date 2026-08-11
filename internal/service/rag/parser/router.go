@@ -8,16 +8,18 @@ import (
 )
 
 // ParserRouter 按扩展名路由到具体 Parser。
-// TXT/Markdown → TextParser；PDF/DOCX/XLSX/PPTX/图片 → PythonDocumentParser；
+// TXT → TextParser；Markdown → MarkdownParser；
+// PDF/DOCX/XLSX/PPTX/图片 → PythonDocumentParser；
 // 其余格式直接报错，禁止静默回退到其它解析器。
 type ParserRouter struct {
-	textParser   Parser
-	pythonParser Parser
+	textParser     Parser
+	markdownParser Parser
+	pythonParser   Parser
 }
 
 // NewParserRouter 构造路由。
-func NewParserRouter(textParser, pythonParser Parser) *ParserRouter {
-	return &ParserRouter{textParser: textParser, pythonParser: pythonParser}
+func NewParserRouter(textParser, markdownParser, pythonParser Parser) *ParserRouter {
+	return &ParserRouter{textParser: textParser, markdownParser: markdownParser, pythonParser: pythonParser}
 }
 
 // Route 返回适合该文件名的 Parser。
@@ -27,7 +29,7 @@ func (r *ParserRouter) Route(fileName string) (Parser, error) {
 	case ".txt":
 		return r.textParser, nil
 	case ".md", ".markdown":
-		return r.textParser, nil
+		return r.markdownParser, nil
 	case ".pdf", ".docx", ".xlsx", ".pptx",
 		".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".gif", ".webp":
 		return r.pythonParser, nil

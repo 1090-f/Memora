@@ -126,9 +126,13 @@ func (s *documentService) CreateManual(ctx context.Context, userID, kbID string,
 	if len([]byte(content)) > MaxManualContentBytes {
 		return nil, apperrors.New(contracts.ErrPayloadTooLarge, nil)
 	}
+	contentFormat := "txt"
+	if req.Format != nil && *req.Format == "markdown" {
+		contentFormat = "markdown"
+	}
 	doc := &entity.Document{
 		UserID: userID, KnowledgeBaseID: kbID, DirectoryID: req.DirectoryID,
-		Title: strings.TrimSpace(req.Title), Content: &content,
+		Title: strings.TrimSpace(req.Title), Content: &content, ContentFormat: contentFormat,
 		SourceType:       string(contracts.DocumentSourceManual),
 		SourceURL:        req.SourceURL,
 		ProcessingStatus: string(contracts.ProcessingPending),
@@ -195,7 +199,11 @@ func (s *documentService) Preview(ctx context.Context, userID, documentID string
 		return nil, apperrors.New(contracts.ErrInternal, err)
 	}
 	if doc.Content != nil {
-		return &dto.DocumentPreviewResponse{Content: *doc.Content, Format: "txt"}, nil
+		format := doc.ContentFormat
+		if format == "" {
+			format = "txt"
+		}
+		return &dto.DocumentPreviewResponse{Content: *doc.Content, Format: format}, nil
 	}
 	parsed, err := s.loadParsedDocument(ctx, userID, doc)
 	if err != nil {
@@ -453,11 +461,21 @@ func (s *documentService) loadRenderedCache(ctx context.Context, key string) (*O
 		return nil, fmt.Errorf("渲染缓存内容不是有效 PDF")
 	}
 	// 大文件防"空壳"缓存：最小 PDF 应大于 1KB。
-	if info, statErr := s.store.StatObject(ctx, key); statErr != nil || info.Size < 1024 {
+	info, statErr := s.store.StatObject(ctx, key)
+	if statErr != nil || info.Size < 1024 {
 		_ = reader.Close()
 		return nil, fmt.Errorf("渲染缓存 PDF 过小")
 	}
-	return &OriginalDocumentFile{Reader: reader, FileName: "preview.pdf", ContentType: "application/pdf", Size: -1}, nil
+	// 上面的魔数校验已经消费了文件头。MinIO 返回的是前向流，不能 Seek；必须关闭并
+	// 重新打开对象，确保响应从 PDF 的第 0 字节（%PDF-）开始，否则浏览器会拒绝加载。
+	if err := reader.Close(); err != nil {
+		return nil, err
+	}
+	reader, err = s.store.OpenObject(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return &OriginalDocumentFile{Reader: reader, FileName: "preview.pdf", ContentType: "application/pdf", Size: info.Size}, nil
 }
 
 // renderOfficeDocument 下载原文件 → LibreOffice 转 PDF → 上传 MinIO 缓存 → 返回流。
@@ -1023,7 +1041,7 @@ func mimeTypeOf(ext string) string {
 func documentResponse(doc *entity.Document) *dto.DocumentResponse {
 	return &dto.DocumentResponse{
 		ID: doc.ID, KnowledgeBaseID: doc.KnowledgeBaseID, DirectoryID: doc.DirectoryID,
-		Title: doc.Title, Content: doc.Content, SourceType: doc.SourceType,
+		Title: doc.Title, Content: doc.Content, ContentFormat: doc.ContentFormat, SourceType: doc.SourceType,
 		SourceURL: doc.SourceURL, OriginalFileName: doc.OriginalFileName,
 		FileSize: doc.FileSize, MIMEType: doc.MIMEType,
 		ProcessingStatus: doc.ProcessingStatus, IndexMode: documentIndexMode(doc), FailureStep: doc.FailureStep, FailureReason: doc.FailureReason,
