@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/model/entity"
 	"gorm.io/gorm"
 )
@@ -233,6 +234,16 @@ func (r *importTaskRepository) FindByIDInternal(ctx context.Context, taskID stri
 
 // UpdateObjectInfo 更新任务的 MinIO 对象信息与源哈希。
 func (r *importTaskRepository) UpdateObjectInfo(ctx context.Context, userID, taskID string, bucket, objectKey string, sourceHash *string) error {
+	return r.updateObjectInfo(ctx, userID, taskID, bucket, objectKey, sourceHash, true)
+}
+
+// UpdateObjectInfoNoEnqueue 更新对象信息但不入队：Markdown/ZIP 需用户确认补传图片后
+// 通过 StartPendingTask 显式触发解析。
+func (r *importTaskRepository) UpdateObjectInfoNoEnqueue(ctx context.Context, userID, taskID string, bucket, objectKey string, sourceHash *string) error {
+	return r.updateObjectInfo(ctx, userID, taskID, bucket, objectKey, sourceHash, false)
+}
+
+func (r *importTaskRepository) updateObjectInfo(ctx context.Context, userID, taskID string, bucket, objectKey string, sourceHash *string, enqueue bool) error {
 	updates := map[string]any{
 		"minio_bucket":     bucket,
 		"minio_object_key": objectKey,
@@ -248,6 +259,27 @@ func (r *importTaskRepository) UpdateObjectInfo(ctx context.Context, userID, tas
 		}
 		if result.RowsAffected == 0 {
 			return ErrImportTaskNotFound
+		}
+		if enqueue {
+			return enqueueTaskEvent(tx, taskID)
+		}
+		return nil
+	})
+}
+
+// StartPendingTask 将 pending 任务入队（触发 Worker 处理）；仅允许未处理的任务。
+// 供 Markdown/ZIP 导入在用户确认图片补传后显式触发。
+func (r *importTaskRepository) StartPendingTask(ctx context.Context, userID, taskID string) error {
+	return dbFromContext(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var task entity.ImportTask
+		if err := tx.Where("id = ? AND user_id = ?", taskID, userID).First(&task).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrImportTaskNotFound
+			}
+			return fmt.Errorf("查询导入任务失败: %w", err)
+		}
+		if task.Status != string(contracts.TaskStatusPending) {
+			return fmt.Errorf("任务状态 %q 不允许开始（仅 pending）", task.Status)
 		}
 		return enqueueTaskEvent(tx, taskID)
 	})

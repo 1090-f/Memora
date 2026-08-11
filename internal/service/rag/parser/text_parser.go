@@ -94,6 +94,10 @@ func parseTextBlocks(ctx context.Context, content, format string, includeBBoxes 
 	var blocks []Block
 	headingPath := make([]string, 0, 4)
 	buffer := strings.Builder{}
+	definitions := map[string]string{}
+	if format == "markdown" {
+		definitions = collectReferenceDefinitions(content)
+	}
 	flushParagraph := func() {
 		if strings.TrimSpace(buffer.String()) == "" {
 			buffer.Reset()
@@ -173,7 +177,8 @@ func parseTextBlocks(ctx context.Context, content, format string, includeBBoxes 
 				})
 				continue
 			}
-			if alt, ref, ok := imageRefLine(trimmed); ok {
+			// 独占整行图片（行内式/引用式，支持 title）→ picture Block。
+			if alt, ref, ok := standaloneImageLine(trimmed, definitions); ok {
 				flushParagraph()
 				asset, warn := loadMarkdownImage(ctx, alt, ref, loader)
 				if asset != nil {
@@ -192,6 +197,12 @@ func parseTextBlocks(ctx context.Context, content, format string, includeBBoxes 
 				}
 				continue
 			}
+			// 引用式图片定义行（[ref]: path）不进入正文。
+			if markdownRefDefRe.MatchString(trimmed) {
+				continue
+			}
+			// 行内图片：提取资产并从文本中移除语法（保留周围文字）。
+			line = extractInlineImages(ctx, line, definitions, loader, assets, warnings)
 		}
 
 		if buffer.Len() > 0 {
@@ -214,33 +225,64 @@ func parseTextBlocks(ctx context.Context, content, format string, includeBBoxes 
 	return blocks
 }
 
-// imageRefLine 匹配整行 Markdown 图片引用 ![](ref)，返回 alt 与引用。
-func imageRefLine(line string) (alt, ref string, ok bool) {
-	if !strings.HasPrefix(line, "![") {
-		return "", "", false
+// standaloneImageLine 判断整行是否只包含一张图片（行内式或引用式），返回 alt 与解析后的引用。
+func standaloneImageLine(line string, definitions map[string]string) (alt, ref string, ok bool) {
+	if m := markdownInlineImageRe.FindStringSubmatch(line); m != nil &&
+		strings.TrimSpace(markdownInlineImageRe.ReplaceAllString(line, "")) == "" {
+		return strings.TrimSpace(m[1]), strings.TrimSpace(m[2]), true
 	}
-	closeBracket := strings.Index(line, "](")
-	if closeBracket < 0 {
-		return "", "", false
+	if m := markdownRefImageRe.FindStringSubmatch(line); m != nil &&
+		strings.TrimSpace(markdownRefImageRe.ReplaceAllString(line, "")) == "" {
+		refKey := strings.TrimSpace(m[2])
+		if path, found := definitions[strings.ToLower(refKey)]; found {
+			return strings.TrimSpace(m[1]), path, true
+		}
 	}
-	end := strings.LastIndex(line, ")")
-	if end <= closeBracket+1 {
-		return "", "", false
+	return "", "", false
+}
+
+// extractInlineImages 提取行内图片引用（行内式 + 引用式），返回移除图片语法后的行。
+// 图片资产写入 assets；无法解析的引用记录 warning 并保持原语法（便于预览排查）。
+func extractInlineImages(ctx context.Context, line string, definitions map[string]string, loader AssetLoader, assets *[]Asset, warnings *[]string) string {
+	extract := func(alt, ref, original string) string {
+		asset, warn := loadMarkdownImage(ctx, alt, ref, loader)
+		if asset != nil {
+			*assets = append(*assets, *asset)
+			return ""
+		}
+		if warn != "" {
+			*warnings = append(*warnings, warn)
+		}
+		// unresolved：保留原语法，正文不受影响。
+		return original
 	}
-	alt = strings.TrimSpace(line[2:closeBracket])
-	ref = strings.TrimSpace(line[closeBracket+2 : end])
-	if strings.Contains(ref, " ") || strings.Contains(ref, "\t") {
-		return "", "", false
-	}
-	if alt == "" && ref == "" {
-		return "", "", false
-	}
-	return alt, ref, true
+	line = markdownInlineImageRe.ReplaceAllStringFunc(line, func(match string) string {
+		sub := markdownInlineImageRe.FindStringSubmatch(match)
+		if len(sub) < 3 {
+			return match
+		}
+		return extract(strings.TrimSpace(sub[1]), strings.TrimSpace(sub[2]), match)
+	})
+	line = markdownRefImageRe.ReplaceAllStringFunc(line, func(match string) string {
+		sub := markdownRefImageRe.FindStringSubmatch(match)
+		if len(sub) < 3 {
+			return match
+		}
+		ref := strings.TrimSpace(sub[2])
+		path, ok := definitions[strings.ToLower(ref)]
+		if !ok {
+			// 引用式定义缺失：保留原语法。
+			return match
+		}
+		return extract(strings.TrimSpace(sub[1]), path, match)
+	})
+	return line
 }
 
 // loadMarkdownImage 读取图片引用生成 Asset；无法解析时返回 nil 与 warning。
 // 支持：data URI、http(s) URL（走 AssetLoader）、附件相对路径（走 AssetLoader）。
-// 纯本机绝对路径（如 C:\...）无法由服务端访问，视为 unresolved。
+// 本机绝对路径（如 C:\...）同样交给 AssetLoader 按文件名（basename）匹配附件，
+// 匹配不到才视为 unresolved（正文导入不受影响）。
 func loadMarkdownImage(ctx context.Context, alt, ref string, loader AssetLoader) (*Asset, string) {
 	if dataURI, mime, ok := parseDataURI(ref); ok {
 		if len(dataURI) > maxMarkdownImageBytes {
@@ -249,15 +291,17 @@ func loadMarkdownImage(ctx context.Context, alt, ref string, loader AssetLoader)
 		return makeMarkdownAsset(alt, ref, mime, dataURI), ""
 	}
 
-	if isWindowsAbsolutePath(ref) {
-		return nil, fmt.Sprintf("图片 %q 为本机路径，导入时未随文档上传，已跳过（unresolved）", ref)
-	}
-
 	if loader == nil {
+		if isWindowsAbsolutePath(ref) {
+			return nil, fmt.Sprintf("图片 %q 为本机路径，导入时未随文档上传，已跳过（unresolved）", ref)
+		}
 		return nil, fmt.Sprintf("图片 %q 未解析（缺少资源加载器）", ref)
 	}
 	reader, contentType, err := loader.Open(ctx, ref)
 	if err != nil {
+		if isWindowsAbsolutePath(ref) {
+			return nil, fmt.Sprintf("图片 %q 为本机路径，导入时未随文档上传，已跳过（unresolved）", ref)
+		}
 		return nil, fmt.Sprintf("图片 %q 未解析: %v", ref, err)
 	}
 	defer func() { _ = reader.Close() }()

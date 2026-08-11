@@ -10,6 +10,7 @@ import type {
   DocumentReadPage,
   DocumentProcessing,
   DocumentPreview,
+  ImageScanResult,
   ImportSubmission,
   ImportTask,
   ImportURLInput,
@@ -58,6 +59,18 @@ export const getImportTask = (taskId: string) =>
 
 export const retryImportTask = (taskId: string) =>
   apiRequest<{ retried: boolean }>({ url: `/import-tasks/${taskId}/retry`, method: 'POST' });
+
+export const startImportTask = (taskId: string) =>
+  apiRequest<{ started: boolean }>({ url: `/import-tasks/${taskId}/start`, method: 'POST' });
+
+export const scanImportTask = (taskId: string) =>
+  apiRequest<ImageScanResult>({ url: `/import-tasks/${taskId}/scan`, method: 'POST' });
+
+export const uploadTaskAttachments = (taskId: string, files: File[]) => {
+  const formData = new FormData();
+  files.forEach((file) => formData.append('files', file));
+  return apiRequest<{ uploaded: number }>({ url: `/import-tasks/${taskId}/attachments`, method: 'POST', data: formData });
+};
 
 export const getDocumentProcessing = (documentId: string) =>
   apiRequest<DocumentProcessing>({ url: `/documents/${documentId}/processing` });

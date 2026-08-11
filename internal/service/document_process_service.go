@@ -1,10 +1,14 @@
 package service
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"path"
 	"strings"
 	"time"
 
@@ -12,9 +16,11 @@ import (
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/1090-f/Memora/internal/repository"
+	"github.com/1090-f/Memora/internal/service/rag/parser"
 	"github.com/1090-f/Memora/internal/service/rag/pipeline"
 	"github.com/1090-f/Memora/internal/service/rag/transformer"
 	"github.com/1090-f/Memora/pkg/logger"
+	"github.com/1090-f/Memora/pkg/objectstore"
 	"github.com/cloudwego/eino/components/embedding"
 	"go.uber.org/zap"
 )
@@ -28,6 +34,7 @@ type documentProcessService struct {
 	vectors    repository.VectorRepository
 	processor  DocumentProcessor
 	embeddings DocumentEmbeddingResolver
+	store      ObjectStore
 }
 
 // NewDocumentProcessService 创建一个新的文档处理服务实例。
@@ -39,8 +46,9 @@ func NewDocumentProcessService(
 	vectors repository.VectorRepository,
 	processor DocumentProcessor,
 	embeddings DocumentEmbeddingResolver,
+	store ObjectStore,
 ) DocumentProcessService {
-	return &documentProcessService{tasks: tasks, docs: docs, chunks: chunks, vectors: vectors, processor: processor, embeddings: embeddings}
+	return &documentProcessService{tasks: tasks, docs: docs, chunks: chunks, vectors: vectors, processor: processor, embeddings: embeddings, store: store}
 }
 
 // CreateImportTask 创建导入任务。
@@ -97,6 +105,191 @@ func (s *documentProcessService) Retry(ctx context.Context, userID, taskID contr
 	}
 	logger.Info("导入任务已重试", zap.String("user_id", string(userID)), zap.String("task_id", string(taskID)))
 	return nil
+}
+
+// StartImportTask 显式触发 pending 任务进入解析（Markdown/ZIP 上传后默认不自动入队）。
+func (s *documentProcessService) StartImportTask(ctx context.Context, userID, taskID contracts.ID) error {
+	task, err := s.tasks.FindByID(ctx, string(userID), string(taskID))
+	if errors.Is(err, repository.ErrImportTaskNotFound) {
+		return apperrors.ErrNotFound
+	}
+	if err != nil {
+		return apperrors.New(contracts.ErrInternal, err)
+	}
+	if task.Status != string(contracts.TaskStatusPending) {
+		return apperrors.New(contracts.ErrInvalidState, fmt.Errorf("任务状态 %q 不允许开始", task.Status))
+	}
+	if task.MinIOObjectKey == nil || *task.MinIOObjectKey == "" {
+		return apperrors.New(contracts.ErrInvalidState, fmt.Errorf("任务尚未完成上传"))
+	}
+	if err := s.tasks.StartPendingTask(ctx, string(userID), string(taskID)); err != nil {
+		return apperrors.New(contracts.ErrInternal, err)
+	}
+	logger.Info("导入任务已开始解析", zap.String("user_id", string(userID)), zap.String("task_id", string(taskID)))
+	return nil
+}
+
+// ScanImportTask 读取任务原始 Markdown（或 ZIP 内主文档），扫描图片引用并分类：
+// data URI → inline；http(s) → network；附件映射命中（精确或 basename）→ matched；其余 → pending。
+func (s *documentProcessService) ScanImportTask(ctx context.Context, userID, taskID contracts.ID) (*ImageScanResult, error) {
+	task, err := s.tasks.FindByID(ctx, string(userID), string(taskID))
+	if errors.Is(err, repository.ErrImportTaskNotFound) {
+		return nil, apperrors.ErrNotFound
+	}
+	if err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	if task.MinIOObjectKey == nil || *task.MinIOObjectKey == "" {
+		return nil, apperrors.New(contracts.ErrInvalidState, fmt.Errorf("任务尚未完成上传"))
+	}
+	if s.store == nil {
+		return nil, apperrors.New(contracts.ErrInternal, fmt.Errorf("对象存储未配置"))
+	}
+	content, err := s.readTaskMarkdown(ctx, task)
+	if err != nil {
+		return nil, err
+	}
+	result := &ImageScanResult{Refs: make([]ImageScanItem, 0, 8)}
+	seen := make(map[string]bool)
+	for _, ref := range parser.ScanMarkdownImageRefs(content) {
+		if seen[ref.Ref] {
+			continue
+		}
+		seen[ref.Ref] = true
+		result.Refs = append(result.Refs, ImageScanItem{Alt: ref.Alt, Ref: ref.Ref, Status: classifyImageRef(ref.Ref, task.Attachments)})
+	}
+	return result, nil
+}
+
+// readTaskMarkdown 读取任务的 Markdown 正文：普通文件直接读；ZIP 解包取第一个 Markdown 主文档。
+func (s *documentProcessService) readTaskMarkdown(ctx context.Context, task *entity.ImportTask) (string, error) {
+	reader, err := s.store.OpenObject(ctx, *task.MinIOObjectKey)
+	if err != nil {
+		return "", apperrors.New(contracts.ErrInternal, fmt.Errorf("读取原始文件失败: %w", err))
+	}
+	defer func() { _ = reader.Close() }()
+	data, err := io.ReadAll(io.LimitReader(reader, 64*1024*1024+1))
+	if err != nil {
+		return "", apperrors.New(contracts.ErrInternal, fmt.Errorf("读取原始文件失败: %w", err))
+	}
+	fileName := valueOrEmpty(task.FileName)
+	if strings.EqualFold(path.Ext(fileName), ".zip") {
+		zipReader, zipErr := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+		if zipErr != nil {
+			return "", apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("ZIP 解包失败: %w", zipErr))
+		}
+		for _, entry := range zipReader.File {
+			name := safeZipPath(entry.Name)
+			if name == "" || !isMainDocumentExt(strings.ToLower(path.Ext(name))) {
+				continue
+			}
+			entryReader, openErr := entry.Open()
+			if openErr != nil {
+				return "", apperrors.New(contracts.ErrInternal, fmt.Errorf("读取 ZIP 条目失败: %w", openErr))
+			}
+			entryData, readErr := io.ReadAll(io.LimitReader(entryReader, 64*1024*1024+1))
+			_ = entryReader.Close()
+			if readErr != nil {
+				return "", apperrors.New(contracts.ErrInternal, fmt.Errorf("读取 ZIP 条目失败: %w", readErr))
+			}
+			return string(entryData), nil
+		}
+		return "", apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("ZIP 内没有 Markdown 主文档"))
+	}
+	return string(data), nil
+}
+
+// classifyImageRef 分类单个图片引用。
+func classifyImageRef(ref string, attachments map[string]string) ImageRefStatus {
+	lower := strings.ToLower(ref)
+	switch {
+	case strings.HasPrefix(lower, "data:image/"):
+		return ImageRefInline
+	case strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://"):
+		return ImageRefNetwork
+	}
+	if attachments != nil {
+		if _, ok := attachments[path.Clean(ref)]; ok {
+			return ImageRefMatched
+		}
+		base := attachmentBaseName(ref)
+		for attachmentPath := range attachments {
+			if attachmentBaseName(attachmentPath) == base {
+				return ImageRefMatched
+			}
+		}
+	}
+	return ImageRefPending
+}
+
+// attachmentBaseName 返回路径最后一段，兼容 / 与 \ 分隔符。
+func attachmentBaseName(p string) string {
+	normalized := strings.ReplaceAll(strings.TrimSpace(p), "\\", "/")
+	if idx := strings.LastIndex(normalized, "/"); idx >= 0 {
+		return normalized[idx+1:]
+	}
+	return normalized
+}
+
+// UploadTaskAttachments 向任务补传图片附件：上传 MinIO（key 含附件前缀），
+// 按文件名（basename）合并进引用映射，供 Markdown 图片引用匹配。
+func (s *documentProcessService) UploadTaskAttachments(ctx context.Context, userID, taskID contracts.ID, files []UploadFileInput) error {
+	if len(files) == 0 {
+		return apperrors.ErrInvalidArgument
+	}
+	task, err := s.tasks.FindByID(ctx, string(userID), string(taskID))
+	if errors.Is(err, repository.ErrImportTaskNotFound) {
+		return apperrors.ErrNotFound
+	}
+	if err != nil {
+		return apperrors.New(contracts.ErrInternal, err)
+	}
+	if task.Status == string(contracts.TaskStatusSucceeded) || task.Status == string(contracts.TaskStatusFailed) {
+		return apperrors.New(contracts.ErrInvalidState, fmt.Errorf("任务已结束，无法补传附件"))
+	}
+	if s.store == nil {
+		return apperrors.New(contracts.ErrInternal, fmt.Errorf("对象存储未配置"))
+	}
+	attachments := make(map[string]string, len(files))
+	uploadedKeys := make([]string, 0, len(files))
+	for _, file := range files {
+		ext := strings.ToLower(path.Ext(file.FileName))
+		if !isImageExt(ext) {
+			return apperrors.New(contracts.ErrUnsupportedFileType, fmt.Errorf("仅支持图片附件: %q", file.FileName))
+		}
+		if file.Size <= 0 || file.Size > 32*1024*1024 {
+			return apperrors.New(contracts.ErrPayloadTooLarge, nil)
+		}
+		key := objectstore.BuildObjectKey(string(userID), task.KnowledgeBaseID, string(taskID), "attachments/"+file.FileName)
+		if err := s.store.PutObject(ctx, key, file.Reader, file.Size, mimeTypeOf(ext)); err != nil {
+			s.removeUploadedObjects(ctx, uploadedKeys)
+			return apperrors.New(contracts.ErrServiceUnavailable, err)
+		}
+		uploadedKeys = append(uploadedKeys, key)
+		attachments[file.FileName] = key
+	}
+	merged := make(map[string]string, len(task.Attachments)+len(attachments))
+	for k, v := range task.Attachments {
+		merged[k] = v
+	}
+	for k, v := range attachments {
+		merged[k] = v
+	}
+	if err := s.tasks.UpdateAttachments(ctx, string(userID), string(taskID), merged); err != nil {
+		s.removeUploadedObjects(ctx, uploadedKeys)
+		return apperrors.New(contracts.ErrInternal, err)
+	}
+	logger.Info("任务附件补传完成", zap.String("user_id", string(userID)), zap.String("task_id", string(taskID)), zap.Int("count", len(files)))
+	return nil
+}
+
+// removeUploadedObjects 批量删除已上传附件对象（补偿用）。
+func (s *documentProcessService) removeUploadedObjects(ctx context.Context, keys []string) {
+	for _, key := range keys {
+		if err := s.store.RemoveObject(ctx, key); err != nil {
+			logger.Error("补偿删除附件对象失败", zap.String("object_key", key), zap.Error(err))
+		}
+	}
 }
 
 // Reindex 为现有文档创建指向原文来源的新导入任务；Worker 构建新版本后原子切换活动索引。

@@ -413,9 +413,13 @@ func (s *documentService) UploadFiles(ctx context.Context, userID, kbID string, 
 		var item *dto.UploadTaskItem
 		var objectKey string
 		var err error
-		if strings.EqualFold(path.Ext(file.FileName), ".zip") {
+		switch strings.ToLower(path.Ext(file.FileName)) {
+		case ".zip":
 			item, objectKey, err = s.uploadZip(ctx, userID, kbID, directoryID, duplicatePolicy, file, bucket)
-		} else {
+		case ".md", ".markdown":
+			// Markdown 上传后不自动触发解析：等待前端扫描图片引用并确认补传后显式开始。
+			item, objectKey, err = s.uploadOneDeferred(ctx, userID, kbID, directoryID, duplicatePolicy, file, bucket)
+		default:
 			item, objectKey, err = s.uploadOne(ctx, userID, kbID, directoryID, duplicatePolicy, file, bucket)
 		}
 		if err != nil {
@@ -551,6 +555,44 @@ func (s *documentService) uploadOne(ctx context.Context, userID, kbID string, di
 	return &dto.UploadTaskItem{TaskID: task.ID, FileName: file.FileName, Status: task.Status}, objectKey, nil
 }
 
+// uploadOneDeferred 处理 Markdown/ZIP 上传：创建任务并落 MinIO，但不入队触发解析；
+// 用户在界面确认图片补传后通过 StartPendingTask 显式开始。
+func (s *documentService) uploadOneDeferred(ctx context.Context, userID, kbID string, directoryID *string, duplicatePolicy string, file UploadFileInput, bucket string) (*dto.UploadTaskItem, string, error) {
+	ext := strings.ToLower(path.Ext(file.FileName))
+	mimeType := mimeTypeOf(ext)
+	task := &entity.ImportTask{
+		UserID: userID, KnowledgeBaseID: kbID, TargetDirectoryID: directoryID,
+		SourceType:      string(contracts.DocumentSourceFile),
+		FileName:        &file.FileName,
+		FileSize:        &file.Size,
+		MIMEType:        &mimeType,
+		DuplicatePolicy: duplicatePolicy,
+		Status:          string(contracts.TaskStatusPending),
+	}
+	if err := s.tasks.Create(ctx, task); err != nil {
+		return nil, "", apperrors.New(contracts.ErrInternal, err)
+	}
+	objectKey := objectstore.BuildObjectKey(userID, kbID, task.ID, file.FileName)
+	hash, err := s.putObjectWithHash(ctx, objectKey, file.Reader, file.Size, mimeType)
+	if err != nil {
+		if deleteErr := s.tasks.Delete(ctx, userID, task.ID); deleteErr != nil {
+			logger.Error("上传失败后删除任务记录失败",
+				zap.String("user_id", userID), zap.String("task_id", task.ID), zap.Error(deleteErr))
+		}
+		return nil, "", apperrors.New(contracts.ErrServiceUnavailable, err)
+	}
+	if err := s.tasks.UpdateObjectInfoNoEnqueue(ctx, userID, task.ID, bucket, objectKey, &hash); err != nil {
+		if removeErr := s.store.RemoveObject(ctx, objectKey); removeErr != nil {
+			logger.Error("补偿删除 MinIO 对象失败",
+				zap.String("user_id", userID), zap.String("object_key", objectKey), zap.Error(removeErr))
+		}
+		return nil, "", apperrors.New(contracts.ErrInternal, err)
+	}
+	logger.Info("Markdown/ZIP 上传完成（待确认补传图片）",
+		zap.String("user_id", userID), zap.String("task_id", task.ID), zap.String("object_key", objectKey))
+	return &dto.UploadTaskItem{TaskID: task.ID, FileName: file.FileName, Status: task.Status}, objectKey, nil
+}
+
 // uploadZip 处理 zip 打包导入：zip 内主文档（md/txt/pdf/docx）走正常导入流程，
 // 图片附件上传 MinIO 并记录相对路径 → object key 映射，供 Worker 解析 Markdown 图片引用。
 // 任一步失败时补偿删除任务与已上传对象。
@@ -665,7 +707,12 @@ func (s *documentService) uploadZip(ctx context.Context, userID, kbID string, di
 		return nil, "", apperrors.New(contracts.ErrServiceUnavailable, putErr)
 	}
 
-	if updateErr := s.tasks.UpdateObjectInfo(ctx, userID, task.ID, bucket, objectKey, &hash); updateErr != nil {
+	// 主文档为 Markdown 时不入队（等待图片补传确认）；其他格式立即进入解析。
+	updateErr := s.tasks.UpdateObjectInfo(ctx, userID, task.ID, bucket, objectKey, &hash)
+	if strings.EqualFold(path.Ext(mainName), ".md") || strings.EqualFold(path.Ext(mainName), ".markdown") {
+		updateErr = s.tasks.UpdateObjectInfoNoEnqueue(ctx, userID, task.ID, bucket, objectKey, &hash)
+	}
+	if updateErr != nil {
 		s.removeObjects(ctx, append(uploadedKeys, objectKey))
 		cleanup()
 		return nil, "", apperrors.New(contracts.ErrInternal, updateErr)

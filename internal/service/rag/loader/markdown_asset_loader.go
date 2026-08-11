@@ -92,6 +92,10 @@ func (l *MarkdownAssetLoader) Open(ctx context.Context, ref string) (io.ReadClos
 	}
 	key, ok := l.attachments[filepath.Clean(ref)]
 	if !ok {
+		// 兼容绝对路径引用（如 C:\...）：按文件名匹配 zip 内附件。
+		key, ok = l.matchByBaseName(ref)
+	}
+	if !ok {
 		return nil, "", fmt.Errorf("附件 %q 未随文档上传", ref)
 	}
 	if l.store == nil {
@@ -102,6 +106,29 @@ func (l *MarkdownAssetLoader) Open(ctx context.Context, ref string) (io.ReadClos
 		return nil, "", fmt.Errorf("读取附件 %q 失败: %w", ref, err)
 	}
 	return reader, "", nil
+}
+
+// matchByBaseName 按文件名（不含目录，兼容 / 与 \ 分隔符）匹配附件；重名时取首个匹配。
+func (l *MarkdownAssetLoader) matchByBaseName(ref string) (string, bool) {
+	want := strings.ToLower(fileBase(ref))
+	if want == "" || want == "." || want == ".." {
+		return "", false
+	}
+	for attachmentPath, key := range l.attachments {
+		if strings.ToLower(fileBase(attachmentPath)) == want {
+			return key, true
+		}
+	}
+	return "", false
+}
+
+// fileBase 返回路径最后一段，兼容 Windows（\）与 Unix（/）分隔符。
+func fileBase(p string) string {
+	normalized := strings.ReplaceAll(strings.TrimSpace(p), "\\", "/")
+	if idx := strings.LastIndex(normalized, "/"); idx >= 0 {
+		return normalized[idx+1:]
+	}
+	return normalized
 }
 
 // openURL 下载网络图片并强制 SSRF/大小/类型限制。

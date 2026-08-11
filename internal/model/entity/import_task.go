@@ -27,7 +27,7 @@ type ImportTask struct {
 	FailureReason     *string    `gorm:"column:failure_reason" json:"failure_reason,omitempty"`              // FailureReason 失败原因，可选
 	DocumentID        *string    `gorm:"column:document_id" json:"document_id,omitempty"`                    // DocumentID 导入成功后生成的文档 ID，可选
 	// Attachments 是 zip 导入的附件映射（zip 内相对路径 → MinIO object key），可选。
-	Attachments map[string]string `gorm:"column:attachments;type:jsonb" json:"attachments,omitempty"`
+	Attachments StringMap `gorm:"column:attachments;type:jsonb" json:"attachments,omitempty"`
 	CreatedAt         time.Time  `gorm:"column:created_at" json:"created_at"`                                // CreatedAt 创建时间
 	StartedAt         *time.Time `gorm:"column:started_at" json:"started_at,omitempty"`                      // StartedAt 开始处理时间，可选
 	CompletedAt       *time.Time `gorm:"column:completed_at" json:"completed_at,omitempty"`                  // CompletedAt 完成时间，可选

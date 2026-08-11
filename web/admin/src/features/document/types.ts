@@ -82,6 +82,18 @@ export interface DocumentPreview {
   format: 'markdown' | 'txt' | 'pdf' | 'docx' | string;
 }
 
+export type ImageRefStatus = 'inline' | 'network' | 'matched' | 'pending';
+
+export interface ImageScanItem {
+  alt: string;
+  ref: string;
+  status: ImageRefStatus;
+}
+
+export interface ImageScanResult {
+  refs: ImageScanItem[];
+}
+
 export interface ImportTask {
   id: string;
   source_type: 'file' | 'url';

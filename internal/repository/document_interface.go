@@ -86,6 +86,10 @@ type ImportTaskRepository interface {
 	ListByKB(ctx context.Context, userID, kbID string, page, pageSize int) ([]*entity.ImportTask, int64, error)
 	// UpdateObjectInfo 更新任务的 MinIO 对象信息与源哈希。
 	UpdateObjectInfo(ctx context.Context, userID, taskID string, bucket, objectKey string, sourceHash *string) error
+	// UpdateObjectInfoNoEnqueue 更新对象信息但不入队（Markdown/ZIP 待用户确认补传图片）。
+	UpdateObjectInfoNoEnqueue(ctx context.Context, userID, taskID string, bucket, objectKey string, sourceHash *string) error
+	// StartPendingTask 将 pending 任务入队（显式触发 Worker 处理）。
+	StartPendingTask(ctx context.Context, userID, taskID string) error
 	// UpdateURLResult 保存 Worker 安全抓取后的最终 URL 与正文哈希。
 	UpdateURLResult(ctx context.Context, taskID, finalURL, sourceHash string) error
 	// UpdateAttachments 保存 zip 导入的附件映射（相对路径 → MinIO object key）。
