@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,10 +58,47 @@ func (c *OfficeConverter) ConvertToPDF(ctx context.Context, srcPath, outDir stri
 
 	base := strings.TrimSuffix(filepath.Base(srcPath), filepath.Ext(srcPath))
 	pdfPath := filepath.Join(outDir, base+".pdf")
-	if _, statErr := os.Stat(pdfPath); statErr != nil {
+	info, statErr := os.Stat(pdfPath)
+	if statErr != nil {
 		return "", fmt.Errorf("LibreOffice 未生成 PDF 输出: %v", statErr)
 	}
+	if info.Size() < 16 {
+		return "", fmt.Errorf("LibreOffice 输出的 PDF 过小（%d 字节），可能转换不完整", info.Size())
+	}
+	// 校验 PDF 结尾标记：防 soffice 被终止/异常时输出不完整文件。
+	if err := verifyPDFEnding(pdfPath); err != nil {
+		return "", err
+	}
 	return pdfPath, nil
+}
+
+// verifyPDFEnding 读取 PDF 文件尾部并确认包含 %%EOF 结束标记。
+func verifyPDFEnding(pdfPath string) error {
+	file, err := os.Open(pdfPath)
+	if err != nil {
+		return fmt.Errorf("打开转换 PDF 失败: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("读取转换 PDF 信息失败: %w", err)
+	}
+	const tailSize = 2048
+	offset := info.Size() - tailSize
+	if offset < 0 {
+		offset = 0
+	}
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return fmt.Errorf("定位 PDF 尾部失败: %w", err)
+	}
+	tail, err := io.ReadAll(io.LimitReader(file, tailSize))
+	if err != nil {
+		return fmt.Errorf("读取 PDF 尾部失败: %w", err)
+	}
+	if !strings.Contains(string(tail), "%%EOF") {
+		return fmt.Errorf("转换 PDF 缺少 %%EOF 结束标记，输出不完整")
+	}
+	return nil
 }
 
 // findSoffice 在 PATH 与常见安装路径中查找 soffice。

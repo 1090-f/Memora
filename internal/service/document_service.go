@@ -436,7 +436,7 @@ func (s *documentService) OpenRendered(ctx context.Context, userID, documentID s
 	return rendered, nil
 }
 
-// loadRenderedCache 读取渲染缓存并校验 PDF 魔数；对象缺失返回 ErrObjectNotFound。
+// loadRenderedCache 读取渲染缓存并校验 PDF 魔数与大小；对象缺失返回 ErrObjectNotFound。
 func (s *documentService) loadRenderedCache(ctx context.Context, key string) (*OriginalDocumentFile, error) {
 	reader, err := s.store.OpenObject(ctx, key)
 	if err != nil {
@@ -451,6 +451,11 @@ func (s *documentService) loadRenderedCache(ctx context.Context, key string) (*O
 	if n < 8 || !bytes.HasPrefix(head, []byte("%PDF-")) {
 		_ = reader.Close()
 		return nil, fmt.Errorf("渲染缓存内容不是有效 PDF")
+	}
+	// 大文件防"空壳"缓存：最小 PDF 应大于 1KB。
+	if info, statErr := s.store.StatObject(ctx, key); statErr != nil || info.Size < 1024 {
+		_ = reader.Close()
+		return nil, fmt.Errorf("渲染缓存 PDF 过小")
 	}
 	return &OriginalDocumentFile{Reader: reader, FileName: "preview.pdf", ContentType: "application/pdf", Size: -1}, nil
 }
