@@ -268,7 +268,8 @@ func (s *documentService) loadParsedDocument(ctx context.Context, userID string,
 }
 
 // OpenAsset 流式返回文档资产（图片等）字节。
-// 调用方必须已通过签名 URL 校验（浏览器 <img> 无法携带 Bearer header）。
+// 调用方必须已通过签名 URL 校验（浏览器 <img> 无法携带 Bearer header）；
+// 文档所属用户从实体读取，避免签名 URL 无用户上下文导致 Artifact 前缀错误。
 func (s *documentService) OpenAsset(ctx context.Context, userID, documentID, assetID string) (*OriginalDocumentFile, error) {
 	doc, err := s.docs.FindByIDInternal(ctx, documentID)
 	if errors.Is(err, repository.ErrDocumentNotFound) {
@@ -277,7 +278,7 @@ func (s *documentService) OpenAsset(ctx context.Context, userID, documentID, ass
 	if err != nil {
 		return nil, apperrors.New(contracts.ErrInternal, err)
 	}
-	parsed, err := s.loadParsedDocument(ctx, userID, doc)
+	parsed, err := s.loadParsedDocument(ctx, doc.UserID, doc)
 	if err != nil {
 		return nil, err
 	}

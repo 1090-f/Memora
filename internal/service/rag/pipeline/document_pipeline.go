@@ -202,10 +202,15 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 	}
 
 	// resolve_artifact：确定性 key 查找兼容 Artifact；命中则加载，未命中标记待解析。
+	// 附件场景（zip/补传图片）强制重新解析：附件变化后旧 Artifact 不含新图片，
+	// 若命中缓存会导致补传图片不生效。
 	resolveLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
 		state.artifactPrefix = parser.ArtifactKeyPrefix(
 			state.input.DocMeta.UserID, state.input.DocMeta.DocumentID,
 			state.input.DocMeta.ContentVersion, parseConfigHash)
+		if len(state.input.Attachments) > 0 {
+			return state, nil
+		}
 		ref, err := artifactStore.Resolve(ctx, state.artifactPrefix, state.input.DocMeta.SourceHash)
 		if err != nil {
 			if isArtifactNotFound(err) {
