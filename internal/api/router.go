@@ -14,6 +14,7 @@ import (
 	"github.com/1090-f/Memora/internal/api/v1/importtask"
 	"github.com/1090-f/Memora/internal/api/v1/knowledgebase"
 	mcpapi "github.com/1090-f/Memora/internal/api/v1/mcp"
+	"github.com/1090-f/Memora/internal/api/v1/memory"
 	modelconfigapi "github.com/1090-f/Memora/internal/api/v1/modelconfig"
 	searchapi "github.com/1090-f/Memora/internal/api/v1/search"
 	"github.com/1090-f/Memora/internal/api/v1/user"
@@ -50,6 +51,7 @@ type Dependencies struct {
 	AIEncryption    encryption.Service
 	ContextBuilder  contracts.ContextBuilder
 	Router          contracts.Router
+	MemoryRepo      repository.MemoryRepository
 	PostgresHealth  HealthCheck
 	RedisHealth     HealthCheck
 	MinIOHealth     HealthCheck
@@ -81,6 +83,9 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	importtask.NewController(deps.DocumentProcess).RegisterRoutes(v1, authRequired)
 	if deps.Retrieval != nil {
 		searchapi.NewController(deps.Retrieval).RegisterRoutes(v1, authRequired)
+	}
+	if deps.MemoryRepo != nil {
+		memory.NewController(deps.MemoryRepo).RegisterRoutes(v1, authRequired)
 	}
 	return engine
 }

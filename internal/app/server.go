@@ -241,6 +241,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		ContextBuilder: contextBuilder,
 		AssetSignKey:   cfg.JWT.Secret,
 		Router:         routerService,
+		MemoryRepo:     memoryRepo,
 		PostgresHealth: func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
 		RedisHealth:    func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
 		MinIOHealth:    a.store.Health,
