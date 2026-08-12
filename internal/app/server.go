@@ -17,12 +17,14 @@ import (
 	"github.com/1090-f/Memora/internal/api/v1/agent"
 	"github.com/1090-f/Memora/internal/background"
 	"github.com/1090-f/Memora/internal/contracts"
+	"github.com/1090-f/Memora/internal/events"
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service"
 	"github.com/1090-f/Memora/internal/service/rag/parser"
 	ragpipeline "github.com/1090-f/Memora/internal/service/rag/pipeline"
 	ragretrieval "github.com/1090-f/Memora/internal/service/rag/retrieval"
 	"github.com/1090-f/Memora/internal/service/rag/tokenizer"
+	"github.com/1090-f/Memora/internal/worker"
 	"github.com/1090-f/Memora/pkg/audit"
 	"github.com/1090-f/Memora/pkg/config"
 	"github.com/1090-f/Memora/pkg/database"
@@ -32,6 +34,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -44,6 +47,7 @@ type ServerApp struct {
 	server         *http.Server
 	background     *background.Manager
 	documentParser *documentParserProcess
+	workerCancel   context.CancelFunc // Agent Worker 生命周期取消函数
 }
 
 // NewServer 创建一个新的 ServerApp 实例。
@@ -235,9 +239,12 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		return fmt.Errorf("初始化 ReactService 失败: %w", err)
 	}
 
-	// 初始化事件发布器（Phase 7）
-	// TODO: 替换为真正的 contracts.EventPublisher 实现（如 Redis Event Publisher）
-	var eventPub contracts.EventPublisher = noopEventPublisher{}
+	// 初始化事件发布器与订阅器（Phase 7）：使用 Redis Pub/Sub 实现实时事件推送。
+	// eventPub 将 AgentEvent 序列化为 JSON 后发布到 Redis 频道；
+	// eventSub 从同一频道过滤出指定 runID 的事件供 SSE 端点使用。
+	eventPub := events.NewRedisEventPublisher(a.redis)
+	eventSub := events.NewRedisEventSubscriber(a.redis)
+	// 用带序列号的发布器包装底层 Redis 发布器，确保事件序号单调递增。
 	sequencedEvents := core.NewSequencedEventPublisher(eventPub)
 
 	// 初始化 ReactRunner（ReAct 模式执行器）
@@ -257,8 +264,33 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	agentCoreService := core.NewService(reactRunner, routerService, runRepoAdapter, sequencedEvents)
 	agentCoreService.SetPlanRunner(planRunner)
 
-	// 初始化 Agent 运行管理的 HTTP 控制器
-	agentController := agent.NewController(agentCoreService, agentRunRepo, toolCallRepo, contextBuilder)
+	// 初始化 Agent 运行管理的 HTTP 控制器，注入事件订阅器以支持 SSE 流式事件推送
+	agentController := agent.NewController(
+		agentCoreService,
+		agentRunRepo,
+		toolCallRepo,
+		messages,
+		agentConfigs,
+		contextBuilder,
+		eventSub,
+	)
+
+	// 初始化 Agent Worker（异步执行 Agent 运行的后台工作者）
+	// Worker 周期性轮询数据库中状态为 queued 的运行记录，原子性领取后在后台 goroutine 中执行
+	agentWorker := worker.NewAgentWorker(
+		agentCoreService,
+		agentRunRepo,
+		contextBuilder,
+		worker.DefaultAgentWorkerConfig(),
+	)
+	// 使用独立生命周期上下文启动 Worker，服务器关闭时主动取消该上下文。
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	a.workerCancel = workerCancel
+	go func() {
+		if err := agentWorker.Run(workerCtx); err != nil {
+			logger.Error("Agent Worker 运行异常", zap.Error(err))
+		}
+	}()
 
 	router := api.NewRouter(api.Dependencies{
 		Config: cfg.CORS, Auth: authService, Users: userService, MCP: mcpService,
@@ -365,6 +397,11 @@ func (a *agentRunRepoAdapter) Retry(ctx context.Context, runID, userID contracts
 // Close 释放服务器应用持有的所有资源。
 func (a *ServerApp) Close() error {
 	var closeErr error
+	// 先停止 Agent Worker，避免数据库和 Redis 关闭后仍有后台任务访问它们。
+	if a.workerCancel != nil {
+		a.workerCancel()
+		a.workerCancel = nil
+	}
 	if a.documentParser != nil {
 		closeErr = errors.Join(closeErr, a.documentParser.Close())
 	}

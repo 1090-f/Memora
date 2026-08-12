@@ -3,8 +3,10 @@
 package agent
 
 import (
-	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -24,10 +26,13 @@ import (
 
 // Controller 处理 Agent 运行相关的 HTTP 请求。
 type Controller struct {
-	agentService   contracts.AgentRunService     // Agent 核心执行服务（包含 Run/Cancel/Retry）
-	runRepo        repository.AgentRunRepository // 运行记录的持久化查询
-	toolCallRepo   repository.ToolCallRepository // 工具调用的持久化查询
-	contextBuilder contracts.ContextBuilder      // 上下文构建器（组装 AgentContext）
+	agentService    contracts.AgentRunService        // Agent 核心执行服务（包含 Run/Cancel/Retry）
+	runRepo         repository.AgentRunRepository    // 运行记录的持久化查询
+	toolCallRepo    repository.ToolCallRepository    // 工具调用的持久化查询
+	messageRepo     repository.MessageRepository     // 用户消息持久化仓库
+	agentConfigRepo repository.AgentConfigRepository // Agent 配置查询仓库
+	contextBuilder  contracts.ContextBuilder         // 上下文构建器（组装 AgentContext）
+	eventSub        contracts.EventSubscriber        // Agent 事件订阅器（用于 SSE 流式推送）
 }
 
 // NewController 创建 Agent 运行管理的 HTTP 控制器实例。
@@ -35,13 +40,19 @@ func NewController(
 	agentService contracts.AgentRunService,
 	runRepo repository.AgentRunRepository,
 	toolCallRepo repository.ToolCallRepository,
+	messageRepo repository.MessageRepository,
+	agentConfigRepo repository.AgentConfigRepository,
 	contextBuilder contracts.ContextBuilder,
+	eventSub contracts.EventSubscriber,
 ) *Controller {
 	return &Controller{
-		agentService:   agentService,
-		runRepo:        runRepo,
-		toolCallRepo:   toolCallRepo,
-		contextBuilder: contextBuilder,
+		agentService:    agentService,
+		runRepo:         runRepo,
+		toolCallRepo:    toolCallRepo,
+		messageRepo:     messageRepo,
+		agentConfigRepo: agentConfigRepo,
+		contextBuilder:  contextBuilder,
+		eventSub:        eventSub,
 	}
 }
 
@@ -80,30 +91,75 @@ func (ctrl *Controller) CreateRun(c *gin.Context) {
 		response.Failure(c, mapAgentError(err))
 		return
 	}
+	// 上下文构建用于提前校验会话、知识库和 Agent 配置；Worker 会在领取后重新构建最新上下文。
+	_ = agentCtx
 
-	// 2. 构建运行请求，使用 AgentContext 中加载的配置作为基础
-	runRequest := contracts.AgentRunRequest{
-		RunID:   runID,
-		Context: agentCtx,
-		Config:  buildConfigFromContext(agentCtx),
+	// 2. 查询 Agent 配置，获取运行记录所需的外键 ID。
+	userID, err := uuid.Parse(string(user.ID))
+	if err != nil {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+	knowledgeBaseID, err := uuid.Parse(string(req.KnowledgeBaseID))
+	if err != nil {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+	conversationID, err := uuid.Parse(string(req.ConversationID))
+	if err != nil {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+	agentConfig, err := ctrl.agentConfigRepo.FindByKnowledgeBase(c.Request.Context(), userID.String(), knowledgeBaseID.String())
+	if err != nil {
+		response.Failure(c, mapAgentError(err))
+		return
+	}
+	agentConfigID, err := uuid.Parse(agentConfig.ID)
+	if err != nil {
+		response.Failure(c, apperrors.ErrInternal)
+		return
 	}
 
-	// 3. 在后台 goroutine 中异步执行 Agent 运行
-	// HTTP 请求不等待 Agent 完成，run_id 和初始状态立即返回给客户端
-	go func() {
-		// 创建独立上下文，避免 HTTP 请求结束后取消传播到正在执行的 Agent
-		execCtx, cancel := context.WithTimeout(context.Background(), time.Duration(runRequest.Config.MaxRunSeconds)*time.Second)
-		defer cancel()
+	// 3. 持久化用户消息，作为 agent_runs.user_message_id 的关联记录。
+	message := &entity.Message{
+		ID:              runUUID.String(),
+		ConversationID:  conversationID.String(),
+		UserID:          userID.String(),
+		KnowledgeBaseID: knowledgeBaseID.String(),
+		Role:            "user",
+		Content:         req.Query,
+		Status:          "completed",
+		CreatedAt:       time.Now().UTC(),
+	}
+	if err := ctrl.messageRepo.Create(c.Request.Context(), message); err != nil {
+		response.Failure(c, apperrors.ErrInternal)
+		return
+	}
 
-		_, runErr := ctrl.agentService.Run(execCtx, runRequest)
-		if runErr != nil {
-			// 执行失败或取消，错误已通过 EventPublisher 发布
-			return
-		}
-		// 执行成功，结果已落库和通过 EventPublisher 发布
-	}()
+	// 4. 创建 queued 状态的 Agent 运行记录，供 Worker 原子领取。
+	run := &entity.AgentRun{
+		ID:              runUUID,
+		UserID:          userID,
+		KnowledgeBaseID: knowledgeBaseID,
+		ConversationID:  conversationID,
+		UserMessageID:   runUUID,
+		AgentConfigID:   agentConfigID,
+		Query:           req.Query,
+		Status:          "queued",
+	}
+	if err := ctrl.runRepo.CreateQueued(c.Request.Context(), run); err != nil {
+		response.Failure(c, apperrors.ErrInternal)
+		return
+	}
 
-	// 4. 立即返回排队成功响应
+	// 5. 上下文已构建并完成校验，运行记录进入队列后由 Worker 重新构建上下文执行。
+	// Worker 重新加载上下文可以避免 HTTP 请求结束后复用已取消的请求上下文。
+
+	// 6. 运行记录已进入 queued 队列，由 Agent Worker 负责领取和执行。
+	// HTTP 请求不等待 Agent 完成，run_id 和初始状态立即返回给客户端。
+
+	// 7. 立即返回排队成功响应
 	response.Success(c, http.StatusAccepted, respdto.CreateAgentRunResponse{
 		RunID:          string(runID),
 		ConversationID: req.ConversationID,
@@ -229,6 +285,75 @@ func (ctrl *Controller) RetryRun(c *gin.Context) {
 		NewRunID: string(newRunID),
 		Status:   "queued",
 	})
+}
+
+// SubscribeEvents 处理 GET /api/v1/agent/runs/:id/events，通过 Server-Sent Events 协议流式推送 Agent 运行事件。
+// 客户端可通过 after_sequence 查询参数指定已收到的最新序列号，用于断线重连时跳过已处理的事件。
+// 每次推送一个 JSON 格式的 AgentEvent 行，遵循 SSE 协议（Content-Type: text/event-stream）。
+func (ctrl *Controller) SubscribeEvents(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	_ = user // 当前先校验用户认证，后续可扩展按用户过滤事件
+
+	// 1. 解析运行 ID 和起始序列号
+	runID := contracts.ID(c.Param("id"))
+	afterSeq, _ := strconv.ParseInt(c.DefaultQuery("after_sequence", "0"), 10, 64)
+
+	// 2. 设置 SSE 响应头
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no") // 禁用 Nginx 缓冲，确保流式推送的实时性
+
+	// 3. 订阅事件通道
+	eventCh, err := ctrl.eventSub.Subscribe(c.Request.Context(), runID, afterSeq)
+	if err != nil {
+		// SSE 场景下无法返回 JSON（响应头已设为 text/event-stream），直接写入错误事件行
+		errData, _ := json.Marshal(gin.H{"error": err.Error()})
+		fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", errData)
+		c.Writer.Flush()
+		return
+	}
+
+	// 创建定时 flush ticker，用于定期发送心跳和刷新缓冲区
+	flushTicker := time.NewTicker(10 * time.Second)
+	defer flushTicker.Stop()
+
+	// 4. 持续消费事件并通过 SSE 协议推送
+	for {
+		select {
+		case <-c.Request.Context().Done():
+			// 客户端断开连接或请求超时，退出循环
+			return
+		case <-flushTicker.C:
+			// 定时发送 SSE 注释行（以 : 开头）作为心跳，防止代理/负载均衡器因长时间无数据而断开连接
+			io.WriteString(c.Writer, ": heartbeat\n\n")
+			c.Writer.Flush()
+		case event, ok := <-eventCh:
+			if !ok {
+				// 事件通道已关闭（运行结束或异常），发送完成事件后退出
+				io.WriteString(c.Writer, "event: complete\ndata: {}\n\n")
+				c.Writer.Flush()
+				return
+			}
+
+			// 将事件序列化为 JSON
+			eventData, err := json.Marshal(event)
+			if err != nil {
+				continue
+			}
+
+			// SSE 格式：每个事件由 event 行（事件类型）和 data 行（JSON 载荷）组成，以空行分隔
+			// 示例：
+			//   event: agent.run.started
+			//   data: {"event_id":"...","sequence":1,...}
+			fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event.EventType, eventData)
+			c.Writer.Flush()
+		}
+	}
 }
 
 // 以下为内部辅助函数
