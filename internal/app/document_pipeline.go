@@ -40,7 +40,7 @@ func buildDocumentProcessService(cfg *config.Config, store *objectstore.Client, 
 }
 
 func documentParseOptions(cfg *config.Config) parser.ParseOptions {
-	return parser.ParseOptions{SchemaVersion: parser.SchemaVersion, OCRLanguages: cfg.DocumentParser.OCRLanguages, DoOCR: cfg.DocumentParser.DoOCR, TableStructure: cfg.DocumentParser.TableStructure, ExtractPictures: cfg.DocumentParser.ExtractPictures, IncludeBBoxes: cfg.DocumentParser.IncludeBBoxes}
+	return parser.ParseOptions{SchemaVersion: parser.SchemaVersion, OCRLanguages: cfg.DocumentParser.OCRLanguages, DoOCR: cfg.DocumentParser.DoOCR, DoImageOCR: cfg.DocumentParser.DoImageOCR, TableStructure: cfg.DocumentParser.TableStructure, ExtractPictures: cfg.DocumentParser.ExtractPictures, IncludeBBoxes: cfg.DocumentParser.IncludeBBoxes}
 }
 
 type parserObjectStore struct{ inner *objectstore.Client }

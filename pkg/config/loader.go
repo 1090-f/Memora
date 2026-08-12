@@ -85,8 +85,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("app.version", "dev")
 	v.SetDefault("app.mode", "debug")
 	v.SetDefault("app.address", ":8080")
-	v.SetDefault("app.read_timeout", "15s")
-	v.SetDefault("app.write_timeout", "2m")
+	v.SetDefault("app.read_timeout", "2m")
+	v.SetDefault("app.write_timeout", "10m")
 	v.SetDefault("app.shutdown_timeout", "10s")
 	v.SetDefault("database.max_idle_conns", 5)
 	v.SetDefault("database.max_open_conns", 25)
@@ -119,6 +119,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("document_parser.max_asset_bytes", 33554432)
 	v.SetDefault("document_parser.ocr_languages", []string{"zh", "en"})
 	v.SetDefault("document_parser.do_ocr", true)
+	v.SetDefault("document_parser.do_image_ocr", true)
 	v.SetDefault("document_parser.table_structure", true)
 	v.SetDefault("document_parser.extract_pictures", true)
 	v.SetDefault("document_parser.include_bboxes", true)
@@ -179,6 +180,7 @@ func bindEnvironment(v *viper.Viper) {
 		"document_parser.max_asset_bytes":              "MEMORA_DOCUMENT_PARSER_MAX_ASSET_BYTES",
 		"document_parser.ocr_languages":                "MEMORA_DOCUMENT_PARSER_OCR_LANGUAGES",
 		"document_parser.do_ocr":                       "MEMORA_DOCUMENT_PARSER_DO_OCR",
+		"document_parser.do_image_ocr":                 "MEMORA_DOCUMENT_PARSER_DO_IMAGE_OCR",
 		"document_parser.table_structure":              "MEMORA_DOCUMENT_PARSER_TABLE_STRUCTURE",
 		"document_parser.extract_pictures":             "MEMORA_DOCUMENT_PARSER_EXTRACT_PICTURES",
 		"document_parser.include_bboxes":               "MEMORA_DOCUMENT_PARSER_INCLUDE_BBOXES",

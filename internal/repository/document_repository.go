@@ -205,7 +205,7 @@ func (r *importTaskRepository) Create(ctx context.Context, task *entity.ImportTa
 		if err := tx.Create(task).Error; err != nil {
 			return fmt.Errorf("创建导入任务失败: %w", err)
 		}
-		if (task.MinIOObjectKey != nil && *task.MinIOObjectKey != "") || (task.SourceType == "url" && task.SourceURL != nil && *task.SourceURL != "") {
+		if (task.MinIOObjectKey != nil && *task.MinIOObjectKey != "") || (task.SourceType == "url" && task.SourceURL != nil && *task.SourceURL != "") || task.SourceType == string(contracts.DocumentSourceManual) {
 			return enqueueTaskEvent(tx, task.ID)
 		}
 		return nil

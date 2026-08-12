@@ -301,7 +301,7 @@ func (s *documentProcessService) Reindex(ctx context.Context, userID, kbID, docu
 	if err != nil {
 		return apperrors.New(contracts.ErrInternal, err)
 	}
-	if (doc.MinIOObjectKey == nil || *doc.MinIOObjectKey == "") && (doc.SourceURL == nil || *doc.SourceURL == "") {
+	if (doc.MinIOObjectKey == nil || *doc.MinIOObjectKey == "") && (doc.SourceURL == nil || *doc.SourceURL == "") && doc.SourceType != string(contracts.DocumentSourceManual) {
 		return apperrors.New(contracts.ErrInvalidState, fmt.Errorf("文档没有可重建的原始来源"))
 	}
 	task := &entity.ImportTask{
@@ -309,6 +309,12 @@ func (s *documentProcessService) Reindex(ctx context.Context, userID, kbID, docu
 		SourceType: doc.SourceType, FileName: doc.OriginalFileName, FileSize: doc.FileSize, MIMEType: doc.MIMEType,
 		SourceURL: doc.SourceURL, SourceHash: doc.FileHash, MinIOBucket: doc.MinIOBucket, MinIOObjectKey: doc.MinIOObjectKey,
 		DuplicatePolicy: "create_new", Status: string(contracts.TaskStatusPending), DocumentID: &doc.ID,
+	}
+	// 手工文档没有 MinIO 对象与 URL：正文存于 documents.content，任务按来源类型
+	// 自动入队，Worker 读取正文后执行分块与索引。
+	if doc.SourceType == string(contracts.DocumentSourceManual) {
+		fileName := manualTaskFileName(doc)
+		task.FileName = &fileName
 	}
 	if err := s.tasks.Create(ctx, task); err != nil {
 		return apperrors.New(contracts.ErrInternal, err)
@@ -451,8 +457,8 @@ func (s *documentProcessService) ProcessImportTask(ctx context.Context, taskID c
 		task.DocumentID = &doc.ID
 	}
 
-	// 执行文档加工流水线（file 来源且已落 MinIO 时）。
-	if s.processor != nil && ((task.MinIOObjectKey != nil && *task.MinIOObjectKey != "") || (task.SourceURL != nil && *task.SourceURL != "")) {
+	// 执行文档加工流水线（file/url 来源有 MinIO 对象或 URL；手工文档正文在 documents.content）。
+	if s.processor != nil && ((task.MinIOObjectKey != nil && *task.MinIOObjectKey != "") || (task.SourceURL != nil && *task.SourceURL != "") || task.SourceType == string(contracts.DocumentSourceManual)) {
 		if err := s.processDocument(ctx, task, doc); err != nil {
 			// 加工失败：文档标记 failed，旧索引不受影响。
 			// 任务状态由 Runner 的 Fail 路径统一回写（Source.Fail → FailTask），避免双重标记。
@@ -511,7 +517,7 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 	// resolve_artifact → parse_if_missing → validate → persist_artifact → normalize
 	// → enrich → structure_chunk → clean → token_count → persist → index。
 	// 节点顺序由 pipeline 编译期固定，此处仅传入对象与元数据触发整条流水线。
-	out, err := s.processor.Run(ctx, pipeline.ProcessInput{
+	input := pipeline.ProcessInput{
 		ObjectKey:        valueOrEmpty(task.MinIOObjectKey),
 		SourceURL:        valueOrEmpty(task.SourceURL),
 		FileName:         valueOrEmpty(task.FileName),
@@ -534,7 +540,19 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 				"source_url":  valueOrEmpty(task.SourceURL),
 			},
 		},
-	})
+	}
+	// 手工文档：正文存于 documents.content，直接交给流水线（不访问 MinIO）。
+	if task.SourceType == string(contracts.DocumentSourceManual) {
+		content := ""
+		if doc.Content != nil {
+			content = *doc.Content
+		}
+		input.Content = content
+		if input.FileName == "" {
+			input.FileName = manualTaskFileName(doc)
+		}
+	}
+	out, err := s.processor.Run(ctx, input)
 	if err != nil {
 		return fmt.Errorf("文档加工失败: %w", err)
 	}

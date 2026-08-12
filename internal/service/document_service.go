@@ -70,6 +70,14 @@ type ObjectStore interface {
 	RemoveObject(ctx context.Context, objectKey string) error
 }
 
+// OfficePDFConverter 抽象 Office 文档转 PDF 能力，便于测试注入。
+type OfficePDFConverter interface {
+	// Available 报告转换能力是否可用。
+	Available() bool
+	// ConvertToPDF 将 srcPath 转换为 PDF 输出到 outDir，返回生成的 PDF 路径。
+	ConvertToPDF(ctx context.Context, srcPath, outDir string) (string, error)
+}
+
 // documentService 是 DocumentService 接口的实现。
 // 注意：上传流程不得使用数据库事务包裹 MinIO I/O（规范红线），
 // 因此本服务不持有 Transactor；补偿通过显式删除实现。
@@ -81,7 +89,7 @@ type documentService struct {
 	store           ObjectStore
 	parseConfigHash string
 	assetSignKey    string
-	office          *OfficeConverter
+	office          OfficePDFConverter
 }
 
 // NewDocumentService 创建一个新的文档服务实例。
@@ -141,7 +149,33 @@ func (s *documentService) CreateManual(ctx context.Context, userID, kbID string,
 	if err := s.docs.Create(ctx, doc); err != nil {
 		return nil, apperrors.New(contracts.ErrInternal, err)
 	}
+	// 手工文档进入索引流水线：创建并关联任务后入队，由 Worker 完成分块、
+	// 关键词索引与向量索引（与文件导入共用同一加工 Graph）。
+	fileName := manualTaskFileName(doc)
+	task := &entity.ImportTask{
+		UserID: userID, KnowledgeBaseID: kbID, TargetDirectoryID: req.DirectoryID,
+		SourceType:      string(contracts.DocumentSourceManual),
+		FileName:        &fileName,
+		DuplicatePolicy: "create_new",
+		Status:          string(contracts.TaskStatusPending),
+		DocumentID:      &doc.ID,
+	}
+	if err := s.tasks.Create(ctx, task); err != nil {
+		// 任务创建/入队失败时补偿删除文档，避免残留永远 pending 的孤文档。
+		_ = s.docs.SoftDelete(ctx, userID, doc.ID)
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
 	return documentResponse(doc), nil
+}
+
+// manualTaskFileName 为手工文档构造解析文件名：按正文格式追加扩展名，
+// 供 ParserRouter 按扩展名路由到 Go Markdown/Text 解析器。
+func manualTaskFileName(doc *entity.Document) string {
+	ext := ".txt"
+	if doc.ContentFormat == "markdown" {
+		ext = ".markdown"
+	}
+	return strings.TrimSpace(doc.Title) + ext
 }
 
 // List 分页查询知识库文档列表。

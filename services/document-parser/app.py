@@ -18,12 +18,18 @@ import os
 import threading
 from collections.abc import AsyncIterator
 
-from docling import __version__ as DOCLING_VERSION
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
+# 必须在任何 docling 导入之前执行：docling-parse 的 C++ 层在中文
+# 路径（ANSI 代码页非 UTF-8）下找不到 pdf_resources，需要先切换到 ASCII 路径。
+from docling_parse_path import ensure_ascii_docling_parse  # noqa: E402
 
-import schemas
-from docling_adapter import DoclingAdapter, DocumentParserError
+ensure_ascii_docling_parse()
+
+from docling import __version__ as DOCLING_VERSION  # noqa: E402
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+
+import schemas  # noqa: E402
+from docling_adapter import DoclingAdapter, DocumentParserError  # noqa: E402
 
 logging.basicConfig(
     level=os.environ.get("DOCUMENT_PARSER_LOG_LEVEL", "info").upper(),
@@ -106,10 +112,10 @@ async def parse_document(
     file: UploadFile = File(...),  # noqa: B008
     options: str = Form("{}"),  # noqa: B008
 ) -> schemas.ParsedDocument:
-    """解析 PDF/DOCX 为 ParsedDocument。
+    """解析 PDF/DOCX/XLSX/PPTX/图片为 ParsedDocument。
 
     multipart 字段：
-      - file: PDF 或 DOCX 原始字节；
+      - file: 上述格式的原始字节；
       - options: 解析选项 JSON（见 schemas.ParseOptions）。
     响应为 ParsedDocument JSON（不含任何 Chunk/RAG 字段）。
     """
@@ -150,7 +156,9 @@ async def parse_document(
 
 def _is_supported_document(file_name: str) -> bool:
     lower = file_name.lower()
-    return lower.endswith((".pdf", ".docx", ".xlsx", ".pptx", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".gif", ".webp"))
+    return lower.endswith(
+        (".pdf", ".docx", ".xlsx", ".pptx", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".gif", ".webp")
+    )
 
 
 _IMAGE_SIGNATURES: list[tuple[bytes, str]] = [

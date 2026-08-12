@@ -50,6 +50,8 @@ type ProcessInput struct {
 	ObjectKey string
 	// SourceURL 是 URL 导入来源；与 ObjectKey 二选一。
 	SourceURL string
+	// Content 是手工文档（manual）的正文；非空时优先于 ObjectKey/SourceURL。
+	Content string
 	// FileName 是原始文件名。
 	FileName string
 	// MIMEType 是原始文件 MIME 类型（仅辅助判断）。
@@ -164,9 +166,17 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 
 	g := compose.NewGraph[ProcessInput, ProcessOutput]()
 
-	// load_source：URL 来源在 Worker 内通过安全 Eino Loader 抓取；文件来源保持 MinIO 流。
+	// load_source：URL 来源在 Worker 内通过安全 Eino Loader 抓取；文件来源保持 MinIO 流；
+	// 手工文档（manual）直接使用正文 Content，不访问 MinIO。
 	loadSourceLambda := compose.InvokableLambda(func(ctx context.Context, input ProcessInput) (*pipelineState, error) {
 		state := &pipelineState{input: input}
+		if input.Content != "" {
+			state.loadedContent = input.Content
+			if state.input.FileName == "" {
+				state.input.FileName = "manual.txt"
+			}
+			return state, nil
+		}
 		if input.ObjectKey == "" && input.SourceURL != "" {
 			if cfg.WebLoader == nil {
 				return nil, fmt.Errorf("URL 导入未配置安全 WebLoader")

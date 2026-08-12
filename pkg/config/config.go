@@ -141,6 +141,8 @@ type DocumentParserConfig struct {
 	OCRLanguages []string `mapstructure:"ocr_languages"`
 	// DoOCR 是否启用 OCR。
 	DoOCR bool `mapstructure:"do_ocr"`
+	// DoImageOCR 是否对文档内提取的图片做二级 OCR（区别于整页/整图文档的 DoOCR）。
+	DoImageOCR bool `mapstructure:"do_image_ocr"`
 	// TableStructure 是否启用表格结构识别。
 	TableStructure bool `mapstructure:"table_structure"`
 	// ExtractPictures 是否提取图片。

@@ -225,6 +225,41 @@ func TestPipelineTextWorksWithoutPython(t *testing.T) {
 	}
 }
 
+// TestPipelineParsesManualContentWithoutObject 验证手工文档正文直接进入流水线：
+// ProcessInput.Content 非空时不访问 MinIO 对象，完成解析、分块与 Artifact 持久化。
+func TestPipelineParsesManualContentWithoutObject(t *testing.T) {
+	store := newFakeStore()
+	p, err := NewDocumentPipeline(testPipelineConfig(store, `{}`))
+	if err != nil {
+		t.Fatalf("构造 pipeline 失败: %v", err)
+	}
+	input := ProcessInput{
+		Content:  "# 手工标题\n\n这是手工文档的正文内容，需要被分块索引。",
+		FileName: "手工文档.markdown",
+		DocMeta: transformer.DocMeta{
+			UserID: "u1", KnowledgeBaseID: "kb1", DocumentID: "d1",
+			IndexVersion: 1, ContentVersion: 1, ChunkVersion: 1, DocumentTitle: "手工文档",
+		},
+	}
+	out, err := p.Run(context.Background(), input)
+	if err != nil {
+		t.Fatalf("运行 pipeline 失败: %v", err)
+	}
+	if out.ChunkCount == 0 {
+		t.Fatal("手工文档未产生 Chunk")
+	}
+	// 未读取任何 MinIO 对象（正文直接来自 Content）。
+	for key, count := range store.opens {
+		if count > 0 {
+			t.Errorf("手工文档不应打开 MinIO 对象 %s（次数 %d）", key, count)
+		}
+	}
+	// Artifact 已保存，重试/重新分块可复用。
+	if _, ok := store.objects["derived/u1/d1/content-1/parse-"+hashOfParseOptions()+"/parsed-document.json.zst"]; !ok {
+		t.Error("手工文档 ParsedDocument 未保存")
+	}
+}
+
 func hashOfParseOptions() string {
 	h, _ := parser.ParseConfigHash(parser.DefaultParseOptions())
 	return h

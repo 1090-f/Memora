@@ -10,8 +10,8 @@ app:
   version: "dev"
   mode: "debug"           # debug, release, test
   address: ":8080"
-  read_timeout: 15s       # 单位/秒
-  write_timeout: 15s      # 单位/秒
+  read_timeout: 2m        # 单位/秒
+  write_timeout: 10m      # 单位/秒（Python 解析最长约 8 分钟、LibreOffice 转换最长约 5 分钟）
   shutdown_timeout: 10s   # 单位/秒
 
 # 数据库配置（PostgreSQL，使用超级用户连接；密码按本机安装填写）
@@ -113,6 +113,7 @@ document_parser:
   max_asset_bytes: 33554432
   ocr_languages: ["zh", "en"]
   do_ocr: true
+  do_image_ocr: true      # 文档内图片的二级 OCR（独立于整页/整图文档的 do_ocr）
   table_structure: true
   extract_pictures: true
   include_bboxes: true

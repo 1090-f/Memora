@@ -52,7 +52,7 @@ type DocumentList struct {
 // DocumentPreviewResponse 表示从完整解析产物读取的阅读版正文。
 type DocumentPreviewResponse struct {
 	Content string `json:"content"` // Content 完整解析正文（Markdown 或纯文本）
-	Format  string `json:"format"`  // Format 解析后的来源格式（markdown/txt/pdf/docx）
+	Format  string `json:"format"`  // Format 解析后的来源格式（markdown/txt/pdf/docx/xlsx/pptx/图片格式）
 }
 
 // UploadTaskItem 表示文件上传后创建的任务项。
