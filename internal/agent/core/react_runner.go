@@ -119,25 +119,29 @@ func (r *reactRunner) Run(ctx context.Context, agentCtx contracts.AgentContext, 
 		// 检查是否是预算超限错误
 		if isBudgetError(err) && result.FinalResult != "" {
 			return RunOutput{
-				FinalResult: result.FinalResult,
-				Citations:   r.collector.Get(),
-				Usage:       accumulatedUsage,
-				Summary:     result.FinalResult,
+				FinalResult:     result.FinalResult,
+				Citations:       r.collector.Get(),
+				Usage:           accumulatedUsage,
+				Summary:         result.FinalResult,
+				KnowledgeStatus: agentCtx.KnowledgeStatus,
 			}, nil
 		}
 		return RunOutput{
-			FinalResult: result.FinalResult,
-			Citations:   r.collector.Get(),
-			Usage:       accumulatedUsage,
+			FinalResult:     result.FinalResult,
+			Citations:       r.collector.Get(),
+			Usage:           accumulatedUsage,
+			Summary:         result.FinalResult,
+			KnowledgeStatus: agentCtx.KnowledgeStatus,
 		}, err
 	}
 
 	// 归一化最终结果
 	return RunOutput{
-		FinalResult: result.FinalResult,
-		Citations:   r.collector.Get(),
-		Usage:       accumulatedUsage,
-		Summary:     result.FinalResult,
+		FinalResult:     result.FinalResult,
+		Citations:       r.collector.Get(),
+		Usage:           accumulatedUsage,
+		Summary:         result.FinalResult,
+		KnowledgeStatus: agentCtx.KnowledgeStatus,
 	}, nil
 }
 

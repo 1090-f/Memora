@@ -209,7 +209,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	embeddingSvc := service.NewEmbeddingService(nil, "") // TODO: 从配置加载 embedding 模型
 	memoryRetriever := service.NewMemoryRetriever(memoryRepo, embeddingSvc)
 
-	contextBuilder := service.NewContextBuilder(agentConfigs, convCtxService, memoryRetriever)
+	contextBuilder := service.NewContextBuilder(agentConfigs, convCtxService, memoryRetriever, retrievalService)
 
 	// 初始化 RouterService（Phase 4）
 	// 使用用户配置的 ChatModelID 做路由判断
@@ -326,15 +326,15 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		Config: cfg.CORS, Auth: authService, Users: userService, MCP: mcpService,
 		KnowledgeBases: kbService, Directories: directoryService, AIModelConfigs: aiModelConfigs, AIEncryption: aiEncryption,
 		Documents: documentService, Preview: previewService, DocumentReader: documentReader, DocumentProcess: documentProcessService,
-		Retrieval:      retrievalService,
-		ContextBuilder: contextBuilder,
-		AssetSignKey:   cfg.JWT.Secret,
-		Router:         routerService,
+		Retrieval:       retrievalService,
+		ContextBuilder:  contextBuilder,
+		AssetSignKey:    cfg.JWT.Secret,
+		Router:          routerService,
 		AgentController: agentController,
-		PostgresHealth: func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
-		RedisHealth:    func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
-		MinIOHealth:    a.store.Health,
-		ParserHealth:   a.documentParser.Health,
+		PostgresHealth:  func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
+		RedisHealth:     func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
+		MinIOHealth:     a.store.Health,
+		ParserHealth:    a.documentParser.Health,
 		WorkerCount: func(context.Context) (int64, error) {
 			if cfg.DocumentConsumer.Enabled {
 				return int64(cfg.DocumentConsumer.Concurrency), nil

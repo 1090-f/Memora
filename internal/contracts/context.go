@@ -34,6 +34,9 @@ type AgentContext struct {
 
 	// 记忆上下文（固定插槽 - 可选）
 	Memories []MemoryQueryResult `json:"memories"` // 检索到的记忆
+
+	// 知识状态（来自检索结果）
+	KnowledgeStatus string `json:"knowledge_status"` // 知识充分性状态
 }
 
 // ContextBuilder 根据请求构建 AgentContext。

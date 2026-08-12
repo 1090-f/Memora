@@ -93,7 +93,7 @@ func (s *Service) Run(ctx context.Context, request contracts.AgentRunRequest) (c
 		}
 		return contracts.AgentRunResult{}, err
 	}
-	result := output.Result(request.RunID, mode, "", startedAt, endedAt)
+	result := output.Result(request.RunID, mode, startedAt, endedAt)
 	if err := s.events.PublishRunCompleted(context.Background(), request.RunID, result); err != nil {
 		return contracts.AgentRunResult{}, err
 	}

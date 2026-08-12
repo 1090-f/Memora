@@ -14,6 +14,7 @@ type contextBuilder struct {
 	agentConfigRepo repository.AgentConfigRepository
 	convCtxService  contracts.ConversationContextService
 	memoryRetriever contracts.MemoryRetriever
+	retrievalSvc    contracts.RetrievalService
 }
 
 // NewContextBuilder 创建新的上下文构建器实例。
@@ -21,11 +22,13 @@ func NewContextBuilder(
 	agentConfigRepo repository.AgentConfigRepository,
 	convCtxService contracts.ConversationContextService,
 	memoryRetriever contracts.MemoryRetriever,
+	retrievalSvc contracts.RetrievalService,
 ) contracts.ContextBuilder {
 	return &contextBuilder{
 		agentConfigRepo: agentConfigRepo,
 		convCtxService:  convCtxService,
 		memoryRetriever: memoryRetriever,
+		retrievalSvc:    retrievalSvc,
 	}
 }
 
@@ -63,7 +66,7 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 		Memories: []contracts.MemoryQueryResult{},
 	}
 
-	// 3. 并行获取对话上下文和记忆（如果启用）
+	// 3. 并行获取对话上下文、记忆和知识状态（如果启用）
 	type convResult struct {
 		ctx contracts.ConversationContext
 		err error
@@ -72,9 +75,14 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 		memories []contracts.MemoryQueryResult
 		err      error
 	}
+	type retrievalResult struct {
+		knowledgeStatus string
+		err             error
+	}
 
 	convCh := make(chan convResult, 1)
 	memCh := make(chan memResult, 1)
+	retrievalCh := make(chan retrievalResult, 1)
 
 	// 并行获取对话上下文
 	go func() {
@@ -101,6 +109,27 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 		memCh <- memResult{memories: memories, err: err}
 	}()
 
+	// 并行获取知识状态（通过检索服务）
+	go func() {
+		if b.retrievalSvc == nil {
+			retrievalCh <- retrievalResult{knowledgeStatus: "", err: nil}
+			return
+		}
+		result, err := b.retrievalSvc.Retrieve(ctx, contracts.RetrievalRequest{
+			UserID:          req.UserID,
+			KnowledgeBaseID: req.KnowledgeBaseID,
+			Query:           req.Query,
+			Mode:            contracts.RetrievalHybrid,
+			TopK:            1, // 只需要知识状态，不需要具体内容
+			Config:          contracts.DefaultSearchConfig(),
+		})
+		if err != nil {
+			retrievalCh <- retrievalResult{knowledgeStatus: "", err: err}
+			return
+		}
+		retrievalCh <- retrievalResult{knowledgeStatus: result.KnowledgeStatus, err: nil}
+	}()
+
 	// 等待对话上下文完成
 	convRes := <-convCh
 	if convRes.err != nil {
@@ -116,6 +145,16 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 		agentCtx.Memories = nil
 	} else {
 		agentCtx.Memories = memRes.memories
+	}
+
+	// 等待知识状态检索完成
+	retrievalRes := <-retrievalCh
+	if retrievalRes.err != nil {
+		// 检索失败不影响核心功能，降级处理
+		fmt.Printf("警告: 知识状态检索失败，降级处理: %v\n", retrievalRes.err)
+		agentCtx.KnowledgeStatus = ""
+	} else {
+		agentCtx.KnowledgeStatus = retrievalRes.knowledgeStatus
 	}
 
 	return agentCtx, nil

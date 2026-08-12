@@ -120,5 +120,9 @@ func (r *planRunner) Run(ctx context.Context, agentCtx contracts.AgentContext, c
 		return RunOutput{}, newCoreError(contracts.ErrInternal, fmt.Errorf("plan result is empty"))
 	}
 
-	return RunOutput{FinalResult: result, Summary: result}, nil
+	return RunOutput{
+		FinalResult:     result,
+		Summary:         result,
+		KnowledgeStatus: agentCtx.KnowledgeStatus,
+	}, nil
 }
