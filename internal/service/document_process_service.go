@@ -568,9 +568,8 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 	if err != nil {
 		return fmt.Errorf("文档加工失败: %w", err)
 	}
-	if out.ChunkCount == 0 {
-		return fmt.Errorf("文档加工未产生任何 Chunk")
-	}
+	// 纯图片文档允许 0 Chunk 成功导入（无文字图片无可索引内容，资产与原文件保留）；
+	// 有正文却分不出 Chunk 的情况由流水线 structure_chunk 节点拒绝。
 	// 加工成功：切换 active_index_version，并记录 Embedding 模型与分段配置哈希。
 	updates := map[string]any{
 		"processing_status":    string(contracts.ProcessingSucceeded),

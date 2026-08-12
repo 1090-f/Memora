@@ -364,7 +364,9 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		if err != nil {
 			return nil, fmt.Errorf("结构分块失败: %w", err)
 		}
-		if len(chunks) == 0 {
+		// 纯图片文档（图片无 OCR/caption 文字）没有可索引文本，允许 0 Chunk 成功
+		// 导入（资产与原文件保留）；有正文却分不出 Chunk 才是分块器 bug。
+		if len(chunks) == 0 && !assetOnlyDocument(state.doc) {
 			return nil, fmt.Errorf("文档未产生任何 Chunk")
 		}
 		state.chunks = chunks
@@ -407,6 +409,10 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 
 	// persist_chunks：ParsedChunk → entity.DocumentChunk → BatchInsert。
 	persistChunksLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
+		// 纯图片文档无 Chunk：跳过落库，indexDocs 保持为空。
+		if len(state.chunks) == 0 {
+			return state, nil
+		}
 		entities := make([]*entity.DocumentChunk, 0, len(state.chunks))
 		for i, chunk := range state.chunks {
 			entityChunk, err := chunkToEntity(chunk, i, state.input.DocMeta, chunkConfigHash, ftsTokenizer)
@@ -465,8 +471,8 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 			if embedder == nil {
 				embedder, modelID = cfg.Embedder, cfg.EmbeddingModelID
 			}
-			if embedder == nil {
-				return processOutput(state, len(state.chunks)), nil
+			if embedder == nil || len(state.indexDocs) == 0 {
+				return processOutput(state, len(state.indexDocs)), nil
 			}
 			for _, doc := range state.indexDocs {
 				einoadapter.SetMetaString(doc, einoadapter.MetaEmbeddingModelID, modelID)
@@ -546,6 +552,26 @@ func applyDefaults(cfg DocumentPipelineConfig) DocumentPipelineConfig {
 		cfg.ParserConfig.Timeout = 8 * time.Minute
 	}
 	return cfg
+}
+
+// assetOnlyDocument 判断文档是否没有任何可索引文本：只有标题/图片（且图片无
+// OCR/caption 文字，分块器因此不产出单元）或完全为空。这类文档允许 0 Chunk
+// 成功导入（资产与原文件保留），避免把"无文字图片"当成分块器故障。
+func assetOnlyDocument(doc *parser.ParsedDocument) bool {
+	if doc == nil {
+		return false
+	}
+	for _, block := range doc.Blocks {
+		switch block.Type {
+		case parser.BlockTypeHeading, parser.BlockTypeTitle, parser.BlockTypePicture:
+			continue
+		default:
+			if strings.TrimSpace(block.Text) != "" || block.TableRef != "" || len(block.AssetRefs) > 0 {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // computeChunkConfigHash 计算 chunk_config_hash：分块参数 + tokenizer + Embedding 模型。
