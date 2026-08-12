@@ -120,6 +120,9 @@ type ImportTaskRepository interface {
 	SkipTask(ctx context.Context, taskID string) error
 	// Delete 物理删除任务记录（仅用于上传失败回滚）。
 	Delete(ctx context.Context, userID, taskID string) error
+	// DeleteCompletedByKB 清理知识库内已结束（succeeded/skipped/failed）的任务，
+	// 保留 pending/running 的进行中任务；返回删除数量。
+	DeleteCompletedByKB(ctx context.Context, userID, kbID string) (int64, error)
 }
 
 // TaskOutboxRepository 管理可靠 Redis Stream 发布事件。

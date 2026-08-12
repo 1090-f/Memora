@@ -165,6 +165,26 @@ func (ctrl *Controller) Reindex(c *gin.Context) {
 	})
 }
 
+// Cleanup 清理知识库内已结束（succeeded/skipped/failed）的导入任务记录，
+// 保留 pending/running 的进行中任务。
+func (ctrl *Controller) Cleanup(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	count, err := ctrl.process.CleanupImportTasks(
+		c.Request.Context(),
+		contracts.ID(user.ID),
+		contracts.ID(c.Param("kb_id")),
+	)
+	if err != nil {
+		response.Failure(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"deleted": count})
+}
+
 // ListIndexVersions 返回从 Chunk/Vector 聚合的文档索引版本。
 func (ctrl *Controller) ListIndexVersions(c *gin.Context) {
 	user, ok := middleware.GetUser(c)

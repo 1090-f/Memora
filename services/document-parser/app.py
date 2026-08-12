@@ -37,6 +37,27 @@ logging.basicConfig(
 )
 _log = logging.getLogger("document-parser")
 
+
+def _quiet_noisy_loggers() -> None:
+    """降噪第三方库的高频日志，控制日志存储体积。
+
+    多文件导入时以下日志量级随文件数线性放大：
+      - uvicorn.access：每次内部调用（/v1/parse、逐图 /v1/ocr）一行访问日志；
+      - docling：每次解析的转换过程 INFO（detected formats/Processing/Finished）；
+      - rapidocr：每张无文字图片一行 WARNING（text detection result is empty）。
+    解析/OCR 失败仍由 document-parser 自身 logger 记录（app 层 catch + adapter warning），
+    不影响排障；需要完整过程日志时设置 DOCUMENT_PARSER_LOG_LEVEL=debug 即可覆盖。
+    """
+    for name, level in (
+        ("uvicorn.access", logging.WARNING),
+        ("docling", logging.WARNING),
+        ("rapidocr", logging.ERROR),
+    ):
+        logging.getLogger(name).setLevel(level)
+
+
+_quiet_noisy_loggers()
+
 # ---------------------------------------------------------------- 配置
 
 MAX_FILE_BYTES = int(os.environ.get("DOCUMENT_PARSER_MAX_FILE_BYTES", str(64 * 1024 * 1024)))

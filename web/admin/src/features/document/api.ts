@@ -59,6 +59,9 @@ export const importURL = (kbId: string, input: ImportURLInput) =>
 export const listImportTasks = (kbId: string, params: Record<string, unknown> = {}) =>
   apiRequest<PageResult<ImportTask>>({ url: `/knowledge-bases/${kbId}/import-tasks`, params });
 
+export const cleanupImportTasks = (kbId: string) =>
+  apiRequest<{ deleted: number }>({ url: `/knowledge-bases/${kbId}/import-tasks`, method: 'DELETE' });
+
 export const getImportTask = (taskId: string) =>
   apiRequest<ImportTask>({ url: `/import-tasks/${taskId}` });
 

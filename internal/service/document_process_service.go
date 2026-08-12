@@ -441,6 +441,9 @@ func (s *documentProcessService) ProcessImportTask(ctx context.Context, taskID c
 			FileHash:         task.SourceHash,
 			MinIOBucket:      task.MinIOBucket,
 			MinIOObjectKey:   task.MinIOObjectKey,
+			// 文件/URL 文档正文由解析产物提供，content 为空；content_format 必须满足
+			// 数据库检查约束（txt/markdown），这里固定为 txt 与列默认值一致。
+			ContentFormat:    "txt",
 			ProcessingStatus: string(contracts.ProcessingPending),
 			ContentVersion:   1,
 			ChunkVersion:     1,
@@ -635,6 +638,16 @@ func (s *documentProcessService) markDocumentFailed(ctx context.Context, docID s
 func (s *documentProcessService) RecoverStaleTasks(ctx context.Context) (int64, error) {
 	staleBefore := time.Now().UTC().Add(-repository.ImportTaskLease()).Unix()
 	return s.tasks.RecoverStale(ctx, staleBefore)
+}
+
+// CleanupImportTasks 清理知识库内已结束的导入任务记录，保留进行中任务。
+func (s *documentProcessService) CleanupImportTasks(ctx context.Context, userID, kbID contracts.ID) (int64, error) {
+	count, err := s.tasks.DeleteCompletedByKB(ctx, string(userID), string(kbID))
+	if err != nil {
+		return 0, apperrors.New(contracts.ErrInternal, err)
+	}
+	logger.Info("已完成导入任务已清理", zap.String("user_id", string(userID)), zap.String("knowledge_base_id", string(kbID)), zap.Int64("deleted", count))
+	return count, nil
 }
 
 // importTaskView 将导入任务实体转换为对外视图，仅暴露稳定字段，隐藏内部存储细节。

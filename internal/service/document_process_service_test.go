@@ -34,15 +34,35 @@ func (s *stubTaskRepo) SetRunningStep(_ context.Context, _ string, step string) 
 	return nil
 }
 
+func (s *stubTaskRepo) AttachDocument(_ context.Context, _, _ string) error {
+	return nil
+}
+
 // stubDocRepo 只实现手工文档加工路径用到的文档仓储方法。
 type stubDocRepo struct {
 	repository.DocumentRepository
-	doc     *entity.Document
-	updates []map[string]any
+	doc        *entity.Document
+	notFound   bool
+	created    *entity.Document
+	updates    []map[string]any
+	softDelete int
 }
 
 func (s *stubDocRepo) FindByImportTask(_ context.Context, _ string) (*entity.Document, error) {
+	if s.notFound {
+		return nil, repository.ErrDocumentNotFound
+	}
 	return s.doc, nil
+}
+
+func (s *stubDocRepo) Create(_ context.Context, doc *entity.Document) error {
+	s.created = doc
+	return nil
+}
+
+func (s *stubDocRepo) SoftDelete(_ context.Context, _, _ string) error {
+	s.softDelete++
+	return nil
 }
 
 func (s *stubDocRepo) UpdateProcessing(_ context.Context, _ string, updates map[string]any) error {
@@ -138,6 +158,43 @@ func TestProcessImportTaskManualDocumentRunsPipelineWithContent(t *testing.T) {
 	}
 	if !tasks.completed {
 		t.Error("任务应标记为 succeeded")
+	}
+}
+
+// TestProcessImportTaskFileDocumentCreatedWithTxtContentFormat 验证文件导入
+// 首次创建文档行时 content_format 固定为 txt：数据库检查约束要求非空
+// （documents_content_format_check IN ('txt','markdown')），空串会导致 INSERT 失败。
+func TestProcessImportTaskFileDocumentCreatedWithTxtContentFormat(t *testing.T) {
+	if err := logger.Init(&config.LogConfig{Level: "error", MaxSize: 1, MaxBackups: 1, MaxAge: 1}); err != nil {
+		t.Fatalf("初始化测试日志失败: %v", err)
+	}
+	fileName := "Go语言接口深度解析.docx"
+	objectKey := "documents/u1/kb1/t1/report.docx"
+	task := &entity.ImportTask{
+		UserID: "u1", KnowledgeBaseID: "kb1",
+		SourceType: string(contracts.DocumentSourceFile), FileName: &fileName,
+		DuplicatePolicy: "create_new", Status: string(contracts.TaskStatusRunning),
+		MinIOObjectKey: &objectKey,
+	}
+	task.ID = "task-1"
+	tasks := &stubTaskRepo{task: task}
+	docs := &stubDocRepo{notFound: true}
+	svc := &documentProcessService{tasks: tasks, docs: docs, chunks: &stubChunkRepo{}, processor: &stubProcessor{}}
+
+	if err := svc.ProcessImportTask(context.Background(), "task-1"); err != nil {
+		t.Fatalf("ProcessImportTask 失败: %v", err)
+	}
+	if docs.created == nil {
+		t.Fatal("首次处理应创建文档行")
+	}
+	if docs.created.ContentFormat != "txt" {
+		t.Errorf("ContentFormat = %q, want %q（满足数据库检查约束）", docs.created.ContentFormat, "txt")
+	}
+	if docs.created.Title != fileName || docs.created.SourceType != string(contracts.DocumentSourceFile) {
+		t.Errorf("文档字段错误: %+v", docs.created)
+	}
+	if docs.created.MinIOObjectKey == nil || *docs.created.MinIOObjectKey != objectKey {
+		t.Error("文档应继承任务的 MinIO 对象键")
 	}
 }
 
