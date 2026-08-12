@@ -9,10 +9,13 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/1090-f/Memora/internal/agent/core"
+	"github.com/1090-f/Memora/internal/agent/tools"
 	"github.com/1090-f/Memora/internal/ai"
 	"github.com/1090-f/Memora/internal/ai/encryption"
 	"github.com/1090-f/Memora/internal/api"
 	"github.com/1090-f/Memora/internal/background"
+	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service"
 	"github.com/1090-f/Memora/internal/service/rag/parser"
@@ -194,6 +197,15 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	llmRouter := service.NewLLMRouter(modelFactory)
 	routerService := service.NewRouterService(llmRouter)
 
+	// 初始化工具注册表和执行器
+	// 注册内置只读工具：知识检索 + 文档阅读
+	toolRegistry, err := tools.NewBuiltinRegistry(retrievalService, documentReader)
+	if err != nil {
+		_ = a.Close()
+		return fmt.Errorf("初始化工具注册表失败: %w", err)
+	}
+	toolExecutor := tools.NewExecutor(toolRegistry)
+
 	// 初始化 Plan-Execute 服务（Phase 5）
 	planRepo := repository.NewPlanRepository(a.db)
 	planStateStore := service.NewPlanStateStore(planRepo)
@@ -204,20 +216,40 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		return fmt.Errorf("初始化 PlannerService 失败: %w", err)
 	}
 
-	// TODO: 从配置注入 ToolExecutor
-	// 暂时使用 nil，需要在 Agent Core 初始化时注入
-	planExecutorService := service.NewPlanExecutorService(nil, planStateStore, modelFactory, cfg.Agent.MaxToolCalls, cfg.Agent.MaxToolResultBytes)
-	_ = planExecutorService // 用于后续集成
+	planExecutorService := service.NewPlanExecutorService(toolExecutor, planStateStore, modelFactory, cfg.Agent.MaxToolCalls, cfg.Agent.MaxToolResultBytes)
 
 	reviewerService, err := service.NewReviewerService(modelFactory, "internal/ai/prompts/reviewer.yaml", planStateStore)
 	if err != nil {
 		_ = a.Close()
 		return fmt.Errorf("初始化 ReviewerService 失败: %w", err)
 	}
-	_ = reviewerService // 用于后续集成
 
 	replanService := service.NewReplanService(plannerService, planStateStore, cfg.Agent.MaxReplans)
-	_ = replanService // 用于后续集成
+
+	// 初始化 ReAct Agent 服务（Phase 6）
+	reactService, err := service.NewReactService(modelFactory, toolExecutor, toolRegistry, "internal/ai/prompts/react.yaml")
+	if err != nil {
+		_ = a.Close()
+		return fmt.Errorf("初始化 ReactService 失败: %w", err)
+	}
+
+	// 初始化事件发布器（Phase 7）
+	// TODO: 替换为真正的 contracts.EventPublisher 实现（如 Redis Event Publisher）
+	var eventPub contracts.EventPublisher = noopEventPublisher{}
+	sequencedEvents := core.NewSequencedEventPublisher(eventPub)
+
+	// 初始化 ReactRunner
+	reactRunner := core.NewReactRunner(reactService, sequencedEvents)
+	_ = reactRunner // 用于后续集成
+
+	// 初始化 PlanRunner
+	planRunner := core.NewPlanRunner(plannerService, planExecutorService, reviewerService, replanService, planStateStore)
+	_ = planRunner // 用于后续集成
+
+	// 初始化 Agent Core Service（Phase 8）
+	// TODO: 实现 RunRepository 接口后将 agent 核心服务注册到路由
+	// agentCoreService := core.NewService(reactRunner, routerService, runRepository, sequencedEvents)
+	// agentCoreService.SetPlanRunner(planRunner)
 
 	router := api.NewRouter(api.Dependencies{
 		Config: cfg.CORS, Auth: authService, Users: userService, MCP: mcpService,
@@ -278,6 +310,11 @@ func (a *ServerApp) Run(ctx context.Context) error {
 		return errors.Join(shutdownErr, backgroundErr, a.Close())
 	}
 }
+
+// noopEventPublisher 是 contracts.EventPublisher 的空实现，用于在真正的发布器就绪前保持链路可运行。
+type noopEventPublisher struct{}
+
+func (noopEventPublisher) Publish(_ context.Context, _ contracts.AgentEvent) error { return nil }
 
 // Close 释放服务器应用持有的所有资源。
 func (a *ServerApp) Close() error {
