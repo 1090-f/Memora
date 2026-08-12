@@ -33,8 +33,8 @@ type AgentRunRepository interface {
 	// MarkRunning 更新运行状态为 running，设置开始时间。
 	MarkRunning(ctx context.Context, runID uuid.UUID, startedAt string) error
 
-	// MarkCompleted 更新运行状态为 completed，记录最终结果、Token 用量、耗时和结束时间。
-	MarkCompleted(ctx context.Context, runID uuid.UUID, finalResult string, inputTokens, outputTokens, totalTokens int, durationMs int64) error
+	// MarkCompleted 更新运行状态为 completed，记录最终结果、Token 用量、耗时、执行模式、知识状态和结束时间。
+	MarkCompleted(ctx context.Context, runID uuid.UUID, finalResult string, inputTokens, outputTokens, totalTokens int, durationMs int64, executionMode, knowledgeStatus string) error
 
 	// MarkFailed 更新运行状态为 failed，记录错误码、错误信息和结束时间。
 	MarkFailed(ctx context.Context, runID uuid.UUID, errorCode, errorMessage string) error

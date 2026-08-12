@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import ArrowBackOutlined from '@mui/icons-material/ArrowBackOutlined';
 import RefreshOutlined from '@mui/icons-material/RefreshOutlined';
 import ReplayOutlined from '@mui/icons-material/ReplayOutlined';
@@ -16,6 +17,7 @@ import {
   TableBody,
   TableCell,
   TableHead,
+  TablePagination,
   TableRow,
   Typography,
 } from '@mui/material';
@@ -53,7 +55,6 @@ function RunDetail({ run, onRetry }: { run: AgentRun; onRetry: () => void }) {
           <Typography variant="h6" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{run.query}</Typography>
           <Divider />
           <Typography>执行模式：{run.execution_mode || '等待路由结果'}</Typography>
-          <Typography>路由原因：{run.router_reason || run.router_reason_summary || '-'}</Typography>
           <Typography>开始时间：{formatDate(run.started_at)}</Typography>
           <Typography>结束时间：{formatDate(run.ended_at)}</Typography>
           <Typography>耗时：{run.duration_ms == null ? '-' : `${run.duration_ms} ms`}</Typography>
@@ -75,14 +76,16 @@ export function AgentRunListPage() {
   const { runId } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [selectedKbId, setSelectedKbId] = useState('');
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(20);
   const knowledgeBasesQuery = useQuery({
     queryKey: ['agent-run-knowledge-bases'],
     queryFn: () => listKnowledgeBases({ page: 1, page_size: 100 }),
   });
-  const selectedKbId = knowledgeBasesQuery.data?.items[0]?.id || '';
   const runsQuery = useQuery({
-    queryKey: ['agent-runs', selectedKbId],
-    queryFn: () => listAgentRuns({ knowledge_base_id: selectedKbId, page: 1, page_size: 50 }),
+    queryKey: ['agent-runs', selectedKbId, page, pageSize],
+    queryFn: () => listAgentRuns({ knowledge_base_id: selectedKbId, page: page + 1, page_size: pageSize }),
     enabled: Boolean(selectedKbId) && !runId,
   });
   const detailQuery = useQuery({
@@ -110,10 +113,11 @@ export function AgentRunListPage() {
       </Stack>
       <FormControl size="small" sx={{ maxWidth: 360 }}>
         <InputLabel id="run-kb-label">知识库</InputLabel>
-        <Select labelId="run-kb-label" value={selectedKbId} label="知识库" disabled>
+        <Select labelId="run-kb-label" value={selectedKbId} label="知识库" onChange={(e) => { setSelectedKbId(e.target.value); setPage(0); }}>
           {knowledgeBasesQuery.data?.items.map((kb) => <MenuItem key={kb.id} value={kb.id}>{kb.name}</MenuItem>)}
         </Select>
       </FormControl>
+      {!selectedKbId && <Typography color="text.secondary">请选择一个知识库查看运行记录。</Typography>}
       {runsQuery.error && <Alert severity="error">运行记录加载失败，请检查后端服务。</Alert>}
       <Paper variant="outlined">
         <Table>
@@ -130,6 +134,19 @@ export function AgentRunListPage() {
             ))}
           </TableBody>
         </Table>
+        {runsQuery.data && (
+          <TablePagination
+            component="div"
+            count={runsQuery.data.total}
+            page={page}
+            onPageChange={(_, newPage) => setPage(newPage)}
+            rowsPerPage={pageSize}
+            onRowsPerPageChange={(e) => { setPageSize(parseInt(e.target.value, 10)); setPage(0); }}
+            rowsPerPageOptions={[10, 20, 50, 100]}
+            labelRowsPerPage="每页条数:"
+            labelDisplayedRows={({ page, count }) => `页数 ${page + 1}，共 ${count} 条`}
+          />
+        )}
         {runsQuery.data?.items.length === 0 && <Typography color="text.secondary" sx={{ p: 3 }}>暂无运行记录。</Typography>}
       </Paper>
     </Stack>

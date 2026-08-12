@@ -189,7 +189,7 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 		return
 	}
 
-	// 执行成功后保存最终回答、Token 用量和执行耗时。
+	// 执行成功后保存最终回答、Token 用量、耗时、执行模式和知识状态。
 	durationMs := result.EndedAt.Sub(result.StartedAt).Milliseconds()
 	if markErr := w.runRepo.MarkCompleted(
 		context.Background(),
@@ -199,6 +199,8 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 		result.Usage.OutputTokens,
 		result.Usage.TotalTokens,
 		durationMs,
+		string(result.ExecutionMode),
+		result.KnowledgeStatus,
 	); markErr != nil {
 		logger.Error("标记 Agent 运行完成状态出错", zap.String("run_id", run.ID.String()), zap.Error(markErr))
 		return
