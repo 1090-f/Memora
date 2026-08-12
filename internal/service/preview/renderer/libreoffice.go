@@ -88,13 +88,10 @@ func (r *LibreOffice) Render(ctx context.Context, sourceName string, source io.R
 	if err := os.MkdirAll(profileDir, 0o700); err != nil {
 		return nil, err
 	}
-	profileURL := (&url.URL{Scheme: "file", Path: filepath.ToSlash(profileDir)}).String()
+	profileURL := officeProfileURL(profileDir)
 	convCtx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
-	cmd := exec.CommandContext(convCtx, r.soffice,
-		"--headless", "--norestore", "--nodefault", "--nolockcheck",
-		"-env:UserInstallation="+profileURL,
-		"--convert-to", "pdf", "--outdir", tempDir, sourcePath)
+	cmd := exec.CommandContext(convCtx, r.soffice, libreOfficeConvertArgs(profileURL, tempDir, sourcePath)...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if convCtx.Err() != nil {
@@ -120,6 +117,32 @@ func (r *LibreOffice) Render(ctx context.Context, sourceName string, source io.R
 		Name: "rendered.pdf", MediaType: "application/pdf", Size: info.Size(),
 		Reader: &cleanupReader{ReadCloser: pdf, dir: tempDir},
 	}, nil
+}
+
+// officeProfileURL converts a local profile directory into the absolute file URI
+// required by LibreOffice's UserInstallation bootstrap variable. In particular,
+// Windows drive paths must use file:///C:/... rather than file://C:/....
+func officeProfileURL(profileDir string) string {
+	path := filepath.ToSlash(filepath.Clean(profileDir))
+	if len(path) >= 2 && path[1] == ':' && !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return (&url.URL{Scheme: "file", Path: path}).String()
+}
+
+func libreOfficeConvertArgs(profileURL, outDir, sourcePath string) []string {
+	return []string{
+		"--headless",
+		"--nologo",
+		"--nofirststartwizard",
+		"--norestore",
+		"--nodefault",
+		"--nolockcheck",
+		"-env:UserInstallation=" + profileURL,
+		"--convert-to", "pdf",
+		"--outdir", outDir,
+		sourcePath,
+	}
 }
 
 type cleanupReader struct {
@@ -184,14 +207,25 @@ func sofficeVersion(path string) string {
 }
 
 func findSoffice() (string, error) {
-	for _, name := range []string{"soffice", "soffice.exe"} {
+	names := []string{"soffice"}
+	if runtime.GOOS == "windows" {
+		// soffice.com is the console launcher. Prefer it for background jobs so
+		// startup and conversion errors are returned through stdout/stderr.
+		names = []string{"soffice.com", "soffice.exe", "soffice"}
+	}
+	for _, name := range names {
 		if path, err := exec.LookPath(name); err == nil {
 			return path, nil
 		}
 	}
 	candidates := []string{"/usr/bin/soffice", "/usr/local/bin/soffice", "/Applications/LibreOffice.app/Contents/MacOS/soffice"}
 	if runtime.GOOS == "windows" {
-		candidates = []string{`C:\Program Files\LibreOffice\program\soffice.exe`, `C:\Program Files (x86)\LibreOffice\program\soffice.exe`}
+		candidates = []string{
+			`C:\Program Files\LibreOffice\program\soffice.com`,
+			`C:\Program Files\LibreOffice\program\soffice.exe`,
+			`C:\Program Files (x86)\LibreOffice\program\soffice.com`,
+			`C:\Program Files (x86)\LibreOffice\program\soffice.exe`,
+		}
 	}
 	for _, candidate := range candidates {
 		if _, err := os.Stat(candidate); err == nil {
