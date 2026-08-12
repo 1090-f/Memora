@@ -21,6 +21,7 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [runState, dispatchRun] = useReducer(reduceAgentEvent, initialAgentRunState);
   const [activeConversationId, setActiveConversationId] = useState(conversationId);
@@ -30,7 +31,11 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
   // 通过 Agent 运行详情刷新最终回答，避免只依赖 SSE 连接是否正常结束。
   const activeRunQuery = useQuery({
     queryKey: ['agent-run', currentRunId.current],
-    queryFn: () => getAgentRun(currentRunId.current as string),
+    queryFn: () => {
+      const runId = currentRunId.current;
+      if (!runId) throw new Error('No active agent run');
+      return getAgentRun(runId);
+    },
     enabled: false,
   });
 
@@ -55,6 +60,7 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
     }]);
 
     try {
+      setErrorMessage(null);
       const response = await createAgentRun({ knowledge_base_id: kbId, conversation_id: id, query });
       currentRunId.current = response.run_id;
       const controller = new AbortController();
@@ -73,6 +79,8 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
         }]);
       }
       void queryClient.invalidateQueries({ queryKey: ['agent-runs', kbId] });
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '智能问答请求失败');
     } finally {
       setSubmitting(false);
       abortRef.current = null;
@@ -96,6 +104,7 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
   const messageArea = (
     <>
       {!enabled && <Alert severity="info" sx={{ m: 2, mb: 0 }}>智能问答后端未启用，请检查服务配置。</Alert>}
+      {errorMessage && <Alert severity="error" sx={{ m: 2, mb: 0 }}>{errorMessage}</Alert>}
       <MessageList messages={messages} streamingAnswer={runState.answer} onSuggestion={setDraft} />
     </>
   );
