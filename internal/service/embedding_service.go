@@ -26,6 +26,12 @@ func (s *embeddingService) Embed(ctx context.Context, text string) ([]float64, e
 	if text == "" {
 		return nil, fmt.Errorf("embedding text cannot be empty")
 	}
+	if s == nil || s.modelFactory == nil {
+		return nil, fmt.Errorf("embedding model factory is not configured")
+	}
+	if s.modelID == "" {
+		return nil, fmt.Errorf("embedding model ID is not configured")
+	}
 
 	model, err := s.modelFactory.GetEmbeddingModel(ctx, s.modelID)
 	if err != nil {

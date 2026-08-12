@@ -22,7 +22,7 @@ export function ChatEntryPage() {
       </Box>
 
       <Alert severity="info">
-        智能问答页面入口已开放；当前后端尚未提供会话与 Agent SSE 路由，进入工作台后发送功能暂时禁用。
+        智能问答会直接创建 Agent 运行任务，并实时显示执行过程。
       </Alert>
 
       {query.isPending && <LoadingState label="正在加载知识库" />}

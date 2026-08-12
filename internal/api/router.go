@@ -8,6 +8,7 @@ import (
 
 	"github.com/1090-f/Memora/internal/ai/encryption"
 	"github.com/1090-f/Memora/internal/api/response"
+	"github.com/1090-f/Memora/internal/api/v1/agent"
 	"github.com/1090-f/Memora/internal/api/v1/auth"
 	"github.com/1090-f/Memora/internal/api/v1/directory"
 	"github.com/1090-f/Memora/internal/api/v1/document"
@@ -52,6 +53,7 @@ type Dependencies struct {
 	AIEncryption    encryption.Service
 	ContextBuilder  contracts.ContextBuilder
 	Router          contracts.Router
+	AgentController *agent.Controller // Agent 运行管理的 HTTP 控制器
 	PostgresHealth  HealthCheck
 	RedisHealth     HealthCheck
 	MinIOHealth     HealthCheck
@@ -83,6 +85,9 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	importtask.NewController(deps.DocumentProcess).RegisterRoutes(v1, authRequired)
 	if deps.Retrieval != nil {
 		searchapi.NewController(deps.Retrieval).RegisterRoutes(v1, authRequired)
+	}
+	if deps.AgentController != nil {
+		agent.RegisterRoutes(v1, authRequired, deps.AgentController)
 	}
 	return engine
 }

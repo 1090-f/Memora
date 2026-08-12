@@ -2,181 +2,168 @@ package core
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"strings"
 	"time"
 
-	"github.com/1090-f/Memora/internal/agent/tools"
 	"github.com/1090-f/Memora/internal/contracts"
-	"github.com/cloudwego/eino/compose"
+	"github.com/1090-f/Memora/internal/service"
 )
 
 // ReactRunner 执行有限轮次的 ReAct 循环。
+// 参考 PlanRunner 的设计模式，作为薄编排层，核心业务逻辑委托给 ReactService。
 type ReactRunner interface {
 	Run(ctx context.Context, agentCtx contracts.AgentContext, cfg contracts.AgentConfig) (RunOutput, error)
 }
 
-type reactState struct {
-	Request  contracts.ChatRequest
-	Response contracts.ChatResponse
-}
-
-// reactRunner 使用 Eino Graph 封装每次模型生成节点，工具仍统一通过 ToolExecutor 执行。
+// reactRunner 使用 ReactService 执行 ReAct 循环，并在外层叠加预算控制和引用收集。
 type reactRunner struct {
-	model     contracts.ChatModel
-	executor  contracts.ToolExecutor
-	registry  *tools.Registry
-	budget    BudgetController
-	collector CitationCollector
+	service   *service.ReactService // ReAct 循环业务逻辑
+	events    EventPublisher        // 事件发布器
+	budget    BudgetController      // 预算控制器
+	collector CitationCollector     // 引用收集器
 }
 
-// NewReactRunner 创建 ReAct 执行器，所有外部依赖必须由调用方注入。
-func NewReactRunner(model contracts.ChatModel, executor contracts.ToolExecutor, registry *tools.Registry) ReactRunner {
-	return &reactRunner{model: model, executor: executor, registry: registry, collector: NewCitationCollector()}
+// NewReactRunner 创建 ReAct 执行器。
+// 参数:
+//   - reactService: ReAct 循环服务（注入 ModelFactory、ToolExecutor、Registry）
+//   - events: 事件发布器，用于发布 ReAct 生命周期事件
+//
+// BudgetController 和 CitationCollector 在 Run 中按需初始化。
+func NewReactRunner(reactService *service.ReactService, events EventPublisher) ReactRunner {
+	if events == nil {
+		events = NoopEventPublisher{}
+	}
+	return &reactRunner{
+		service:   reactService,
+		events:    events,
+		collector: NewCitationCollector(),
+	}
 }
 
+// Run 实现 ReactRunner 接口。
+// 编排流程：初始化预算 → 执行 ReAct 循环 → 归一化结果
 func (r *reactRunner) Run(ctx context.Context, agentCtx contracts.AgentContext, cfg contracts.AgentConfig) (RunOutput, error) {
-	if r == nil || r.model == nil || r.executor == nil || r.registry == nil {
+	// 前置校验：确保所有依赖已注入
+	if r == nil || r.service == nil {
 		return RunOutput{}, newCoreError(contracts.ErrInternal, ErrExecutionDependency)
 	}
+
+	// 使用默认值填充未设置的配置项
 	cfg = withDefaults(cfg)
+
+	// 初始化预算控制器（如果未设置，使用默认值）
 	budget := r.budget
 	if budget == nil {
 		budget = DefaultBudgetController{Config: cfg}
 	}
+
+	// 重置引用收集器
 	r.collector.Reset()
+
 	startedAt := time.Now()
+	runID := agentCtx.RunID
+
+	// 创建带超时的 Context
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(cfg.MaxRunSeconds)*time.Second)
 	defer cancel()
 
-	messages := initialMessages(agentCtx)
-	var usage contracts.TokenUsage
-	var final string
-	calls := 0
-	for round := 1; round <= cfg.MaxReactRounds; round++ {
-		if err := ctx.Err(); err != nil {
-			return RunOutput{FinalResult: final, Citations: r.collector.Get(), Usage: usage}, err
-		}
-		if err := budget.CheckRunDuration(startedAt); err != nil {
-			return RunOutput{FinalResult: final, Citations: r.collector.Get(), Usage: usage}, err
-		}
-		if err := budget.CheckReactRounds(round); err != nil {
-			return RunOutput{FinalResult: final, Citations: r.collector.Get(), Usage: usage}, err
-		}
-		definitions, err := r.registry.EinoTools(ctx, agentCtx.AllowedTools)
-		if err != nil {
-			return RunOutput{}, newCoreError(contracts.ErrResourceNotFound, err)
-		}
-		toolJSON, err := json.Marshal(definitions)
-		if err != nil {
-			return RunOutput{}, newCoreError(contracts.ErrInternal, err)
-		}
-		state := reactState{Request: contracts.ChatRequest{Messages: messages, Tools: toolJSON}}
-		graph := compose.NewGraph[reactState, reactState]()
-		if err := graph.AddLambdaNode("chat_model", compose.InvokableLambda(func(nodeCtx context.Context, input reactState) (reactState, error) {
-			response, callErr := r.model.Generate(nodeCtx, input.Request)
-			input.Response = response
-			return input, callErr
-		})); err != nil {
-			return RunOutput{}, newCoreError(contracts.ErrInternal, err)
-		}
-		if err := graph.AddEdge(compose.START, "chat_model"); err != nil {
-			return RunOutput{}, newCoreError(contracts.ErrInternal, err)
-		}
-		if err := graph.AddEdge("chat_model", compose.END); err != nil {
-			return RunOutput{}, newCoreError(contracts.ErrInternal, err)
-		}
-		runnable, err := graph.Compile(ctx)
-		if err != nil {
-			return RunOutput{}, newCoreError(contracts.ErrInternal, err)
-		}
-		state, err = runnable.Invoke(ctx, state)
-		if err != nil {
-			return RunOutput{}, newCoreError(contracts.ErrModelCallFailed, err)
-		}
-		usage = addUsage(usage, state.Response.Usage)
-		if err := budget.CheckTokenUsage(usage); err != nil {
-			return RunOutput{FinalResult: final, Citations: r.collector.Get(), Usage: usage}, err
-		}
-		messages = append(messages, contracts.ChatMessage{Role: "assistant", Content: state.Response.Content})
-		if len(state.Response.ToolCalls) == 0 {
-			final = strings.TrimSpace(state.Response.Content)
-			break
-		}
-		for _, call := range state.Response.ToolCalls {
-			calls++
-			if err := budget.CheckToolCalls(calls); err != nil {
-				return RunOutput{FinalResult: final, Citations: r.collector.Get(), Usage: usage}, err
-			}
-			toolContext := contracts.ToolContext{UserID: agentCtx.UserID, KnowledgeBaseID: agentCtx.KnowledgeBaseID, AgentRunID: agentCtx.RunID, ReactRound: round, AllowedToolNames: agentCtx.AllowedTools, MaxResultBytes: cfg.MaxToolResultBytes}
-			result, callErr := r.executor.Execute(ctx, toolContext, call)
-			r.collector.Add(result.Citations)
-			messages = append(messages, contracts.ChatMessage{Role: "tool", Content: toolContent(result)})
-			if callErr != nil {
-				// 工具失败作为受限观察结果交回模型，让模型决定是否换用其他工具或结束。
-				continue
-			}
-		}
-	}
-	if final == "" {
-		return RunOutput{Citations: r.collector.Get(), Usage: usage}, fmt.Errorf("%w: no final answer", ErrBudgetExceeded)
-	}
-	return RunOutput{FinalResult: final, Citations: r.collector.Get(), Usage: usage, Summary: final}, nil
-}
+	// 工具调用计数
+	var totalToolCalls int
+	var accumulatedUsage contracts.TokenUsage
 
-func initialMessages(agentCtx contracts.AgentContext) []contracts.ChatMessage {
-	messages := make([]contracts.ChatMessage, 0, len(agentCtx.Conversation.Messages)+1)
-	for _, message := range agentCtx.Conversation.Messages {
-		messages = append(messages, contracts.ChatMessage{Role: message.Role, Content: message.Content})
-	}
-	messages = append(messages, contracts.ChatMessage{Role: "user", Content: agentCtx.Query})
-	return messages
-}
+	// 调用 ReactService 执行 ReAct 循环
+	// 传递回调函数用于发布事件和预算检查
+	result, err := r.service.RunReActLoop(
+		ctx,
+		agentCtx,
+		cfg,
+		// onRoundStarted: 轮次开始时回调
+		func(ctx context.Context, round int) error {
+			// 预算检查：轮次上限
+			if err := budget.CheckReactRounds(round); err != nil {
+				return err
+			}
+			// 预算检查：运行时长
+			if err := budget.CheckRunDuration(startedAt); err != nil {
+				return err
+			}
+			// 发布轮次开始事件
+			return r.events.PublishReactRoundStarted(ctx, runID, round)
+		},
+		// onToolStarted: 工具调用开始时回调
+		func(ctx context.Context, toolName string, callID contracts.ID) error {
+			totalToolCalls++
+			// 预算检查：工具调用次数
+			if err := budget.CheckToolCalls(totalToolCalls); err != nil {
+				return err
+			}
+			// 发布工具调用开始事件
+			return r.events.PublishToolCallStarted(ctx, runID, toolName, callID)
+		},
+		// onToolCompleted: 工具调用完成时回调
+		func(ctx context.Context, toolName string, callID contracts.ID, success bool, summary string) error {
+			// 发布工具调用完成事件
+			return r.events.PublishToolCallCompleted(ctx, runID, callID, toolName, success, summary)
+		},
+	)
 
-func toolContent(result contracts.ToolResult) string {
-	data, err := json.Marshal(result)
+	// 累加 Token 用量
+	accumulatedUsage = result.Usage
+
+	// 收集引用
+	if len(result.Citations) > 0 {
+		r.collector.Add(result.Citations)
+	}
+
+	// 如果 ReAct 循环因预算超限而失败，但已有部分结果，返回部分结果
 	if err != nil {
-		return result.ErrorMessage
+		// 检查是否是预算超限错误
+		if isBudgetError(err) && result.FinalResult != "" {
+			return RunOutput{
+				FinalResult: result.FinalResult,
+				Citations:   r.collector.Get(),
+				Usage:       accumulatedUsage,
+				Summary:     result.FinalResult,
+			}, nil
+		}
+		return RunOutput{
+			FinalResult: result.FinalResult,
+			Citations:   r.collector.Get(),
+			Usage:       accumulatedUsage,
+		}, err
 	}
-	return string(data)
+
+	// 归一化最终结果
+	return RunOutput{
+		FinalResult: result.FinalResult,
+		Citations:   r.collector.Get(),
+		Usage:       accumulatedUsage,
+		Summary:     result.FinalResult,
+	}, nil
 }
 
-func addUsage(total, current contracts.TokenUsage) contracts.TokenUsage {
-	total.InputTokens += current.InputTokens
-	total.OutputTokens += current.OutputTokens
-	total.TotalTokens += current.TotalTokens
-	return total
+// isBudgetError 判断是否为预算超限错误。
+func isBudgetError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// 检查轮次超限、工具调用超限、运行时长超限等
+	return containsSubstring(err.Error(), "rounds") ||
+		containsSubstring(err.Error(), "tool calls") ||
+		containsSubstring(err.Error(), "超时") ||
+		containsSubstring(err.Error(), "budget")
 }
 
-func withDefaults(cfg contracts.AgentConfig) contracts.AgentConfig {
-	defaults := contracts.DefaultAgentConfig()
-	if cfg.MaxReactRounds <= 0 || cfg.MaxReactRounds > maxReactRoundsLimit {
-		cfg.MaxReactRounds = defaults.MaxReactRounds
+// containsSubstring 检查字符串是否包含子串。
+func containsSubstring(s, substr string) bool {
+	return len(s) >= len(substr) && searchSubstring(s, substr)
+}
+
+// searchSubstring 简单子串搜索。
+func searchSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
 	}
-	if cfg.MaxPlanSteps <= 0 || cfg.MaxPlanSteps > maxPlanStepsLimit {
-		cfg.MaxPlanSteps = defaults.MaxPlanSteps
-	}
-	if cfg.MaxReplans < 0 || cfg.MaxReplans > maxReplansLimit {
-		cfg.MaxReplans = defaults.MaxReplans
-	}
-	if cfg.ReviewerRuns <= 0 {
-		cfg.ReviewerRuns = defaults.ReviewerRuns
-	}
-	if cfg.MaxToolCalls <= 0 || cfg.MaxToolCalls > maxToolCallsLimit {
-		cfg.MaxToolCalls = defaults.MaxToolCalls
-	}
-	if cfg.MaxDocumentReadTokens <= 0 || cfg.MaxDocumentReadTokens > maxDocumentReadTokensLimit {
-		cfg.MaxDocumentReadTokens = defaults.MaxDocumentReadTokens
-	}
-	if cfg.MaxToolResultBytes <= 0 || cfg.MaxToolResultBytes > maxToolResultBytesLimit {
-		cfg.MaxToolResultBytes = defaults.MaxToolResultBytes
-	}
-	if cfg.MaxRunSeconds <= 0 || cfg.MaxRunSeconds > maxRunSecondsLimit {
-		cfg.MaxRunSeconds = defaults.MaxRunSeconds
-	}
-	if cfg.MemoryTopK <= 0 || cfg.MemoryTopK > maxMemoryTopKLimit {
-		cfg.MemoryTopK = defaults.MemoryTopK
-	}
-	return cfg
+	return false
 }

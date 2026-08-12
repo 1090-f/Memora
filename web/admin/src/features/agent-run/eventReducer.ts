@@ -23,13 +23,15 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentEvent): A
   const payload = event.payload;
 
   switch (event.type) {
-    case 'run.started':
+    case 'agent.run.queued':
+      return { ...next, status: 'queued', resumable: false };
+    case 'agent.run.started':
       return { ...next, status: 'running', resumable: false, error: null };
-    case 'run.completed':
+    case 'agent.run.completed':
       return { ...next, status: 'completed', resumable: false };
-    case 'run.cancelled':
+    case 'agent.run.cancelled':
       return { ...next, status: 'cancelled', resumable: true };
-    case 'run.failed':
+    case 'agent.run.failed':
       return {
         ...next,
         status: 'failed',
@@ -39,7 +41,7 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentEvent): A
           message: stringValue(payload.error_message, 'Agent 运行失败'),
         },
       };
-    case 'router.selected':
+    case 'agent.router.completed':
       return {
         ...next,
         router: {
@@ -47,37 +49,11 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentEvent): A
           reason_summary: stringValue(payload.reason_summary),
         },
       };
-    case 'plan.created': {
-      const rawSteps = Array.isArray(payload.steps) ? payload.steps : [];
-      return {
-        ...next,
-        plan: {
-          version: numberValue(payload.version, 1),
-          steps: rawSteps.map((item) => {
-            const step = item as Record<string, unknown>;
-            return {
-              step_no: numberValue(step.step_no),
-              title: stringValue(step.title),
-              status: stringValue(step.status, 'pending'),
-            };
-          }),
-        },
-      };
-    }
-    case 'plan.replanned':
-      return {
-        ...next,
-        plan: {
-          version: numberValue(payload.version, (state.plan?.version ?? 0) + 1),
-          reason_summary: stringValue(payload.reason_summary),
-          steps: state.plan?.steps ?? [],
-        },
-      };
-    case 'step.started':
-    case 'step.completed':
-    case 'step.failed': {
+    case 'agent.step.started':
+    case 'agent.step.completed':
+    case 'agent.tool.call.failed': {
       if (!state.plan) return next;
-      const status = event.type === 'step.started' ? 'running' : event.type === 'step.completed' ? 'completed' : 'failed';
+      const status = event.type === 'agent.step.started' ? 'running' : event.type === 'agent.step.completed' ? 'completed' : 'failed';
       const stepNo = numberValue(payload.step_no);
       return {
         ...next,
@@ -89,7 +65,7 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentEvent): A
         },
       };
     }
-    case 'agent.round.started':
+    case 'agent.react.round.started':
       return {
         ...next,
         rounds: [...state.rounds, {
@@ -99,7 +75,7 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentEvent): A
           ...(payload.tool_name ? { tool_name: stringValue(payload.tool_name) } : {}),
         }],
       };
-    case 'tool.call.started':
+    case 'agent.tool.started':
       return {
         ...next,
         tools: [...state.tools, {
@@ -109,17 +85,17 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentEvent): A
           input_summary: stringValue(payload.input_summary),
         }],
       };
-    case 'tool.call.completed':
-    case 'tool.call.failed': {
+    case 'agent.tool.completed':
+    case 'agent.tool.call.failed': {
       const id = stringValue(payload.tool_call_id);
       return {
         ...next,
         tools: state.tools.map((tool) => tool.tool_call_id === id
-          ? { ...tool, status: event.type === 'tool.call.completed' ? 'succeeded' : 'failed', output_summary: stringValue(payload.output_summary ?? payload.error_message) }
+          ? { ...tool, status: event.type === 'agent.tool.completed' ? 'succeeded' : 'failed', output_summary: stringValue(payload.output_summary ?? payload.error_message) }
           : tool),
       };
     }
-    case 'answer.delta':
+    case 'agent.answer.delta':
       return { ...next, answer: state.answer + stringValue(payload.delta) };
     case 'citation.created': {
       const { reasoning: _reasoning, ...visibleCitation } = payload;
