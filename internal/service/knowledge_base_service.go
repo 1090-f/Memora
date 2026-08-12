@@ -237,7 +237,8 @@ func (s *knowledgeBaseService) Get(ctx context.Context, userID, kbID string) (*d
 func (s *knowledgeBaseService) Update(ctx context.Context, userID, kbID string, req *request.UpdateKnowledgeBaseRequest) (*dto.KnowledgeBaseResponse, error) {
 	if req == nil || (req.Name == nil && req.Description == nil && req.Icon == nil &&
 		req.DefaultLanguage == nil && req.QAEnabled == nil && req.AgentEnabled == nil &&
-		req.NetworkEnabled == nil && req.DefaultChatModelID == nil) {
+		req.NetworkEnabled == nil && req.DefaultChatModelID == nil &&
+		req.DefaultEmbeddingModelID == nil && req.DefaultRerankerModelID == nil) {
 		return nil, apperrors.ErrInvalidArgument
 	}
 	if req.Name != nil && strings.TrimSpace(*req.Name) == "" {
@@ -265,14 +266,39 @@ func (s *knowledgeBaseService) Update(ctx context.Context, userID, kbID string, 
 	if req.NetworkEnabled != nil {
 		updates["network_enabled"] = *req.NetworkEnabled
 	}
-	if req.DefaultChatModelID != nil && *req.DefaultChatModelID != "" {
-		if _, err := s.modelConfigs.FindChatByID(ctx, userID, *req.DefaultChatModelID); err != nil {
-			if errors.Is(err, repository.ErrModelConfigNotFound) {
-				return nil, apperrors.New(contracts.ErrInvalidArgument, err)
+	// 默认模型字段：显式传值即更新；传空串表示清除（写 NULL），
+	// 字段未传（nil）时不修改，保证部分更新语义。
+	if req.DefaultChatModelID != nil {
+		if *req.DefaultChatModelID != "" {
+			if _, err := s.modelConfigs.FindChatByID(ctx, userID, *req.DefaultChatModelID); err != nil {
+				if errors.Is(err, repository.ErrModelConfigNotFound) {
+					return nil, apperrors.New(contracts.ErrInvalidArgument, err)
+				}
+				return nil, apperrors.New(contracts.ErrInternal, err)
 			}
-			return nil, apperrors.New(contracts.ErrInternal, err)
+			updates["default_chat_model_id"] = *req.DefaultChatModelID
+		} else {
+			updates["default_chat_model_id"] = nil
 		}
-		updates["default_chat_model_id"] = *req.DefaultChatModelID
+	}
+	for field, value := range map[string]*string{
+		"default_embedding_model_id": req.DefaultEmbeddingModelID,
+		"default_reranker_model_id":  req.DefaultRerankerModelID,
+	} {
+		if value == nil {
+			continue
+		}
+		if *value != "" {
+			if _, err := s.modelConfigs.FindEnabledByID(ctx, userID, *value); err != nil {
+				if errors.Is(err, repository.ErrModelConfigNotFound) {
+					return nil, apperrors.New(contracts.ErrInvalidArgument, err)
+				}
+				return nil, apperrors.New(contracts.ErrInternal, err)
+			}
+			updates[field] = *value
+		} else {
+			updates[field] = nil
+		}
 	}
 	updated, err := s.kbs.Update(ctx, userID, kbID, updates)
 	if errors.Is(err, repository.ErrKnowledgeBaseNotFound) {
