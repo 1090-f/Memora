@@ -117,6 +117,22 @@ func (r *agentConfigRepository) FindByKnowledgeBase(ctx context.Context, userID,
 	return &cfg, nil
 }
 
+// UpdateChatModel 更新知识库 Agent 配置的对话模型 ID。
+// 问答与 Agent 运行时从 agent_configs.chat_model_id 读取模型，
+// 知识库默认 Chat 模型变更时必须同步，否则实际问答仍用旧模型。
+func (r *agentConfigRepository) UpdateChatModel(ctx context.Context, userID, kbID, chatModelID string) error {
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.AgentConfig{}).
+		Where("user_id = ? AND knowledge_base_id = ?", userID, kbID).
+		Update("chat_model_id", chatModelID)
+	if result.Error != nil {
+		return fmt.Errorf("更新 Agent 配置对话模型失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrAgentConfigNotFound
+	}
+	return nil
+}
+
 // modelConfigRepository 是 ModelConfigRepository 接口的 GORM 实现。
 type modelConfigRepository struct{ db *gorm.DB }
 
