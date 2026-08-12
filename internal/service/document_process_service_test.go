@@ -91,7 +91,7 @@ func (s *stubProcessor) Run(_ context.Context, input pipeline.ProcessInput) (pip
 	return pipeline.ProcessOutput{ChunkCount: 3}, nil
 }
 
-func (s *stubProcessor) ChunkConfigHash() string { return "chunk-hash" }
+func (s *stubProcessor) ChunkConfigHash() string  { return "chunk-hash" }
 func (s *stubProcessor) EmbeddingModelID() string { return "" }
 
 // TestProcessImportTaskManualDocumentRunsPipelineWithContent 验证手工文档任务
@@ -106,7 +106,7 @@ func TestProcessImportTaskManualDocumentRunsPipelineWithContent(t *testing.T) {
 	doc := &entity.Document{
 		UserID: "u1", KnowledgeBaseID: "kb1",
 		Title: "手工文档", Content: &content, ContentFormat: "markdown",
-		SourceType: string(contracts.DocumentSourceManual),
+		SourceType:       string(contracts.DocumentSourceManual),
 		ProcessingStatus: string(contracts.ProcessingPending),
 		ContentVersion:   1, ChunkVersion: 1,
 	}

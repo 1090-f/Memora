@@ -293,9 +293,9 @@ func TestAssetOnlyDocument(t *testing.T) {
 	paragraph := parser.Block{ID: "b3", Type: parser.BlockTypeParagraph, Text: "正文内容"}
 
 	tests := []struct {
-		name   string
-		doc    *parser.ParsedDocument
-		want   bool
+		name string
+		doc  *parser.ParsedDocument
+		want bool
 	}{
 		{name: "nil 文档", doc: nil, want: false},
 		{name: "空文档（无任何块）", doc: &parser.ParsedDocument{}, want: true},

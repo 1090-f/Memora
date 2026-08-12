@@ -269,7 +269,7 @@ func TestOpenRenderedOfficeFirstGenerationCachesAndReuses(t *testing.T) {
 		UserID: "u1", SourceType: string(contracts.DocumentSourceFile),
 		MinIOObjectKey: strPtr("original/b.pptx"), OriginalFileName: strPtr("b.pptx"),
 		MIMEType: strPtr("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
-		Title: "b.pptx", ContentVersion: 1,
+		Title:    "b.pptx", ContentVersion: 1,
 	}
 	doc.ID = "doc-1"
 	converter := &fakeOfficeConverter{available: true, pdfBytes: pdf}
@@ -318,7 +318,7 @@ func TestOpenRenderedCacheStreamKeepsPDFHeader(t *testing.T) {
 		UserID: "u1", SourceType: string(contracts.DocumentSourceFile),
 		MinIOObjectKey: strPtr("original/b.docx"), OriginalFileName: strPtr("b.docx"),
 		MIMEType: strPtr("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
-		Title: "b.docx", ContentVersion: 1,
+		Title:    "b.docx", ContentVersion: 1,
 	}
 	doc.ID = "doc-1"
 	svc := &documentService{docs: &stubDocLookup{doc: doc}, store: store, office: &fakeOfficeConverter{available: true, pdfBytes: pdf}}
@@ -352,7 +352,7 @@ func TestOpenRenderedDiscardsInvalidCacheAndReconverts(t *testing.T) {
 		UserID: "u1", SourceType: string(contracts.DocumentSourceFile),
 		MinIOObjectKey: strPtr("original/b.xlsx"), OriginalFileName: strPtr("b.xlsx"),
 		MIMEType: strPtr("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-		Title: "b.xlsx", ContentVersion: 1,
+		Title:    "b.xlsx", ContentVersion: 1,
 	}
 	doc.ID = "doc-1"
 	converter := &fakeOfficeConverter{available: true, pdfBytes: pdf}
@@ -384,7 +384,7 @@ func TestOpenRenderedOfficeUnavailableReturnsError(t *testing.T) {
 		UserID: "u1", SourceType: string(contracts.DocumentSourceFile),
 		MinIOObjectKey: strPtr("original/b.pptx"), OriginalFileName: strPtr("b.pptx"),
 		MIMEType: strPtr("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
-		Title: "b.pptx", ContentVersion: 1,
+		Title:    "b.pptx", ContentVersion: 1,
 	}
 	doc.ID = "doc-1"
 	// office 为 nil：LibreOffice 不可用时应明确报错而不是返回坏数据。
