@@ -63,6 +63,7 @@
   "devDependencies": {
     "@c-x/cx-swagger-api": "^1.0.1",
     "@eslint/js": "^9.15.0",
+    "@types/jszip": "^3.4.1",
     "@types/lodash-es": "^4.17.12",
     "@types/node": "^24.3.1",
     "@types/react": "^19.2.3",
