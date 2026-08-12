@@ -34,6 +34,7 @@ export interface Document {
   directory_id?: string;
   title: string;
   content?: string;
+  content_format?: 'txt' | 'markdown';
   source_type: DocumentSourceType;
   source_url?: string;
   original_file_name?: string;
@@ -77,9 +78,65 @@ export interface DocumentReadPage {
   citation: Citation;
 }
 
+export type PreviewType = 'text' | 'markdown' | 'pdf' | 'image' | 'table' | 'download' | 'none';
+export type PreviewStatus = 'pending' | 'processing' | 'ready' | 'failed' | 'unsupported';
+
+export interface PreviewFallback {
+  preview_type: PreviewType;
+  status: PreviewStatus;
+  content_url?: string;
+  media_type?: string;
+}
+
+export interface PreviewError {
+  code: string;
+  message: string;
+}
+
 export interface DocumentPreview {
+  document_id: string;
+  content_version: number;
+  preview_type: PreviewType;
+  status: PreviewStatus;
+  content_url?: string;
+  media_type?: string;
+  original_url?: string;
+  retry_after_ms?: number;
+  fallbacks: PreviewFallback[];
+  error?: PreviewError;
+}
+
+export interface DocumentTextPreview {
   content: string;
-  format: 'markdown' | 'txt' | 'pdf' | 'docx' | string;
+  format: 'markdown' | 'txt' | string;
+}
+
+export interface PreviewSheetSummary {
+  index: number;
+  name: string;
+  row_count: number;
+  column_count: number;
+}
+
+export interface PreviewTableCell { column: number; value: string }
+export interface PreviewTableRow { row: number; cells: PreviewTableCell[] }
+export interface PreviewMergedCell {
+  start_row: number;
+  start_column: number;
+  row_span: number;
+  column_span: number;
+}
+
+export interface DocumentTablePreview {
+  document_id: string;
+  content_version: number;
+  sheets: PreviewSheetSummary[];
+  active_sheet: number;
+  row_offset: number;
+  row_limit: number;
+  rows: PreviewTableRow[];
+  merged_cells: PreviewMergedCell[];
+  next_row_offset?: number;
 }
 
 export type ImageRefStatus = 'inline' | 'network' | 'matched' | 'pending';
@@ -118,6 +175,7 @@ export interface CreateDirectoryInput {
 export interface CreateManualDocumentInput {
   title: string;
   content?: string;
+  format?: 'txt' | 'markdown';
   directory_id?: string;
   source_type: 'manual';
   source_url?: string;

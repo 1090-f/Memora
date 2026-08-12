@@ -23,17 +23,13 @@ import type { DirectoryNode, ImageScanResult, ImageRefStatus, ImportSubmission }
 
 const MAX_FILES = 20;
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
-const allowedExtensions = ['.md', '.txt', '.pdf', '.docx'];
+const allowedExtensions = ['.md', '.txt', '.pdf', '.docx', '.xlsx', '.pptx', '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.gif', '.webp'];
 const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'];
 
-// 浏览器目录选择（webkitdirectory 为非标准属性，这里显式声明）。
+// 浏览器目录选择（webkitdirectory 为非标准属性，在浏览器类型上扩展，与 HTMLInputElement 兼容）。
 interface DirectoryInputElement extends HTMLInputElement {
-  webkitdirectory?: string;
-  directory?: string;
-}
-
-interface FolderFile extends File {
-  webkitRelativePath?: string;
+  webkitdirectory: boolean;
+  directory: boolean;
 }
 
 // 上传后待确认的任务（Markdown 需扫描图片引用，补传后可开始解析）。
@@ -201,15 +197,15 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
 
   // 选择文件夹：浏览器允许读取目录内全部文件，前端打包为 zip 上传，
   // 后端按文件名（basename）匹配 Markdown 中的本机绝对路径图片引用。
+  // File.webkitRelativePath 由 DOM 库提供（目录选择时携带相对路径）。
   async function selectFolder(selected: File[]) {
-    const folderFiles = selected as FolderFile[];
-    const main = folderFiles.find((file) =>
+    const main = selected.find((file) =>
       allowedExtensions.some((extension) => file.name.toLowerCase().endsWith(extension)));
     if (!main) {
       setValidationError('文件夹中没有 Markdown、TXT、PDF 或 DOCX 文档');
       return;
     }
-    const unsupported = folderFiles.find((file) => {
+    const unsupported = selected.find((file) => {
       const name = file.name.toLowerCase();
       const supported = allowedExtensions.some((extension) => name.endsWith(extension))
         || imageExtensions.some((extension) => name.endsWith(extension));
@@ -219,7 +215,7 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
       setValidationError(`文件夹中含不支持的文件：${unsupported.name}`);
       return;
     }
-    const oversized = folderFiles.find((file) => file.size <= 0 || file.size > MAX_FILE_SIZE);
+    const oversized = selected.find((file) => file.size <= 0 || file.size > MAX_FILE_SIZE);
     if (oversized) {
       setValidationError(`${oversized.name} 为空或超过 50 MB`);
       return;
@@ -227,18 +223,18 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
     setPacking(true);
     try {
       const zip = new JSZip();
-      for (const file of folderFiles) {
+      for (const file of selected) {
         // 去掉所选根目录名，保留目录内相对路径。
         const parts = (file.webkitRelativePath || file.name).split('/');
         const relative = parts.slice(1).join('/') || file.name;
         zip.file(relative, file);
       }
       const blob = await zip.generateAsync({ type: 'blob' });
-      const folderName = (folderFiles[0].webkitRelativePath || 'import').split('/')[0] || 'import';
+      const folderName = (selected[0].webkitRelativePath || 'import').split('/')[0] || 'import';
       const zipFile = new File([blob], `${folderName}.zip`, { type: 'application/zip' });
       setFiles([zipFile]);
       setValidationError('');
-      setNotice(`已打包 ${folderFiles.length} 个文件为 ${zipFile.name}`);
+      setNotice(`已打包 ${selected.length} 个文件为 ${zipFile.name}`);
     } catch {
       setValidationError('打包文件夹失败，请重试');
     } finally {
@@ -273,7 +269,7 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
 
         {sourceMode === 'file' ? (
           <>
-            <Typography color="text.secondary">支持 Markdown、TXT、PDF、DOCX、ZIP；Markdown 上传后自动扫描图片引用，可随时补传本机图片。</Typography>
+            <Typography color="text.secondary">支持 Markdown、TXT、PDF、DOCX、XLSX、PPTX、图片（JPG/PNG/BMP/TIFF）、ZIP；Markdown 上传后自动扫描图片引用，可随时补传本机图片。</Typography>
             <Stack direction="row" spacing={1}>
               <Button variant="outlined" disabled={disabled || packing || pendingCount > 0} onClick={() => fileInputRef.current?.click()}>选择文件</Button>
               <Button variant="outlined" disabled={disabled || packing || pendingCount > 0} onClick={() => folderInputRef.current?.click()}>
@@ -285,7 +281,7 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
               type="file"
               multiple
               hidden
-              accept=".md,.txt,.pdf,.docx,.zip,text/markdown,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/zip"
+              accept=".md,.txt,.pdf,.docx,.xlsx,.pptx,.zip,.jpg,.jpeg,.png,.bmp,.tiff,.tif,.gif,.webp,text/markdown,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/zip,image/jpeg,image/png,image/bmp,image/tiff,image/gif,image/webp"
               onChange={(event) => selectFiles(Array.from(event.target.files ?? []))}
             />
             <input

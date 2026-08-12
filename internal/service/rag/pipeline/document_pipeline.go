@@ -50,6 +50,8 @@ type ProcessInput struct {
 	ObjectKey string
 	// SourceURL 是 URL 导入来源；与 ObjectKey 二选一。
 	SourceURL string
+	// Content 是手工文档（manual）的正文；非空时优先于 ObjectKey/SourceURL。
+	Content string
 	// FileName 是原始文件名。
 	FileName string
 	// MIMEType 是原始文件 MIME 类型（仅辅助判断）。
@@ -137,7 +139,7 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		return nil, fmt.Errorf("计算解析配置哈希失败: %w", err)
 	}
 
-	router := parser.NewParserRouter(parser.NewTextParser(64*1024*1024), newPythonParser(cfg))
+	router := parser.NewParserRouter(parser.NewTextParser(64*1024*1024), parser.NewMarkdownParser(64*1024*1024), newPythonParser(cfg))
 	artifactStore := parser.NewArtifactStore(cfg.Store, cfg.ValidateLimits)
 	docNormalizer := normalizer.NewDocumentNormalizer()
 	enricher := cfg.AssetEnricher
@@ -164,9 +166,17 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 
 	g := compose.NewGraph[ProcessInput, ProcessOutput]()
 
-	// load_source：URL 来源在 Worker 内通过安全 Eino Loader 抓取；文件来源保持 MinIO 流。
+	// load_source：URL 来源在 Worker 内通过安全 Eino Loader 抓取；文件来源保持 MinIO 流；
+	// 手工文档（manual）直接使用正文 Content，不访问 MinIO。
 	loadSourceLambda := compose.InvokableLambda(func(ctx context.Context, input ProcessInput) (*pipelineState, error) {
 		state := &pipelineState{input: input}
+		if input.Content != "" {
+			state.loadedContent = input.Content
+			if state.input.FileName == "" {
+				state.input.FileName = "manual.txt"
+			}
+			return state, nil
+		}
 		if input.ObjectKey == "" && input.SourceURL != "" {
 			if cfg.WebLoader == nil {
 				return nil, fmt.Errorf("URL 导入未配置安全 WebLoader")
@@ -202,10 +212,15 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 	}
 
 	// resolve_artifact：确定性 key 查找兼容 Artifact；命中则加载，未命中标记待解析。
+	// 附件场景（zip/补传图片）强制重新解析：附件变化后旧 Artifact 不含新图片，
+	// 若命中缓存会导致补传图片不生效。
 	resolveLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
 		state.artifactPrefix = parser.ArtifactKeyPrefix(
 			state.input.DocMeta.UserID, state.input.DocMeta.DocumentID,
 			state.input.DocMeta.ContentVersion, parseConfigHash)
+		if len(state.input.Attachments) > 0 {
+			return state, nil
+		}
 		ref, err := artifactStore.Resolve(ctx, state.artifactPrefix, state.input.DocMeta.SourceHash)
 		if err != nil {
 			if isArtifactNotFound(err) {
@@ -349,7 +364,9 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		if err != nil {
 			return nil, fmt.Errorf("结构分块失败: %w", err)
 		}
-		if len(chunks) == 0 {
+		// 纯图片文档（图片无 OCR/caption 文字）没有可索引文本，允许 0 Chunk 成功
+		// 导入（资产与原文件保留）；有正文却分不出 Chunk 才是分块器 bug。
+		if len(chunks) == 0 && !assetOnlyDocument(state.doc) {
 			return nil, fmt.Errorf("文档未产生任何 Chunk")
 		}
 		state.chunks = chunks
@@ -392,6 +409,10 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 
 	// persist_chunks：ParsedChunk → entity.DocumentChunk → BatchInsert。
 	persistChunksLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
+		// 纯图片文档无 Chunk：跳过落库，indexDocs 保持为空。
+		if len(state.chunks) == 0 {
+			return state, nil
+		}
 		entities := make([]*entity.DocumentChunk, 0, len(state.chunks))
 		for i, chunk := range state.chunks {
 			entityChunk, err := chunkToEntity(chunk, i, state.input.DocMeta, chunkConfigHash, ftsTokenizer)
@@ -450,8 +471,8 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 			if embedder == nil {
 				embedder, modelID = cfg.Embedder, cfg.EmbeddingModelID
 			}
-			if embedder == nil {
-				return processOutput(state, len(state.chunks)), nil
+			if embedder == nil || len(state.indexDocs) == 0 {
+				return processOutput(state, len(state.indexDocs)), nil
 			}
 			for _, doc := range state.indexDocs {
 				einoadapter.SetMetaString(doc, einoadapter.MetaEmbeddingModelID, modelID)
@@ -531,6 +552,26 @@ func applyDefaults(cfg DocumentPipelineConfig) DocumentPipelineConfig {
 		cfg.ParserConfig.Timeout = 8 * time.Minute
 	}
 	return cfg
+}
+
+// assetOnlyDocument 判断文档是否没有任何可索引文本：只有标题/图片（且图片无
+// OCR/caption 文字，分块器因此不产出单元）或完全为空。这类文档允许 0 Chunk
+// 成功导入（资产与原文件保留），避免把"无文字图片"当成分块器故障。
+func assetOnlyDocument(doc *parser.ParsedDocument) bool {
+	if doc == nil {
+		return false
+	}
+	for _, block := range doc.Blocks {
+		switch block.Type {
+		case parser.BlockTypeHeading, parser.BlockTypeTitle, parser.BlockTypePicture:
+			continue
+		default:
+			if strings.TrimSpace(block.Text) != "" || block.TableRef != "" || len(block.AssetRefs) > 0 {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // computeChunkConfigHash 计算 chunk_config_hash：分块参数 + tokenizer + Embedding 模型。

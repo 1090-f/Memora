@@ -16,10 +16,33 @@ import (
 //   - 过短相邻 Chunk 只与结构兼容的相邻 Chunk 合并；
 //   - code/formula 优先保持完整，超限才拆；
 //   - caption 与其表格/图片尽量保持同一 Chunk；
-//   - 每个 Chunk 保留 Block IDs、页码与 bbox。
+//   - 每个 Chunk 保留 Block IDs、页码与 bbox；
+//   - 按来源格式差异化策略（见 strategyForFormat）：
+//     DOCX 保留标题/段落/表格结构；PPTX 页码即 slide number；
+//     XLSX 按 Sheet/Table 独立分块，不与正文合并。
 type StructureAwareChunker struct {
 	tokenizer       Tokenizer
 	strategyVersion string
+}
+
+// formatStrategy 描述按来源格式差异化的分块行为。
+type formatStrategy struct {
+	// sheetMode 是电子表格模式（xlsx）：每个 Sheet/Table 独立成块，不与正文合并。
+	sheetMode bool
+}
+
+// strategyForFormat 按来源格式返回分块策略。
+// 与解析表格（ParserRouter/docling SourceInfo.Format）对应：
+//   - xlsx：按 Sheet/Table 独立分块（保留表格整体性）；
+//   - pptx：页码即 slide number，保留在 chunk source_location.page；
+//   - docx/其他：默认结构策略（标题/段落/表格）。
+func strategyForFormat(format string) formatStrategy {
+	switch strings.ToLower(format) {
+	case "xlsx":
+		return formatStrategy{sheetMode: true}
+	default:
+		return formatStrategy{}
+	}
 }
 
 // NewStructureAwareChunker 构造结构感知分块器。
@@ -73,6 +96,7 @@ func (c *StructureAwareChunker) buildUnits(doc *parser.ParsedDocument, opts Chun
 		assetsByID[asset.ID] = asset
 	}
 
+	strategy := strategyForFormat(doc.Source.Format)
 	text := &blockStrategy{}
 	markdown := &markdownStrategy{}
 	tableStrategy := &tableStrategy{tokenizer: c.tokenizer}
@@ -89,7 +113,7 @@ func (c *StructureAwareChunker) buildUnits(doc *parser.ParsedDocument, opts Chun
 			if !ok {
 				continue
 			}
-			tableUnits, err := tableStrategy.toUnits(block, table, opts)
+			tableUnits, err := tableStrategy.toUnits(block, table, opts, strategy.sheetMode)
 			if err != nil {
 				return nil, err
 			}
@@ -142,50 +166,46 @@ func (u *unit) isTableOrPicture() bool {
 
 // attachPictures 为图片单元关联同一标题路径下最近的前/后正文。
 // 关联后超限则图片独立；正文单元若被合并则移除。
+// 注意：合并会缩短单元列表，必须逐位顺序处理，不能缓存旧下标
+// （range 的切片在循环开始时只求值一次，旧下标在列表缩短后会越界 panic 或错删单元）。
 func (c *StructureAwareChunker) attachPictures(units []*unit, doc *parser.ParsedDocument, opts ChunkOptions) ([]*unit, error) {
-	// 先按阅读顺序保留非图片单元，记录图片单元位置。
-	ordered := make([]*unit, 0, len(units))
-	pictureIdx := make([]int, 0, len(units))
-	for _, u := range units {
-		ordered = append(ordered, u)
-		if strings.Contains(u.contentType, parser.BlockTypePicture) && u.seal {
-			pictureIdx = append(pictureIdx, len(ordered)-1)
-		}
-	}
-	for _, idx := range pictureIdx {
-		pic := ordered[idx]
-		// 前向找：图片之后最近的正文；找不到再后向找。
-		contextUnit := c.nearestParagraphAfter(ordered, idx)
-		if contextUnit == nil {
-			contextUnit = c.nearestParagraphBefore(ordered, idx)
-		}
-		if contextUnit == nil {
+	ordered := make([]*unit, len(units))
+	copy(ordered, units)
+	i := 0
+	for i < len(ordered) {
+		u := ordered[i]
+		if !strings.Contains(u.contentType, parser.BlockTypePicture) || !u.seal {
+			i++
 			continue
 		}
-		combined := pic.text + "\n" + contextUnit.text
+		// 前向找：图片之后最近的正文；找不到再后向找。
+		contextUnit := c.nearestParagraphAfter(ordered, i)
+		if contextUnit == nil {
+			contextUnit = c.nearestParagraphBefore(ordered, i)
+		}
+		if contextUnit == nil {
+			i++ // 无可关联正文：图片保持独立。
+			continue
+		}
+		combined := u.text + "\n" + contextUnit.text
 		tokens, err := c.tokenizer.Count(combined)
 		if err != nil {
 			return nil, err
 		}
 		if tokens > opts.MaxTokens {
-			continue // 关联后超限：图片保持独立。
+			i++ // 关联后超限：图片保持独立。
+			continue
 		}
 		// 合并到正文：图片文本 + 正文，作为普通可合并单元。
 		contextUnit.text = combined
-		contextUnit.blockIDs = append(contextUnit.blockIDs, pic.blockIDs...)
-		contextUnit.assetRefs = append(contextUnit.assetRefs, pic.assetRefs...)
+		contextUnit.blockIDs = append(contextUnit.blockIDs, u.blockIDs...)
+		contextUnit.assetRefs = append(contextUnit.assetRefs, u.assetRefs...)
 		contextUnit.contentType = joinUnique(contextUnit.contentType, parser.BlockTypePicture)
 		if contextUnit.source.Page == 0 {
-			contextUnit.source = pic.source
+			contextUnit.source = u.source
 		}
-		// 图片单元从列表中移除（后续下标受影响，重新收集）。
-		ordered = append(ordered[:idx], ordered[idx+1:]...)
-		pictureIdx = nil
-		for i, u := range ordered {
-			if strings.Contains(u.contentType, parser.BlockTypePicture) && u.seal {
-				pictureIdx = append(pictureIdx, i)
-			}
-		}
+		// 图片单元从列表中移除：后续元素前移，当前位置继续处理。
+		ordered = append(ordered[:i], ordered[i+1:]...)
 	}
 	return ordered, nil
 }

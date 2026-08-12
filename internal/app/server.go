@@ -15,6 +15,8 @@ import (
 	"github.com/1090-f/Memora/internal/background"
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service"
+	previewservice "github.com/1090-f/Memora/internal/service/preview"
+	previewrenderer "github.com/1090-f/Memora/internal/service/preview/renderer"
 	"github.com/1090-f/Memora/internal/service/rag/parser"
 	ragpipeline "github.com/1090-f/Memora/internal/service/rag/pipeline"
 	ragretrieval "github.com/1090-f/Memora/internal/service/rag/retrieval"
@@ -139,7 +141,18 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		_ = a.Close()
 		return fmt.Errorf("计算文档预览解析配置哈希失败: %w", err)
 	}
-	documentService := service.NewDocumentService(docs, importTasks, kbs, dirs, a.store, parseConfigHash, cfg.JWT.Secret)
+	previewRepo := repository.NewDocumentPreviewRepository(a.db)
+	officeRenderer, officeErr := previewrenderer.NewLibreOffice(cfg.Preview.Enabled && cfg.Preview.Office.Enabled, cfg.Preview.Office.MaxConcurrency, cfg.Preview.Office.Timeout)
+	if officeErr != nil {
+		// LibreOffice 缺失不阻断启动：Descriptor 会返回 parsed text/download fallback。
+		logger.Warnf("Office 异步预览不可用，请安装 LibreOffice: %v", officeErr)
+		officeRenderer, _ = previewrenderer.NewLibreOffice(false, 1, cfg.Preview.Office.Timeout)
+	}
+	xlsxRenderer := previewrenderer.NewXLSX(cfg.Preview.XLSX)
+	previewScheduler := previewservice.NewScheduler(docs, previewRepo, cfg.Preview.Enabled, officeRenderer.Info(), xlsxRenderer.Info())
+	previewService := previewservice.NewService(docs, previewRepo, a.store, parseConfigHash, cfg.JWT.Secret, previewScheduler, officeRenderer.Info(), xlsxRenderer.Info(), cfg.Preview.XLSX.MaxUncompressedBytes)
+	previewProcessor := previewservice.NewProcessor(docs, previewRepo, a.store, []previewservice.Renderer{officeRenderer, xlsxRenderer}, cfg.Preview.XLSX.MaxUncompressedBytes)
+	documentService := service.NewDocumentService(docs, importTasks, kbs, dirs, a.store, parseConfigHash, cfg.JWT.Secret, nil)
 	citationService := service.NewCitationService()
 	documentReader, err := service.NewDocumentReader(chunks, citationService, cfg.JWT.Secret)
 	if err != nil {
@@ -171,12 +184,12 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		_ = a.Close()
 		return err
 	}
-	documentProcessService, err := buildDocumentProcessService(cfg, a.store, importTasks, docs, chunks, vectors, documentEmbeddingResolver)
+	documentProcessService, err := buildDocumentProcessService(cfg, a.store, importTasks, docs, chunks, vectors, documentEmbeddingResolver, previewScheduler)
 	if err != nil {
 		_ = a.Close()
 		return err
 	}
-	a.background = background.NewManager(a.redis, importTasks, repository.NewTaskOutboxRepository(a.db), documentProcessService, cfg.DocumentConsumer, cfg.Outbox)
+	a.background = background.NewManager(a.redis, importTasks, previewRepo, repository.NewTaskOutboxRepository(a.db), documentProcessService, previewProcessor, cfg.DocumentConsumer, cfg.Preview, cfg.Outbox)
 
 	// 初始化 ContextBuilder（Phase 3）
 	messages := repository.NewMessageRepository(a.db)
@@ -236,7 +249,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	router := api.NewRouter(api.Dependencies{
 		Config: cfg.CORS, Auth: authService, Users: userService, MCP: mcpService,
 		KnowledgeBases: kbService, Directories: directoryService, AIModelConfigs: aiModelConfigs, AIEncryption: aiEncryption,
-		Documents: documentService, DocumentReader: documentReader, DocumentProcess: documentProcessService,
+		Documents: documentService, Preview: previewService, DocumentReader: documentReader, DocumentProcess: documentProcessService,
 		Retrieval:      retrievalService,
 		ContextBuilder: contextBuilder,
 		AssetSignKey:   cfg.JWT.Secret,

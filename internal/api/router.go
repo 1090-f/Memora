@@ -22,6 +22,7 @@ import (
 	"github.com/1090-f/Memora/internal/middleware"
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service"
+	previewservice "github.com/1090-f/Memora/internal/service/preview"
 	"github.com/1090-f/Memora/pkg/config"
 	"github.com/1090-f/Memora/pkg/metrics"
 	"github.com/gin-gonic/gin"
@@ -42,6 +43,7 @@ type Dependencies struct {
 	KnowledgeBases  service.KnowledgeBaseService
 	Directories     service.DirectoryService
 	Documents       service.DocumentService
+	Preview         previewservice.Service
 	DocumentReader  contracts.DocumentService
 	DocumentProcess service.DocumentProcessService
 	Retrieval       contracts.RetrievalService
@@ -77,7 +79,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	if deps.AIModelConfigs != nil {
 		modelconfigapi.NewController(deps.AIModelConfigs, deps.AIEncryption).RegisterRoutes(v1, authRequired)
 	}
-	document.NewController(deps.Documents, deps.DocumentReader, deps.AssetSignKey).RegisterRoutes(v1, authRequired)
+	document.NewController(deps.Documents, deps.Preview, deps.DocumentReader, deps.AssetSignKey).RegisterRoutes(v1, authRequired)
 	importtask.NewController(deps.DocumentProcess).RegisterRoutes(v1, authRequired)
 	if deps.Retrieval != nil {
 		searchapi.NewController(deps.Retrieval).RegisterRoutes(v1, authRequired)

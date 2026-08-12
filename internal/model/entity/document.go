@@ -10,6 +10,7 @@ type Document struct {
 	DirectoryID        *string `gorm:"column:directory_id" json:"directory_id,omitempty"`                 // DirectoryID 所属目录 ID，为空表示未归入目录
 	Title              string  `gorm:"column:title" json:"title"`                                         // Title 文档标题
 	Content            *string `gorm:"column:content" json:"content,omitempty"`                           // Content 文档正文内容，可选
+	ContentFormat      string  `gorm:"column:content_format" json:"content_format"`                       // ContentFormat 手工文档正文格式（txt/markdown）
 	SourceType         string  `gorm:"column:source_type" json:"source_type"`                             // SourceType 文档来源类型
 	SourceURL          *string `gorm:"column:source_url" json:"source_url,omitempty"`                     // SourceURL 原始来源 URL，可选
 	OriginalFileName   *string `gorm:"column:original_file_name" json:"original_file_name,omitempty"`     // OriginalFileName 原始文件名，可选

@@ -18,18 +18,45 @@ import os
 import threading
 from collections.abc import AsyncIterator
 
-from docling import __version__ as DOCLING_VERSION
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
+# 必须在任何 docling 导入之前执行：docling-parse 的 C++ 层在中文
+# 路径（ANSI 代码页非 UTF-8）下找不到 pdf_resources，需要先切换到 ASCII 路径。
+from docling_parse_path import ensure_ascii_docling_parse  # noqa: E402
 
-import schemas
-from docling_adapter import DoclingAdapter, DocumentParserError
+ensure_ascii_docling_parse()
+
+from docling import __version__ as DOCLING_VERSION  # noqa: E402
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+
+import schemas  # noqa: E402
+from docling_adapter import DoclingAdapter, DocumentParserError  # noqa: E402
 
 logging.basicConfig(
     level=os.environ.get("DOCUMENT_PARSER_LOG_LEVEL", "info").upper(),
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 _log = logging.getLogger("document-parser")
+
+
+def _quiet_noisy_loggers() -> None:
+    """降噪第三方库的高频日志，控制日志存储体积。
+
+    多文件导入时以下日志量级随文件数线性放大：
+      - uvicorn.access：每次内部调用（/v1/parse、逐图 /v1/ocr）一行访问日志；
+      - docling：每次解析的转换过程 INFO（detected formats/Processing/Finished）；
+      - rapidocr：每张无文字图片一行 WARNING（text detection result is empty）。
+    解析/OCR 失败仍由 document-parser 自身 logger 记录（app 层 catch + adapter warning），
+    不影响排障；需要完整过程日志时设置 DOCUMENT_PARSER_LOG_LEVEL=debug 即可覆盖。
+    """
+    for name, level in (
+        ("uvicorn.access", logging.WARNING),
+        ("docling", logging.WARNING),
+        ("rapidocr", logging.ERROR),
+    ):
+        logging.getLogger(name).setLevel(level)
+
+
+_quiet_noisy_loggers()
 
 # ---------------------------------------------------------------- 配置
 
@@ -106,10 +133,10 @@ async def parse_document(
     file: UploadFile = File(...),  # noqa: B008
     options: str = Form("{}"),  # noqa: B008
 ) -> schemas.ParsedDocument:
-    """解析 PDF/DOCX 为 ParsedDocument。
+    """解析 PDF/DOCX/XLSX/PPTX/图片为 ParsedDocument。
 
     multipart 字段：
-      - file: PDF 或 DOCX 原始字节；
+      - file: 上述格式的原始字节；
       - options: 解析选项 JSON（见 schemas.ParseOptions）。
     响应为 ParsedDocument JSON（不含任何 Chunk/RAG 字段）。
     """
@@ -124,7 +151,7 @@ async def parse_document(
         raise HTTPException(status_code=422, detail=f"options 无效: {exc}") from exc
 
     file_name = file.filename or ""
-    if file_name == "" or not _looks_like_pdf_or_docx(file_name):
+    if file_name == "" or not _is_supported_document(file_name):
         raise HTTPException(status_code=422, detail=f"不支持的格式: {file_name!r}")
 
     content = await _read_limited(request, file, MAX_FILE_BYTES)
@@ -148,9 +175,11 @@ async def parse_document(
         _semaphore.release()
 
 
-def _looks_like_pdf_or_docx(file_name: str) -> bool:
+def _is_supported_document(file_name: str) -> bool:
     lower = file_name.lower()
-    return lower.endswith(".pdf") or lower.endswith(".docx")
+    return lower.endswith(
+        (".pdf", ".docx", ".xlsx", ".pptx", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".gif", ".webp")
+    )
 
 
 _IMAGE_SIGNATURES: list[tuple[bytes, str]] = [

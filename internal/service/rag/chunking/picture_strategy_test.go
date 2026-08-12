@@ -8,6 +8,28 @@ import (
 	"github.com/1090-f/Memora/internal/service/rag/parser"
 )
 
+func newChunker() *StructureAwareChunker {
+	return NewStructureAwareChunker(NewHeuristicTokenizer(), "structure-v1")
+}
+
+func textBlock(id, text, heading string, page int) parser.Block {
+	var path []string
+	if heading != "" {
+		path = []string{heading}
+	}
+	return parser.Block{
+		ID: id, Type: parser.BlockTypeParagraph, Text: text, Markdown: text,
+		HeadingPath: path, Source: parser.SourceLocation{Page: page},
+	}
+}
+
+func headingBlock(id, text string) parser.Block {
+	return parser.Block{
+		ID: id, Type: parser.BlockTypeHeading, Text: text, Markdown: text,
+		HeadingPath: []string{text}, Source: parser.SourceLocation{Page: 1},
+	}
+}
+
 func pictureDoc(caption string, withDescription bool, withParagraph bool, maxTokens int) (*parser.ParsedDocument, ChunkOptions) {
 	metadata := map[string]any{}
 	if withDescription {

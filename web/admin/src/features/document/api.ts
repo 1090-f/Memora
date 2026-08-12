@@ -10,6 +10,8 @@ import type {
   DocumentReadPage,
   DocumentProcessing,
   DocumentPreview,
+  DocumentTablePreview,
+  DocumentTextPreview,
   ImageScanResult,
   ImportSubmission,
   ImportTask,
@@ -36,8 +38,27 @@ export const getDocument = (documentId: string) =>
 export const getDocumentPreview = (documentId: string) =>
   apiRequest<DocumentPreview>({ url: `/documents/${documentId}/preview` });
 
+const descriptorPath = (url: string) => url.startsWith('/api/v1/') ? url.slice('/api/v1'.length) : url;
+
+export const getDocumentTextPreview = (contentUrl: string) =>
+  apiRequest<DocumentTextPreview>({ url: descriptorPath(contentUrl) });
+
+export const getDocumentTablePreview = (contentUrl: string, params: { sheet_index: number; row_offset: number; row_limit?: number }) =>
+  apiRequest<DocumentTablePreview>({ url: descriptorPath(contentUrl), params });
+
+export const getDocumentPreviewBlob = (contentUrl: string) =>
+  apiBlobRequest({ url: descriptorPath(contentUrl) });
+
+export const retryDocumentPreview = (documentId: string) =>
+  apiRequest<DocumentPreview>({ url: `/documents/${documentId}/preview/retry`, method: 'POST' });
+
 export const getOriginalDocument = (documentId: string, inline = false) =>
   apiBlobRequest({ url: `/documents/${documentId}/original`, params: inline ? { inline: true } : undefined });
+
+// getRenderedDocument 返回渲染预览 PDF（PDF 原文件 / Office 文档经 LibreOffice 转换）。
+// 大文件首次转换可能超过默认 120s，这里单独放宽到 10 分钟。
+export const getRenderedDocument = (documentId: string) =>
+  apiBlobRequest({ url: `/documents/${documentId}/rendered` });
 
 export const deleteDocument = (documentId: string) =>
   apiRequest<{ deleted: boolean }>({ url: `/documents/${documentId}`, method: 'DELETE' });
@@ -53,6 +74,9 @@ export const importURL = (kbId: string, input: ImportURLInput) =>
 
 export const listImportTasks = (kbId: string, params: Record<string, unknown> = {}) =>
   apiRequest<PageResult<ImportTask>>({ url: `/knowledge-bases/${kbId}/import-tasks`, params });
+
+export const cleanupImportTasks = (kbId: string) =>
+  apiRequest<{ deleted: number }>({ url: `/knowledge-bases/${kbId}/import-tasks`, method: 'DELETE' });
 
 export const getImportTask = (taskId: string) =>
   apiRequest<ImportTask>({ url: `/import-tasks/${taskId}` });
