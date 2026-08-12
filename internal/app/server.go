@@ -219,6 +219,20 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	replanService := service.NewReplanService(plannerService, planStateStore, cfg.Agent.MaxReplans)
 	_ = replanService // 用于后续集成
 
+	// 初始化 Memory 提取与管理服务（Phase 6）
+	memoryManager, err := service.NewMemoryManager(memoryRepo, embeddingSvc, modelFactory, "internal/ai/prompts/memory_dedup.yaml")
+	if err != nil {
+		_ = a.Close()
+		return fmt.Errorf("初始化 MemoryManager 失败: %w", err)
+	}
+
+	memoryExtractor, err := service.NewMemoryExtractor(modelFactory, memoryManager, "internal/ai/prompts/memory_extractor.yaml")
+	if err != nil {
+		_ = a.Close()
+		return fmt.Errorf("初始化 MemoryExtractor 失败: %w", err)
+	}
+	_ = memoryExtractor // 用于后续集成
+
 	router := api.NewRouter(api.Dependencies{
 		Config: cfg.CORS, Auth: authService, Users: userService, MCP: mcpService,
 		KnowledgeBases: kbService, Directories: directoryService, AIModelConfigs: aiModelConfigs, AIEncryption: aiEncryption,

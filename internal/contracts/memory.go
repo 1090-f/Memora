@@ -63,6 +63,21 @@ type EmbeddingService interface {
 	Embed(ctx context.Context, text string) ([]float64, error)
 }
 
+// MemoryItem 表示提取后的候选记忆条目。
+type MemoryItem struct {
+	Type       MemoryType  `json:"type"`               // 记忆类型
+	Content    string      `json:"content"`            // 记忆内容（一句话总结）
+	Importance float64     `json:"importance"`         // 重要性 0-1
+	Scope      MemoryScope `json:"scope"`              // 作用域
+	ScopeID    *ID         `json:"scope_id,omitempty"` // 作用域实体ID（knowledge_base时必填）
+}
+
+// MemoryManager 负责记忆的去重、合并和存储。
+type MemoryManager interface {
+	// Process 处理候选记忆列表，自动去重、合并后存储。
+	Process(ctx context.Context, userID string, items []MemoryItem) error
+}
+
 // MemoryExtractor 从 Agent 响应中提取并存储记忆。
 type MemoryExtractor interface {
 	// Extract 处理 Agent 的回答并存储相关记忆。
