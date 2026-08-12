@@ -162,3 +162,12 @@ url_import:
 
 ai:
   encryption_key: "change-me-ai-encryption-key"
+
+# Agent 配置（Plan-Execute 执行参数）
+agent:
+  max_plan_steps: 5          # 计划最大步骤数
+  max_replans: 1             # 允许重新规划的最大次数
+  reviewer_runs: 1           # 计划评审运行次数
+  max_tool_calls: 10         # 单次运行最大工具调用次数
+  max_tool_result_bytes: 1048576  # 工具结果最大字节数（1MB）
+  max_run_seconds: 300       # 单次运行最大时长（秒）

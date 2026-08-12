@@ -207,6 +207,45 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	llmRouter := service.NewLLMRouter(modelFactory)
 	routerService := service.NewRouterService(llmRouter)
 
+	// 初始化 Plan-Execute 服务（Phase 5）
+	planRepo := repository.NewPlanRepository(a.db)
+	planStateStore := service.NewPlanStateStore(planRepo)
+
+	plannerService, err := service.NewPlannerService(modelFactory, "internal/ai/prompts/planner.yaml", cfg.Agent.MaxPlanSteps)
+	if err != nil {
+		_ = a.Close()
+		return fmt.Errorf("初始化 PlannerService 失败: %w", err)
+	}
+
+	// TODO: 从配置注入 ToolExecutor
+	// 暂时使用 nil，需要在 Agent Core 初始化时注入
+	planExecutorService := service.NewPlanExecutorService(nil, planStateStore, modelFactory, cfg.Agent.MaxToolCalls, cfg.Agent.MaxToolResultBytes)
+	_ = planExecutorService // 用于后续集成
+
+	reviewerService, err := service.NewReviewerService(modelFactory, "internal/ai/prompts/reviewer.yaml", planStateStore)
+	if err != nil {
+		_ = a.Close()
+		return fmt.Errorf("初始化 ReviewerService 失败: %w", err)
+	}
+	_ = reviewerService // 用于后续集成
+
+	replanService := service.NewReplanService(plannerService, planStateStore, cfg.Agent.MaxReplans)
+	_ = replanService // 用于后续集成
+
+	// 初始化 Memory 提取与管理服务（Phase 6）
+	memoryManager, err := service.NewMemoryManager(memoryRepo, embeddingSvc, modelFactory, "internal/ai/prompts/memory_dedup.yaml")
+	if err != nil {
+		_ = a.Close()
+		return fmt.Errorf("初始化 MemoryManager 失败: %w", err)
+	}
+
+	memoryExtractor, err := service.NewMemoryExtractor(modelFactory, memoryManager, "internal/ai/prompts/memory_extractor.yaml")
+	if err != nil {
+		_ = a.Close()
+		return fmt.Errorf("初始化 MemoryExtractor 失败: %w", err)
+	}
+	_ = memoryExtractor // 用于后续集成
+
 	router := api.NewRouter(api.Dependencies{
 		Config: cfg.CORS, Auth: authService, Users: userService, MCP: mcpService,
 		KnowledgeBases: kbService, Directories: directoryService, AIModelConfigs: aiModelConfigs, AIEncryption: aiEncryption,

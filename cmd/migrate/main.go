@@ -14,7 +14,7 @@ import (
 
 // main 是数据库迁移工具的入口点，支持执行迁移、引导管理员和重置密码操作。
 func main() {
-	if len(os.Args) != 2 {
+	if len(os.Args) < 2 {
 		usage()
 	}
 	cfg, err := config.LoadDatabase("")
@@ -24,6 +24,17 @@ func main() {
 	switch os.Args[1] {
 	case "up", "down":
 		err = database.Migrate(cfg.Database.URL, os.Args[1])
+	case "force":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: memora-migrate force <version>")
+			os.Exit(2)
+		}
+		var version int
+		if _, e := fmt.Sscanf(os.Args[2], "%d", &version); e != nil {
+			fmt.Fprintln(os.Stderr, "版本号必须是整数")
+			os.Exit(2)
+		}
+		err = database.ForceVersion(cfg.Database.URL, version)
 	case "bootstrap-admin":
 		err = bootstrapAdmin(context.Background(), cfg)
 	case "reset-admin-password":
