@@ -104,6 +104,23 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("document_consumer.max_attempts", 3)
 	v.SetDefault("outbox.poll_interval", "500ms")
 	v.SetDefault("outbox.batch_size", 100)
+	v.SetDefault("preview.enabled", true)
+	v.SetDefault("preview.consumer.stream", "memora:document:preview")
+	v.SetDefault("preview.consumer.group", "memora-preview")
+	v.SetDefault("preview.consumer.concurrency", 2)
+	v.SetDefault("preview.consumer.block_timeout", "5s")
+	v.SetDefault("preview.consumer.processing_timeout", "10m")
+	v.SetDefault("preview.consumer.claim_idle", "15m")
+	v.SetDefault("preview.consumer.max_attempts", 3)
+	v.SetDefault("preview.office.enabled", true)
+	v.SetDefault("preview.office.max_concurrency", 1)
+	v.SetDefault("preview.office.timeout", "5m")
+	v.SetDefault("preview.xlsx.enabled", true)
+	v.SetDefault("preview.xlsx.max_sheets", 100)
+	v.SetDefault("preview.xlsx.max_rows_per_sheet", 100000)
+	v.SetDefault("preview.xlsx.max_columns_per_sheet", 500)
+	v.SetDefault("preview.xlsx.max_cells", 500000)
+	v.SetDefault("preview.xlsx.max_uncompressed_bytes", 67108864)
 	v.SetDefault("mcp.encryption_key", "")
 	v.SetDefault("mcp.stdio_command_whitelist", []string{"npx", "python", "python3", "uvx", "node"})
 	v.SetDefault("mcp.allow_local_http", false)
@@ -169,6 +186,23 @@ func bindEnvironment(v *viper.Viper) {
 		"document_consumer.max_attempts":               "MEMORA_DOCUMENT_CONSUMER_MAX_ATTEMPTS",
 		"outbox.poll_interval":                         "MEMORA_OUTBOX_POLL_INTERVAL",
 		"outbox.batch_size":                            "MEMORA_OUTBOX_BATCH_SIZE",
+		"preview.enabled":                              "MEMORA_PREVIEW_ENABLED",
+		"preview.consumer.stream":                      "MEMORA_PREVIEW_CONSUMER_STREAM",
+		"preview.consumer.group":                       "MEMORA_PREVIEW_CONSUMER_GROUP",
+		"preview.consumer.concurrency":                 "MEMORA_PREVIEW_CONSUMER_CONCURRENCY",
+		"preview.consumer.block_timeout":               "MEMORA_PREVIEW_CONSUMER_BLOCK_TIMEOUT",
+		"preview.consumer.processing_timeout":          "MEMORA_PREVIEW_CONSUMER_PROCESSING_TIMEOUT",
+		"preview.consumer.claim_idle":                  "MEMORA_PREVIEW_CONSUMER_CLAIM_IDLE",
+		"preview.consumer.max_attempts":                "MEMORA_PREVIEW_CONSUMER_MAX_ATTEMPTS",
+		"preview.office.enabled":                       "MEMORA_PREVIEW_OFFICE_ENABLED",
+		"preview.office.max_concurrency":               "MEMORA_PREVIEW_OFFICE_MAX_CONCURRENCY",
+		"preview.office.timeout":                       "MEMORA_PREVIEW_OFFICE_TIMEOUT",
+		"preview.xlsx.enabled":                         "MEMORA_PREVIEW_XLSX_ENABLED",
+		"preview.xlsx.max_sheets":                      "MEMORA_PREVIEW_XLSX_MAX_SHEETS",
+		"preview.xlsx.max_rows_per_sheet":              "MEMORA_PREVIEW_XLSX_MAX_ROWS_PER_SHEET",
+		"preview.xlsx.max_columns_per_sheet":           "MEMORA_PREVIEW_XLSX_MAX_COLUMNS_PER_SHEET",
+		"preview.xlsx.max_cells":                       "MEMORA_PREVIEW_XLSX_MAX_CELLS",
+		"preview.xlsx.max_uncompressed_bytes":          "MEMORA_PREVIEW_XLSX_MAX_UNCOMPRESSED_BYTES",
 		"document_parser.base_url":                     "MEMORA_DOCUMENT_PARSER_BASE_URL",
 		"document_parser.auto_start":                   "MEMORA_DOCUMENT_PARSER_AUTO_START",
 		"document_parser.auto_start_command":           "MEMORA_DOCUMENT_PARSER_AUTO_START_COMMAND",

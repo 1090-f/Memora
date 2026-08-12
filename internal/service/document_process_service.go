@@ -16,6 +16,7 @@ import (
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/1090-f/Memora/internal/repository"
+	previewservice "github.com/1090-f/Memora/internal/service/preview"
 	"github.com/1090-f/Memora/internal/service/rag/parser"
 	"github.com/1090-f/Memora/internal/service/rag/pipeline"
 	"github.com/1090-f/Memora/internal/service/rag/transformer"
@@ -28,13 +29,14 @@ import (
 // documentProcessService 是 DocumentProcessService 接口的实现。
 // 任务包 04 起：创建文档行后调用 Eino 文档加工 Graph（解析/清洗/分段/落库/向量）。
 type documentProcessService struct {
-	tasks      repository.ImportTaskRepository
-	docs       repository.DocumentRepository
-	chunks     repository.DocumentChunkRepository
-	vectors    repository.VectorRepository
-	processor  DocumentProcessor
-	embeddings DocumentEmbeddingResolver
-	store      ObjectStore
+	tasks            repository.ImportTaskRepository
+	docs             repository.DocumentRepository
+	chunks           repository.DocumentChunkRepository
+	vectors          repository.VectorRepository
+	processor        DocumentProcessor
+	embeddings       DocumentEmbeddingResolver
+	store            ObjectStore
+	previewScheduler previewservice.Scheduler
 }
 
 // NewDocumentProcessService 创建一个新的文档处理服务实例。
@@ -47,8 +49,9 @@ func NewDocumentProcessService(
 	processor DocumentProcessor,
 	embeddings DocumentEmbeddingResolver,
 	store ObjectStore,
+	previewScheduler previewservice.Scheduler,
 ) DocumentProcessService {
-	return &documentProcessService{tasks: tasks, docs: docs, chunks: chunks, vectors: vectors, processor: processor, embeddings: embeddings, store: store}
+	return &documentProcessService{tasks: tasks, docs: docs, chunks: chunks, vectors: vectors, processor: processor, embeddings: embeddings, store: store, previewScheduler: previewScheduler}
 }
 
 // CreateImportTask 创建导入任务。
@@ -458,6 +461,12 @@ func (s *documentProcessService) ProcessImportTask(ctx context.Context, taskID c
 			return fmt.Errorf("持久化任务文档关联失败: %w", err)
 		}
 		task.DocumentID = &doc.ID
+	}
+	// Preview 是独立派生链路：调度失败只记录日志，绝不能使解析/索引任务失败。
+	if s.previewScheduler != nil {
+		if err := s.previewScheduler.EnsureDocument(ctx, doc.ID); err != nil {
+			logger.Warn("调度文档预览失败，文档加工继续", zap.String("document_id", doc.ID), zap.Error(err))
+		}
 	}
 
 	// 执行文档加工流水线（file/url 来源有 MinIO 对象或 URL；手工文档正文在 documents.content）。

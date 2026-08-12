@@ -55,6 +55,29 @@ outbox:
   poll_interval: 500ms
   batch_size: 100
 
+# 文档视觉预览（独立于解析/索引流水线）
+preview:
+  enabled: true
+  consumer:
+    stream: "memora:document:preview"
+    group: "memora-preview"
+    concurrency: 2
+    block_timeout: 5s
+    processing_timeout: 10m
+    claim_idle: 15m
+    max_attempts: 3
+  office:
+    enabled: true
+    max_concurrency: 1
+    timeout: 5m
+  xlsx:
+    enabled: true
+    max_sheets: 100
+    max_rows_per_sheet: 100000
+    max_columns_per_sheet: 500
+    max_cells: 500000
+    max_uncompressed_bytes: 67108864
+
 # MCP
 mcp:
   encryption_key: "change-me-mcp-encryption-key-32bytes"
