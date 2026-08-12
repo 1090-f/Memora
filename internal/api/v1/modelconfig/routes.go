@@ -11,5 +11,7 @@ func (ctrl *Controller) RegisterRoutes(rg *gin.RouterGroup, authRequired gin.Han
 	{
 		modelConfigs.GET("", ctrl.ListModelConfigs)
 		modelConfigs.POST("", ctrl.CreateModelConfig)
+		modelConfigs.PATCH("/:id", ctrl.UpdateModelConfig)
+		modelConfigs.DELETE("/:id", ctrl.DeleteModelConfig)
 	}
 }

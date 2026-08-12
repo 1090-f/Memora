@@ -10,6 +10,7 @@ import (
 	"github.com/1090-f/Memora/internal/api/response"
 	"github.com/1090-f/Memora/internal/api/v1/agent"
 	"github.com/1090-f/Memora/internal/api/v1/auth"
+	"github.com/1090-f/Memora/internal/api/v1/conversation"
 	"github.com/1090-f/Memora/internal/api/v1/directory"
 	"github.com/1090-f/Memora/internal/api/v1/document"
 	"github.com/1090-f/Memora/internal/api/v1/importtask"
@@ -56,6 +57,7 @@ type Dependencies struct {
 	Router          contracts.Router
 	AgentController *agent.Controller // Agent 运行管理的 HTTP 控制器
 	MemoryRepo      repository.MemoryRepository
+	Conversations   service.ConversationService
 	PostgresHealth  HealthCheck
 	RedisHealth     HealthCheck
 	MinIOHealth     HealthCheck
@@ -93,6 +95,9 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	}
 	if deps.MemoryRepo != nil {
 		memory.NewController(deps.MemoryRepo).RegisterRoutes(v1, authRequired)
+	}
+	if deps.Conversations != nil {
+		conversation.NewController(deps.Conversations).RegisterRoutes(v1, authRequired)
 	}
 	return engine
 }
