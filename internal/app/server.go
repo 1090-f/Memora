@@ -20,6 +20,8 @@ import (
 	"github.com/1090-f/Memora/internal/events"
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service"
+	previewservice "github.com/1090-f/Memora/internal/service/preview"
+	previewrenderer "github.com/1090-f/Memora/internal/service/preview/renderer"
 	"github.com/1090-f/Memora/internal/service/rag/parser"
 	ragpipeline "github.com/1090-f/Memora/internal/service/rag/pipeline"
 	ragretrieval "github.com/1090-f/Memora/internal/service/rag/retrieval"
@@ -148,7 +150,18 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		_ = a.Close()
 		return fmt.Errorf("计算文档预览解析配置哈希失败: %w", err)
 	}
-	documentService := service.NewDocumentService(docs, importTasks, kbs, dirs, a.store, parseConfigHash, cfg.JWT.Secret)
+	previewRepo := repository.NewDocumentPreviewRepository(a.db)
+	officeRenderer, officeErr := previewrenderer.NewLibreOffice(cfg.Preview.Enabled && cfg.Preview.Office.Enabled, cfg.Preview.Office.MaxConcurrency, cfg.Preview.Office.Timeout)
+	if officeErr != nil {
+		// LibreOffice 缺失不阻断启动：Descriptor 会返回 parsed text/download fallback。
+		logger.Warnf("Office 异步预览不可用，请安装 LibreOffice: %v", officeErr)
+		officeRenderer, _ = previewrenderer.NewLibreOffice(false, 1, cfg.Preview.Office.Timeout)
+	}
+	xlsxRenderer := previewrenderer.NewXLSX(cfg.Preview.XLSX)
+	previewScheduler := previewservice.NewScheduler(docs, previewRepo, cfg.Preview.Enabled, officeRenderer.Info(), xlsxRenderer.Info())
+	previewService := previewservice.NewService(docs, previewRepo, a.store, parseConfigHash, cfg.JWT.Secret, previewScheduler, officeRenderer.Info(), xlsxRenderer.Info(), cfg.Preview.XLSX.MaxUncompressedBytes)
+	previewProcessor := previewservice.NewProcessor(docs, previewRepo, a.store, []previewservice.Renderer{officeRenderer, xlsxRenderer}, cfg.Preview.XLSX.MaxUncompressedBytes)
+	documentService := service.NewDocumentService(docs, importTasks, kbs, dirs, a.store, parseConfigHash, cfg.JWT.Secret, nil)
 	citationService := service.NewCitationService()
 	documentReader, err := service.NewDocumentReader(chunks, citationService, cfg.JWT.Secret)
 	if err != nil {
@@ -180,12 +193,12 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		_ = a.Close()
 		return err
 	}
-	documentProcessService, err := buildDocumentProcessService(cfg, a.store, importTasks, docs, chunks, vectors, documentEmbeddingResolver)
+	documentProcessService, err := buildDocumentProcessService(cfg, a.store, importTasks, docs, chunks, vectors, documentEmbeddingResolver, previewScheduler)
 	if err != nil {
 		_ = a.Close()
 		return err
 	}
-	a.background = background.NewManager(a.redis, importTasks, repository.NewTaskOutboxRepository(a.db), documentProcessService, cfg.DocumentConsumer, cfg.Outbox)
+	a.background = background.NewManager(a.redis, importTasks, previewRepo, repository.NewTaskOutboxRepository(a.db), documentProcessService, previewProcessor, cfg.DocumentConsumer, cfg.Preview, cfg.Outbox)
 
 	// 初始化 ContextBuilder（Phase 3）
 	messages := repository.NewMessageRepository(a.db)
@@ -222,7 +235,10 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		return fmt.Errorf("初始化 PlannerService 失败: %w", err)
 	}
 
+	// TODO: 从配置注入 ToolExecutor
+	// 暂时使用 nil，需要在 Agent Core 初始化时注入
 	planExecutorService := service.NewPlanExecutorService(toolExecutor, planStateStore, modelFactory, cfg.Agent.MaxToolCalls, cfg.Agent.MaxToolResultBytes)
+	_ = planExecutorService // 用于后续集成
 
 	reviewerService, err := service.NewReviewerService(modelFactory, "internal/ai/prompts/reviewer.yaml", planStateStore)
 	if err != nil {
@@ -292,19 +308,33 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		}
 	}()
 
+	// 初始化 Memory 提取与管理服务（Phase 6）
+	memoryManager, err := service.NewMemoryManager(memoryRepo, embeddingSvc, modelFactory, "internal/ai/prompts/memory_dedup.yaml")
+	if err != nil {
+		_ = a.Close()
+		return fmt.Errorf("初始化 MemoryManager 失败: %w", err)
+	}
+
+	memoryExtractor, err := service.NewMemoryExtractor(modelFactory, memoryManager, "internal/ai/prompts/memory_extractor.yaml")
+	if err != nil {
+		_ = a.Close()
+		return fmt.Errorf("初始化 MemoryExtractor 失败: %w", err)
+	}
+	_ = memoryExtractor // 用于后续集成
+
 	router := api.NewRouter(api.Dependencies{
 		Config: cfg.CORS, Auth: authService, Users: userService, MCP: mcpService,
 		KnowledgeBases: kbService, Directories: directoryService, AIModelConfigs: aiModelConfigs, AIEncryption: aiEncryption,
-		Documents: documentService, DocumentReader: documentReader, DocumentProcess: documentProcessService,
-		Retrieval:       retrievalService,
-		ContextBuilder:  contextBuilder,
-		AssetSignKey:    cfg.JWT.Secret,
-		Router:          routerService,
+		Documents: documentService, Preview: previewService, DocumentReader: documentReader, DocumentProcess: documentProcessService,
+		Retrieval:      retrievalService,
+		ContextBuilder: contextBuilder,
+		AssetSignKey:   cfg.JWT.Secret,
+		Router:         routerService,
 		AgentController: agentController,
-		PostgresHealth:  func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
-		RedisHealth:     func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
-		MinIOHealth:     a.store.Health,
-		ParserHealth:    a.documentParser.Health,
+		PostgresHealth: func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
+		RedisHealth:    func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
+		MinIOHealth:    a.store.Health,
+		ParserHealth:   a.documentParser.Health,
 		WorkerCount: func(context.Context) (int64, error) {
 			if cfg.DocumentConsumer.Enabled {
 				return int64(cfg.DocumentConsumer.Concurrency), nil

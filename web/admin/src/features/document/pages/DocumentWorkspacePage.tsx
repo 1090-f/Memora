@@ -39,6 +39,7 @@ import { UnavailableState } from '@/components/shared/UnavailableState';
 import { DocumentWorkspace } from '@/layouts/DocumentWorkspace';
 import {
   createDirectory,
+  cleanupImportTasks,
   deleteDocument,
   getDirectoryTree,
   getDocument,
@@ -175,6 +176,9 @@ function DocumentList({
 
 function ImportTasks({ kbId, onOpenDocument }: { kbId: string; onOpenDocument: (documentId: string) => void }) {
   const queryClient = useQueryClient();
+  const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [cleanupNotice, setCleanupNotice] = useState('');
+  const [cleanupError, setCleanupError] = useState<Error | null>(null);
   const query = useQuery({
     queryKey: queryKeys.importTasks(kbId),
     queryFn: () => listImportTasks(kbId, { page: 1, page_size: 20 }),
@@ -194,6 +198,17 @@ function ImportTasks({ kbId, onOpenDocument }: { kbId: string; onOpenDocument: (
       void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
     },
   });
+  const cleanup = useMutation({
+    mutationFn: () => cleanupImportTasks(kbId),
+    onSuccess: (result) => {
+      setCleanupOpen(false);
+      setCleanupError(null);
+      setCleanupNotice(`已清理 ${result.deleted} 条已完成导入记录`);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
+    },
+    onError: (error) => setCleanupError(error as Error),
+  });
+  const completedCount = (query.data?.items ?? []).filter((task) => ['succeeded', 'failed', 'skipped'].includes(task.status)).length;
 
   useEffect(() => {
     // Worker 创建出文档或完成任务后，主动刷新文档列表以展示最新结果。
@@ -211,8 +226,15 @@ function ImportTasks({ kbId, onOpenDocument }: { kbId: string; onOpenDocument: (
     <Paper variant="outlined" sx={{ p: 2 }}>
       <Stack direction="row" alignItems="center" mb={1}>
         <Typography variant="subtitle2" color="text.secondary" sx={{ flexGrow: 1 }}>最近导入任务</Typography>
+        {completedCount > 0 && (
+          <Button size="small" disabled={cleanup.isPending} onClick={() => setCleanupOpen(true)}>
+            {cleanup.isPending ? '正在清理…' : `清理已完成（${completedCount}）`}
+          </Button>
+        )}
         <Button size="small" startIcon={<RefreshOutlined />} onClick={() => void query.refetch()}>刷新</Button>
       </Stack>
+      {cleanupNotice && <Alert severity="success" sx={{ mb: 1 }} onClose={() => setCleanupNotice('')}>{cleanupNotice}</Alert>}
+      {cleanupError && <Alert severity="error" sx={{ mb: 1 }} onClose={() => setCleanupError(null)}>清理失败：{errorMessage(cleanupError)}</Alert>}
       {retry.error && <Alert severity="error" sx={{ mb: 1 }}>{errorMessage(retry.error)}</Alert>}
       <Stack spacing={1}>
         {tasks.map((task) => (
@@ -238,6 +260,20 @@ function ImportTasks({ kbId, onOpenDocument }: { kbId: string; onOpenDocument: (
           </Stack>
         ))}
       </Stack>
+      <Dialog open={cleanupOpen} onClose={cleanup.isPending ? undefined : () => setCleanupOpen(false)}>
+        <DialogTitle>清理导入记录</DialogTitle>
+        <DialogContent>
+          <Typography>
+            将删除本知识库内 {completedCount} 条已结束（已完成/失败/已跳过）的导入任务记录，进行中的任务不受影响。文档本身不会被删除。
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCleanupOpen(false)} disabled={cleanup.isPending}>取消</Button>
+          <Button color="error" variant="contained" disabled={cleanup.isPending} onClick={() => cleanup.mutate()}>
+            {cleanup.isPending ? '正在清理…' : '确认清理'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Paper>
   );
 }

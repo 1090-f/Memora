@@ -1,7 +1,7 @@
 """DoclingAdapter：Docling → Memora ParsedDocument 的结构适配。
 
 职责边界（见 docs/2026-08-08-docling-document-parsing-execution-plan.md）：
-  - 只负责把 PDF/DOCX 转换为内存中的 DoclingDocument，再转成 ParsedDocument；
+  - 只负责把 PDF/DOCX/XLSX/PPTX/图片转换为内存中的 DoclingDocument，再转成 ParsedDocument；
   - 保留阅读顺序、标题路径、caption、page、bbox、self-ref、表格行列与合并关系、
     图片原始数据（或安全 omitted 标记）；
   - 不包含任何 Chunk/RAG 分块策略与 Embedding tokenizer 概念；
@@ -13,26 +13,33 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import logging
 import threading
 from typing import Any
 
-from docling.backend.docling_parse_backend import DoclingParseDocumentBackend
-from docling.datamodel.base_models import ConversionStatus, DocumentStream, InputFormat
-from docling.datamodel.pipeline_options import (
+# docling-parse 的 C++ 层在中文路径（ANSI 代码页非 UTF-8）下找不到
+# pdf_resources，必须在任何 docling 导入之前切换到 ASCII 路径。
+from docling_parse_path import ensure_ascii_docling_parse  # noqa: E402
+
+ensure_ascii_docling_parse()
+
+from docling.backend.docling_parse_backend import DoclingParseDocumentBackend  # noqa: E402
+from docling.datamodel.base_models import ConversionStatus, DocumentStream, InputFormat  # noqa: E402
+from docling.datamodel.pipeline_options import (  # noqa: E402
     LayoutObjectDetectionOptions,
     PdfPipelineOptions,
     RapidOcrOptions,
 )
-from docling.document_converter import DocumentConverter, FormatOption
-from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline
-from docling_core.types.doc.document import DoclingDocument
-from docling_core.types.doc.items.node import DocItem, FloatingItem
-from docling_core.types.doc.items.picture.picture import PictureItem
-from docling_core.types.doc.items.table.table import TableItem
-from docling_core.types.doc.labels import DocItemLabel
-from PIL import Image as PILImage
+from docling.document_converter import DocumentConverter, FormatOption  # noqa: E402
+from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline  # noqa: E402
+from docling_core.types.doc.document import DoclingDocument  # noqa: E402
+from docling_core.types.doc.items.node import DocItem, FloatingItem  # noqa: E402
+from docling_core.types.doc.items.picture.picture import PictureItem  # noqa: E402
+from docling_core.types.doc.items.table.table import TableItem  # noqa: E402
+from docling_core.types.doc.labels import DocItemLabel  # noqa: E402
+from PIL import Image as PILImage  # noqa: E402
 
-import schemas
+import schemas  # noqa: E402
 
 # 语言映射：协议使用通用 ISO 639-1 风格代码，RapidOCR 使用 PP-OCR 代码。
 _OCR_LANG_MAP = {
@@ -89,7 +96,7 @@ def _ocr_lang_codes(langs: list[str]) -> list[str]:
 def _detect_format(file_name: str, content: bytes) -> InputFormat | None:
     """按扩展名 + 文件签名/容器格式双重判断，禁止伪造格式。
 
-    仅返回 PDF / DOCX，其余一律视为不支持。
+    仅返回 PDF / DOCX / XLSX / PPTX / IMAGE，其余一律视为不支持。
     """
     lower = file_name.lower()
     if lower.endswith(".pdf"):
@@ -97,20 +104,50 @@ def _detect_format(file_name: str, content: bytes) -> InputFormat | None:
             return InputFormat.PDF
         return None
     if lower.endswith(".docx"):
-        if _is_docx_container(content):
+        if _is_zip_container(content, "[Content_Types].xml", "word/document.xml"):
             return InputFormat.DOCX
+        return None
+    if lower.endswith(".xlsx"):
+        if _is_zip_container(content, "[Content_Types].xml", "xl/workbook.xml"):
+            return InputFormat.XLSX
+        return None
+    if lower.endswith(".pptx"):
+        if _is_zip_container(content, "[Content_Types].xml", "ppt/presentation.xml"):
+            return InputFormat.PPTX
+        return None
+    if lower.endswith((".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".gif", ".webp")):
+        if _detect_image_format(content) is not None:
+            return InputFormat.IMAGE
         return None
     return None
 
 
-def _is_docx_container(content: bytes) -> bool:
-    """DOCX 是 ZIP 容器：必须存在 [Content_Types].xml 与 word/document.xml。"""
+def _detect_image_format(content: bytes) -> str | None:
+    """按魔数判断图片格式；无法识别返回 None。"""
+    signatures: list[tuple[bytes, str]] = [
+        (b"\x89PNG\r\n\x1a\n", "png"),
+        (b"\xff\xd8\xff", "jpeg"),
+        (b"BM", "bmp"),
+        (b"II*\x00", "tiff"),
+        (b"MM\x00*", "tiff"),
+        (b"GIF87a", "gif"),
+        (b"GIF89a", "gif"),
+        (b"RIFF", "webp"),
+    ]
+    for signature, name in signatures:
+        if content.startswith(signature):
+            return name
+    return None
+
+
+def _is_zip_container(content: bytes, *required_names: str) -> bool:
+    """ZIP 容器校验：必须同时存在全部必需条目。"""
     import zipfile
 
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
             names = set(zf.namelist())
-            return "[Content_Types].xml" in names and "word/document.xml" in names
+            return all(name in names for name in required_names)
     except (zipfile.BadZipFile, OSError):
         return False
 
@@ -197,9 +234,14 @@ class DoclingAdapter:
             layout_options=layout_options,
         )
         return DocumentConverter(
-            allowed_formats=[InputFormat.PDF, InputFormat.DOCX],
+            allowed_formats=[InputFormat.PDF, InputFormat.DOCX, InputFormat.XLSX, InputFormat.PPTX, InputFormat.IMAGE],
             format_options={
                 InputFormat.PDF: FormatOption(
+                    pipeline_cls=StandardPdfPipeline,
+                    backend=DoclingParseDocumentBackend,
+                    pipeline_options=pdf_options,
+                ),
+                InputFormat.IMAGE: FormatOption(
                     pipeline_cls=StandardPdfPipeline,
                     backend=DoclingParseDocumentBackend,
                     pipeline_options=pdf_options,
@@ -224,7 +266,7 @@ class DoclingAdapter:
         options: schemas.ParseOptions,
         docling_version: str,
     ) -> schemas.ParsedDocument:
-        """将 PDF/DOCX 字节流转换为 ParsedDocument。
+        """将 PDF/DOCX/XLSX/PPTX/图片字节流转换为 ParsedDocument。
 
         - 返回协议对象，不写任何持久化存储；
         - 解析失败抛出 DocumentParserError（Go 侧不回退到其它解析器）。
@@ -256,6 +298,7 @@ class DoclingAdapter:
 
         doc = result.document
         parsed = self._to_parsed_document(
+            fmt=fmt,
             doc=doc,
             file_name=file_name,
             content=content,
@@ -271,6 +314,7 @@ class DoclingAdapter:
     def _to_parsed_document(
         self,
         *,
+        fmt: InputFormat,
         doc: DoclingDocument,
         file_name: str,
         content: bytes,
@@ -387,7 +431,7 @@ class DoclingAdapter:
             ),
             source=schemas.SourceInfo(
                 file_name=file_name,
-                format="pdf" if file_name.lower().endswith(".pdf") else "docx",
+                format=_source_format(fmt, file_name, content),
                 sha256=_sha256_hex(content),
                 size=len(content),
             ),
@@ -565,6 +609,32 @@ def _safe_markdown(doc: DoclingDocument) -> str:
 
 def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _source_format(fmt: InputFormat, file_name: str, content: bytes) -> str:
+    """按检测到的 InputFormat 返回来源格式标识：pdf/docx/xlsx/pptx/具体图片格式。
+
+    format 参与 Go 侧解析缓存（parse_config_hash 之外的 Artifact 检索）与
+    分块策略选择，必须与 Go 侧 SourceInfo.Format 语义一致。
+    不得再以扩展名猜测或把非 PDF 统一写成 docx。
+    """
+    if fmt == InputFormat.PDF:
+        return "pdf"
+    if fmt == InputFormat.DOCX:
+        return "docx"
+    if fmt == InputFormat.XLSX:
+        return "xlsx"
+    if fmt == InputFormat.PPTX:
+        return "pptx"
+    if fmt == InputFormat.IMAGE:
+        detected = _detect_image_format(content)
+        if detected is not None:
+            return detected
+        # 无法识别魔数时退回对应扩展名；仍无法识别兜底 image。
+        lower = file_name.lower()
+        ext = lower.rsplit(".", 1)[-1] if "." in lower else ""
+        return ext if ext in {"png", "jpeg", "jpg", "bmp", "tiff", "tif", "gif", "webp"} else "image"
+    return "image"
 
 
 def _picture_pil(item: PictureItem, doc: DoclingDocument) -> PILImage.Image | None:

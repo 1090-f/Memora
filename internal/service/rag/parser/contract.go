@@ -23,6 +23,8 @@ const (
 	ParserNameDocling = "docling"
 	// ParserNameGoText 是 Go TextParser 使用的解析引擎名。
 	ParserNameGoText = "go-text"
+	// ParserNameGoMarkdown 是 Go MarkdownParser 使用的解析引擎名。
+	ParserNameGoMarkdown = "go-markdown"
 )
 
 // SupportedSchemaVersions 列出 Go 明确支持的 ParsedDocument schema 版本。

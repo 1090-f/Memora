@@ -16,6 +16,7 @@ import (
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/1090-f/Memora/internal/repository"
+	previewservice "github.com/1090-f/Memora/internal/service/preview"
 	"github.com/1090-f/Memora/internal/service/rag/parser"
 	"github.com/1090-f/Memora/internal/service/rag/pipeline"
 	"github.com/1090-f/Memora/internal/service/rag/transformer"
@@ -28,13 +29,14 @@ import (
 // documentProcessService 是 DocumentProcessService 接口的实现。
 // 任务包 04 起：创建文档行后调用 Eino 文档加工 Graph（解析/清洗/分段/落库/向量）。
 type documentProcessService struct {
-	tasks      repository.ImportTaskRepository
-	docs       repository.DocumentRepository
-	chunks     repository.DocumentChunkRepository
-	vectors    repository.VectorRepository
-	processor  DocumentProcessor
-	embeddings DocumentEmbeddingResolver
-	store      ObjectStore
+	tasks            repository.ImportTaskRepository
+	docs             repository.DocumentRepository
+	chunks           repository.DocumentChunkRepository
+	vectors          repository.VectorRepository
+	processor        DocumentProcessor
+	embeddings       DocumentEmbeddingResolver
+	store            ObjectStore
+	previewScheduler previewservice.Scheduler
 }
 
 // NewDocumentProcessService 创建一个新的文档处理服务实例。
@@ -47,8 +49,9 @@ func NewDocumentProcessService(
 	processor DocumentProcessor,
 	embeddings DocumentEmbeddingResolver,
 	store ObjectStore,
+	previewScheduler previewservice.Scheduler,
 ) DocumentProcessService {
-	return &documentProcessService{tasks: tasks, docs: docs, chunks: chunks, vectors: vectors, processor: processor, embeddings: embeddings, store: store}
+	return &documentProcessService{tasks: tasks, docs: docs, chunks: chunks, vectors: vectors, processor: processor, embeddings: embeddings, store: store, previewScheduler: previewScheduler}
 }
 
 // CreateImportTask 创建导入任务。
@@ -301,7 +304,7 @@ func (s *documentProcessService) Reindex(ctx context.Context, userID, kbID, docu
 	if err != nil {
 		return apperrors.New(contracts.ErrInternal, err)
 	}
-	if (doc.MinIOObjectKey == nil || *doc.MinIOObjectKey == "") && (doc.SourceURL == nil || *doc.SourceURL == "") {
+	if (doc.MinIOObjectKey == nil || *doc.MinIOObjectKey == "") && (doc.SourceURL == nil || *doc.SourceURL == "") && doc.SourceType != string(contracts.DocumentSourceManual) {
 		return apperrors.New(contracts.ErrInvalidState, fmt.Errorf("文档没有可重建的原始来源"))
 	}
 	task := &entity.ImportTask{
@@ -309,6 +312,12 @@ func (s *documentProcessService) Reindex(ctx context.Context, userID, kbID, docu
 		SourceType: doc.SourceType, FileName: doc.OriginalFileName, FileSize: doc.FileSize, MIMEType: doc.MIMEType,
 		SourceURL: doc.SourceURL, SourceHash: doc.FileHash, MinIOBucket: doc.MinIOBucket, MinIOObjectKey: doc.MinIOObjectKey,
 		DuplicatePolicy: "create_new", Status: string(contracts.TaskStatusPending), DocumentID: &doc.ID,
+	}
+	// 手工文档没有 MinIO 对象与 URL：正文存于 documents.content，任务按来源类型
+	// 自动入队，Worker 读取正文后执行分块与索引。
+	if doc.SourceType == string(contracts.DocumentSourceManual) {
+		fileName := manualTaskFileName(doc)
+		task.FileName = &fileName
 	}
 	if err := s.tasks.Create(ctx, task); err != nil {
 		return apperrors.New(contracts.ErrInternal, err)
@@ -435,6 +444,9 @@ func (s *documentProcessService) ProcessImportTask(ctx context.Context, taskID c
 			FileHash:         task.SourceHash,
 			MinIOBucket:      task.MinIOBucket,
 			MinIOObjectKey:   task.MinIOObjectKey,
+			// 文件/URL 文档正文由解析产物提供，content 为空；content_format 必须满足
+			// 数据库检查约束（txt/markdown），这里固定为 txt 与列默认值一致。
+			ContentFormat:    "txt",
 			ProcessingStatus: string(contracts.ProcessingPending),
 			ContentVersion:   1,
 			ChunkVersion:     1,
@@ -450,9 +462,15 @@ func (s *documentProcessService) ProcessImportTask(ctx context.Context, taskID c
 		}
 		task.DocumentID = &doc.ID
 	}
+	// Preview 是独立派生链路：调度失败只记录日志，绝不能使解析/索引任务失败。
+	if s.previewScheduler != nil {
+		if err := s.previewScheduler.EnsureDocument(ctx, doc.ID); err != nil {
+			logger.Warn("调度文档预览失败，文档加工继续", zap.String("document_id", doc.ID), zap.Error(err))
+		}
+	}
 
-	// 执行文档加工流水线（file 来源且已落 MinIO 时）。
-	if s.processor != nil && ((task.MinIOObjectKey != nil && *task.MinIOObjectKey != "") || (task.SourceURL != nil && *task.SourceURL != "")) {
+	// 执行文档加工流水线（file/url 来源有 MinIO 对象或 URL；手工文档正文在 documents.content）。
+	if s.processor != nil && ((task.MinIOObjectKey != nil && *task.MinIOObjectKey != "") || (task.SourceURL != nil && *task.SourceURL != "") || task.SourceType == string(contracts.DocumentSourceManual)) {
 		if err := s.processDocument(ctx, task, doc); err != nil {
 			// 加工失败：文档标记 failed，旧索引不受影响。
 			// 任务状态由 Runner 的 Fail 路径统一回写（Source.Fail → FailTask），避免双重标记。
@@ -511,7 +529,7 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 	// resolve_artifact → parse_if_missing → validate → persist_artifact → normalize
 	// → enrich → structure_chunk → clean → token_count → persist → index。
 	// 节点顺序由 pipeline 编译期固定，此处仅传入对象与元数据触发整条流水线。
-	out, err := s.processor.Run(ctx, pipeline.ProcessInput{
+	input := pipeline.ProcessInput{
 		ObjectKey:        valueOrEmpty(task.MinIOObjectKey),
 		SourceURL:        valueOrEmpty(task.SourceURL),
 		FileName:         valueOrEmpty(task.FileName),
@@ -534,13 +552,24 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 				"source_url":  valueOrEmpty(task.SourceURL),
 			},
 		},
-	})
+	}
+	// 手工文档：正文存于 documents.content，直接交给流水线（不访问 MinIO）。
+	if task.SourceType == string(contracts.DocumentSourceManual) {
+		content := ""
+		if doc.Content != nil {
+			content = *doc.Content
+		}
+		input.Content = content
+		if input.FileName == "" {
+			input.FileName = manualTaskFileName(doc)
+		}
+	}
+	out, err := s.processor.Run(ctx, input)
 	if err != nil {
 		return fmt.Errorf("文档加工失败: %w", err)
 	}
-	if out.ChunkCount == 0 {
-		return fmt.Errorf("文档加工未产生任何 Chunk")
-	}
+	// 纯图片文档允许 0 Chunk 成功导入（无文字图片无可索引内容，资产与原文件保留）；
+	// 有正文却分不出 Chunk 的情况由流水线 structure_chunk 节点拒绝。
 	// 加工成功：切换 active_index_version，并记录 Embedding 模型与分段配置哈希。
 	updates := map[string]any{
 		"processing_status":    string(contracts.ProcessingSucceeded),
@@ -617,6 +646,16 @@ func (s *documentProcessService) markDocumentFailed(ctx context.Context, docID s
 func (s *documentProcessService) RecoverStaleTasks(ctx context.Context) (int64, error) {
 	staleBefore := time.Now().UTC().Add(-repository.ImportTaskLease()).Unix()
 	return s.tasks.RecoverStale(ctx, staleBefore)
+}
+
+// CleanupImportTasks 清理知识库内已结束的导入任务记录，保留进行中任务。
+func (s *documentProcessService) CleanupImportTasks(ctx context.Context, userID, kbID contracts.ID) (int64, error) {
+	count, err := s.tasks.DeleteCompletedByKB(ctx, string(userID), string(kbID))
+	if err != nil {
+		return 0, apperrors.New(contracts.ErrInternal, err)
+	}
+	logger.Info("已完成导入任务已清理", zap.String("user_id", string(userID)), zap.String("knowledge_base_id", string(kbID)), zap.Int64("deleted", count))
+	return count, nil
 }
 
 // importTaskView 将导入任务实体转换为对外视图，仅暴露稳定字段，隐藏内部存储细节。

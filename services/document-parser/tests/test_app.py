@@ -7,7 +7,16 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
-from fixtures import build_docx, build_fake_docx, build_fake_pdf, build_pdf
+from fixtures import (
+    build_docx,
+    build_fake_docx,
+    build_fake_pdf,
+    build_jpeg,
+    build_pdf,
+    build_png,
+    build_pptx,
+    build_xlsx,
+)
 
 import app as app_module
 from app import app
@@ -148,3 +157,48 @@ def test_options_language_mapping(client, options):
     if options["ocr_languages"] == ["bad-lang"]:
         assert resp.status_code == 422
         assert "OCR 语言" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("file_name", "content_builder", "want_format"),
+    [
+        ("sample.xlsx", build_xlsx, "xlsx"),
+        ("sample.pptx", build_pptx, "pptx"),
+        ("sample.png", build_png, "png"),
+        ("sample.jpg", build_jpeg, "jpeg"),
+        ("sample.pdf", build_pdf, "pdf"),
+        ("sample.docx", build_docx, "docx"),
+    ],
+)
+def test_source_format_matches_real_format(client, file_name, content_builder, want_format):
+    """真实格式解析后 source.format 必须按实际格式标记，禁止统一写成 docx。"""
+    resp = client.post(
+        "/v1/parse",
+        files={"file": (file_name, content_builder(), "application/octet-stream")},
+        data={"options": json.dumps({"schema_version": "1.0", "do_ocr": False, "extract_pictures": False})},
+    )
+    assert resp.status_code == 200, resp.text
+    doc = resp.json()
+    assert doc["source"]["format"] == want_format
+
+
+def test_png_not_marked_docx(client):
+    """图片解析结果不得被误标为 docx（历史回归保护）。"""
+    resp = client.post(
+        "/v1/parse",
+        files={"file": ("photo.png", build_png(), "image/png")},
+        data={"options": json.dumps({"schema_version": "1.0", "do_ocr": False, "extract_pictures": False})},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["source"]["format"] != "docx"
+
+
+def test_fake_extension_image_rejected(client):
+    """伪造图片扩展名（内容不是图片）应拒绝。"""
+    resp = client.post(
+        "/v1/parse",
+        files={"file": ("fake.png", b"this is not an image", "image/png")},
+        data={"options": "{}"},
+    )
+    assert resp.status_code == 422
+    assert "伪造格式" in resp.json()["detail"]

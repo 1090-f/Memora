@@ -19,21 +19,24 @@ type tableStrategy struct {
 }
 
 // toUnits 将表格 Block 转为一个或多个单元（大表拆行）。
-func (t *tableStrategy) toUnits(block parser.Block, table parser.Table, opts ChunkOptions) ([]*unit, error) {
+// sheetMode 是电子表格模式（xlsx）：小表也独立成块（seal），不与正文合并，
+// 保证每个 Sheet/Table 的检索完整性。
+func (t *tableStrategy) toUnits(block parser.Block, table parser.Table, opts ChunkOptions, sheetMode bool) ([]*unit, error) {
 	full := t.buildText(block.HeadingPath, table, -1, -1)
 	tokens, err := t.tokenizer.Count(full)
 	if err != nil {
 		return nil, err
 	}
 	if tokens <= opts.MaxTokens {
-		// 小表整体：可合并单元（caption 与表格同块）。
+		// 小表整体：可合并单元（caption 与表格同块）；xlsx 模式独立成块。
 		return []*unit{{
 			text:        full,
 			blockIDs:    []string{block.ID},
 			contentType: parser.BlockTypeTable,
 			source:      block.Source,
 			tableRefs:   []string{table.ID},
-			mergeable:   true,
+			mergeable:   !sheetMode,
+			seal:        sheetMode,
 		}}, nil
 	}
 
