@@ -23,6 +23,7 @@ type Config struct {
 	Chunking         ChunkingConfig         `mapstructure:"chunking"`
 	AssetEnrichment  AssetEnrichmentConfig  `mapstructure:"asset_enrichment"`
 	URLImport        URLImportConfig        `mapstructure:"url_import"`
+	Preview          PreviewConfig          `mapstructure:"preview"`
 	AI               AIConfig               `mapstructure:"ai"`
 	Agent            AgentConfig            `mapstructure:"agent"`
 }
@@ -86,6 +87,39 @@ type OutboxConfig struct {
 	BatchSize    int           `mapstructure:"batch_size"`
 }
 
+// PreviewConfig 定义视觉预览的异步消费者与渲染资源上限。
+type PreviewConfig struct {
+	Enabled  bool                  `mapstructure:"enabled"`
+	Consumer PreviewConsumerConfig `mapstructure:"consumer"`
+	Office   OfficePreviewConfig   `mapstructure:"office"`
+	XLSX     XLSXPreviewConfig     `mapstructure:"xlsx"`
+}
+
+type PreviewConsumerConfig struct {
+	Stream            string        `mapstructure:"stream"`
+	Group             string        `mapstructure:"group"`
+	Concurrency       int           `mapstructure:"concurrency"`
+	BlockTimeout      time.Duration `mapstructure:"block_timeout"`
+	ProcessingTimeout time.Duration `mapstructure:"processing_timeout"`
+	ClaimIdle         time.Duration `mapstructure:"claim_idle"`
+	MaxAttempts       int           `mapstructure:"max_attempts"`
+}
+
+type OfficePreviewConfig struct {
+	Enabled        bool          `mapstructure:"enabled"`
+	MaxConcurrency int           `mapstructure:"max_concurrency"`
+	Timeout        time.Duration `mapstructure:"timeout"`
+}
+
+type XLSXPreviewConfig struct {
+	Enabled              bool  `mapstructure:"enabled"`
+	MaxSheets            int   `mapstructure:"max_sheets"`
+	MaxRowsPerSheet      int   `mapstructure:"max_rows_per_sheet"`
+	MaxColumnsPerSheet   int   `mapstructure:"max_columns_per_sheet"`
+	MaxCells             int   `mapstructure:"max_cells"`
+	MaxUncompressedBytes int64 `mapstructure:"max_uncompressed_bytes"`
+}
+
 // MCPConfig 是 MCP 导入与调用的安全配置。
 type MCPConfig struct {
 	EncryptionKey         string   `mapstructure:"encryption_key"`
@@ -142,6 +176,8 @@ type DocumentParserConfig struct {
 	OCRLanguages []string `mapstructure:"ocr_languages"`
 	// DoOCR 是否启用 OCR。
 	DoOCR bool `mapstructure:"do_ocr"`
+	// DoImageOCR 是否对文档内提取的图片做二级 OCR（区别于整页/整图文档的 DoOCR）。
+	DoImageOCR bool `mapstructure:"do_image_ocr"`
 	// TableStructure 是否启用表格结构识别。
 	TableStructure bool `mapstructure:"table_structure"`
 	// ExtractPictures 是否提取图片。
@@ -226,6 +262,19 @@ func (c Config) Validate() error {
 	}
 	if c.Outbox.PollInterval <= 0 || c.Outbox.BatchSize <= 0 {
 		errs = append(errs, errors.New("outbox 配置无效"))
+	}
+	if c.Preview.Enabled {
+		pc := c.Preview.Consumer
+		if pc.Stream == "" || pc.Group == "" || pc.Concurrency <= 0 || pc.BlockTimeout <= 0 || pc.ProcessingTimeout <= 0 || pc.ClaimIdle <= pc.ProcessingTimeout || pc.MaxAttempts <= 0 {
+			errs = append(errs, errors.New("preview.consumer 配置无效，claim_idle 必须大于 processing_timeout"))
+		}
+		if c.Preview.Office.Enabled && (c.Preview.Office.MaxConcurrency <= 0 || c.Preview.Office.Timeout <= 0) {
+			errs = append(errs, errors.New("preview.office 配置无效"))
+		}
+		x := c.Preview.XLSX
+		if x.Enabled && (x.MaxSheets <= 0 || x.MaxRowsPerSheet <= 0 || x.MaxColumnsPerSheet <= 0 || x.MaxCells <= 0 || x.MaxUncompressedBytes <= 0) {
+			errs = append(errs, errors.New("preview.xlsx 资源上限必须为正数"))
+		}
 	}
 	if c.App.Mode == "release" && len(c.MCP.EncryptionKey) < 32 {
 		errs = append(errs, errors.New("MEMORA_MCP_ENCRYPTION_KEY must be at least 32 characters in release mode"))

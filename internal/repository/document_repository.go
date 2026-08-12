@@ -205,7 +205,7 @@ func (r *importTaskRepository) Create(ctx context.Context, task *entity.ImportTa
 		if err := tx.Create(task).Error; err != nil {
 			return fmt.Errorf("创建导入任务失败: %w", err)
 		}
-		if (task.MinIOObjectKey != nil && *task.MinIOObjectKey != "") || (task.SourceType == "url" && task.SourceURL != nil && *task.SourceURL != "") {
+		if (task.MinIOObjectKey != nil && *task.MinIOObjectKey != "") || (task.SourceType == "url" && task.SourceURL != nil && *task.SourceURL != "") || task.SourceType == string(contracts.DocumentSourceManual) {
 			return enqueueTaskEvent(tx, task.ID)
 		}
 		return nil
@@ -581,4 +581,22 @@ func (r *importTaskRepository) SkipTask(ctx context.Context, taskID string) erro
 		return ErrImportTaskNotFound
 	}
 	return nil
+}
+
+// DeleteCompletedByKB 物理删除知识库内已结束（succeeded/skipped/failed）的导入任务，
+// 保留 pending/running 的进行中任务，避免清理到正在处理的记录。
+func (r *importTaskRepository) DeleteCompletedByKB(ctx context.Context, userID, kbID string) (int64, error) {
+	result := dbFromContext(ctx, r.db).WithContext(ctx).
+		Where("user_id = ? AND knowledge_base_id = ? AND status IN ?",
+			userID, kbID,
+			[]string{
+				string(contracts.TaskStatusSucceeded),
+				string(contracts.TaskStatusSkipped),
+				string(contracts.TaskStatusFailed),
+			}).
+		Delete(&entity.ImportTask{})
+	if result.Error != nil {
+		return 0, fmt.Errorf("清理已完成导入任务失败: %w", result.Error)
+	}
+	return result.RowsAffected, nil
 }

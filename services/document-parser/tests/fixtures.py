@@ -74,3 +74,52 @@ def build_fake_pdf() -> bytes:
 def build_fake_docx() -> bytes:
     """伪造 DOCX：扩展名 .docx 但不是合法 ZIP 容器。"""
     return b"PK\x03\x04 not a real zip content"
+
+
+def build_xlsx(*, sheet_name: str = "Sheet1", rows: int = 2, cols: int = 2) -> bytes:
+    """用 openpyxl 构造真实 XLSX：一个带数据的 Sheet。"""
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = sheet_name
+    for r in range(1, rows + 1):
+        for c in range(1, cols + 1):
+            sheet.cell(row=r, column=c, value=f"R{r}C{c}")
+    buffer = BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def build_pptx(*, title: str = "测试演示", lines: int = 2) -> bytes:
+    """用 python-pptx 构造真实 PPTX：一个标题 + 正文要点。"""
+    from pptx import Presentation
+
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[1])
+    slide.shapes.title.text = title
+    body = slide.placeholders[1]
+    for index in range(lines):
+        body.text_frame.add_paragraph()
+        body.text_frame.paragraphs[index].text = f"要点 {index + 1}"
+    buffer = BytesIO()
+    presentation.save(buffer)
+    return buffer.getvalue()
+
+
+def build_png(*, width: int = 8, height: int = 8, color: tuple[int, int, int] = (255, 0, 0)) -> bytes:
+    """用 Pillow 构造最小 PNG。"""
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", (width, height), color).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def build_jpeg(*, width: int = 8, height: int = 8) -> bytes:
+    """用 Pillow 构造最小 JPEG。"""
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", (width, height), (0, 0, 255)).save(buffer, format="JPEG")
+    return buffer.getvalue()

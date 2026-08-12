@@ -30,6 +30,13 @@ POST   /api/v1/knowledge-bases/:kb_id/documents
 GET    /api/v1/knowledge-bases/:kb_id/documents
 GET    /api/v1/knowledge-bases/:kb_id/documents/:document_id/content
 GET    /api/v1/documents/:document_id
+GET    /api/v1/documents/:document_id/preview
+GET    /api/v1/documents/:document_id/preview/text
+GET    /api/v1/documents/:document_id/preview/rendered
+GET    /api/v1/documents/:document_id/preview/table?sheet_index=0&row_offset=0&row_limit=200
+POST   /api/v1/documents/:document_id/preview/retry
+GET    /api/v1/documents/:document_id/original
+GET    /api/v1/documents/:document_id/rendered
 DELETE /api/v1/documents/:document_id
 GET    /api/v1/documents/:document_id/processing
 POST   /api/v1/documents/:document_id/retry-processing
@@ -45,6 +52,15 @@ POST /api/v1/import-tasks/:task_id/retry
 POST /api/v1/knowledge-bases/:kb_id/search
 POST /api/v1/knowledge-bases/:kb_id/search/test
 ```
+
+文档页先请求 `GET /documents/:document_id/preview` 获取统一预览描述器。调用方只依据
+`preview_type`、`status`、`content_url` 和 `fallbacks` 选择 Viewer，不再自行按扩展名或
+MIME 路由。`pending`/`processing` 描述器会返回 `retry_after_ms`；预览失败后可调用 retry
+接口重新排队。`rendered` 旧接口仅作为兼容别名读取已经生成的 Office PDF，不执行同步转换。
+
+预览类型包括 `text`、`markdown`、`pdf`、`image`、`table`、`download` 和 `none`。XLSX
+结构化表格接口按 Sheet 和行分页，`row_limit` 为 20～500，并返回 Sheet 尺寸、稀疏单元格、
+合并单元格和下一页偏移量。
 
 URL 导入的 HTTP 请求只创建异步任务。Worker 使用安全 Web Loader 抓取，只允许 HTTP/HTTPS，并限制 DNS 目标、重定向、响应类型、响应大小和超时。
 

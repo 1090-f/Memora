@@ -126,9 +126,10 @@ export function KnowledgeBaseSettingsContent({ status, kbId }: { status: Capabil
       description: description || undefined,
       agent_enabled: agentEnabled,
       network_enabled: networkEnabled,
-      default_chat_model_id: defaultChatModelId || undefined,
-      default_embedding_model_id: defaultEmbeddingModelId || undefined,
-      default_reranker_model_id: defaultRerankerModelId || undefined,
+      // 始终提交模型字段：空串表示清除默认模型（后端写 NULL），undefined 才表示不修改。
+      default_chat_model_id: defaultChatModelId,
+      default_embedding_model_id: defaultEmbeddingModelId,
+      default_reranker_model_id: defaultRerankerModelId,
     }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['knowledge-bases', kbId] });

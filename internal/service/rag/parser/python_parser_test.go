@@ -24,6 +24,27 @@ func (f *fakePythonService) server() *httptest.Server {
 	}))
 }
 
+// testDocument 构造最小合法 ParsedDocument（含一张表与一张图）。
+func testDocument() *ParsedDocument {
+	return &ParsedDocument{
+		SchemaVersion: SchemaVersion,
+		Parser:        ParserInfo{Name: ParserNameDocling, Version: "2.118.1", AdapterVersion: AdapterVersion},
+		Source:        SourceInfo{FileName: "a.pdf", Format: "pdf", SHA256: strings.Repeat("ab", 32), Size: 10},
+		Document:      DocumentInfo{Title: "t", PageCount: 1},
+		Blocks: []Block{
+			{ID: "block-000001", Type: BlockTypeHeading, Text: "第一章", HeadingPath: []string{"第一章"}},
+			{ID: "block-000002", Type: BlockTypeTable, Text: "| a | b |", TableRef: "table-000001"},
+			{ID: "block-000003", Type: BlockTypePicture, AssetRefs: []string{"asset-000001"}},
+		},
+		Tables: []Table{{ID: "table-000001", RowCount: 1, ColumnCount: 2, Headers: [][]string{{"a", "b"}}}},
+		Assets: []Asset{{
+			ID: "asset-000001", Kind: "picture", MIMEType: "image/png",
+			DataBase64: "iVBORw0KGgo=",
+			Width:      1, Height: 1, Page: 1,
+		}},
+	}
+}
+
 func TestPythonParserSendsMultipartAndParsesResponse(t *testing.T) {
 	service := &fakePythonService{t: t}
 	service.handler = func(t *testing.T, w http.ResponseWriter, r *http.Request) {

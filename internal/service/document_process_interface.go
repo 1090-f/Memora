@@ -35,6 +35,9 @@ type DocumentProcessService interface {
 	UploadTaskAttachments(ctx context.Context, userID, taskID contracts.ID, files []UploadFileInput) error
 	// RecoverStaleTasks 恢复卡在 running 且超过租约的任务，返回恢复数量。
 	RecoverStaleTasks(ctx context.Context) (int64, error)
+	// CleanupImportTasks 清理知识库内已结束（succeeded/skipped/failed）的导入任务，
+	// 保留 pending/running；返回删除数量。
+	CleanupImportTasks(ctx context.Context, userID, knowledgeBaseID contracts.ID) (int64, error)
 }
 
 // ImageRefStatus 是图片引用的扫描分类。
