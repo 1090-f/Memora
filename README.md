@@ -169,8 +169,10 @@ pnpm dev
 
 - Markdown：按 Markdown 渲染标题、列表、加粗、代码块和表格。
 - TXT：按纯文本显示。
-- PDF/DOCX：展示解析产生的完整 Markdown 阅读版，并提供原文件入口。
+- PDF：默认直接预览 MinIO 中的原始 PDF，可切换到解析产生的完整 Markdown 阅读模式。
+- DOCX/XLSX/PPTX：默认预览 LibreOffice 转换并缓存的 PDF，可切换到解析正文；转换不可用时自动回退阅读模式。
 - URL：展示安全抓取和清洗后的文章正文。
+- 所有文件导入文档均提供独立的原文件下载入口，版式预览不会替代源文件。
 
 正文预览读取完整 Parsed Artifact，不使用检索 Chunk 反向拼接，因此不会因为分段策略而
 丢失标题、列表或段落结构。引用接口仍以 Chunk 和 `block_ids` 提供可追溯定位。

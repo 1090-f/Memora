@@ -11,7 +11,9 @@ import (
 	"io"
 	"mime"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -43,7 +45,9 @@ const (
 
 // 支持的文件扩展名。
 var supportedExtensions = map[string]bool{
-	".md": true, ".txt": true, ".pdf": true, ".docx": true, ".zip": true,
+	".md": true, ".txt": true, ".pdf": true, ".docx": true, ".xlsx": true, ".pptx": true,
+	".jpg": true, ".jpeg": true, ".png": true, ".bmp": true, ".tiff": true, ".tif": true, ".gif": true, ".webp": true,
+	".zip": true,
 }
 
 // zip 导入限制。
@@ -66,6 +70,14 @@ type ObjectStore interface {
 	RemoveObject(ctx context.Context, objectKey string) error
 }
 
+// OfficePDFConverter 抽象 Office 文档转 PDF 能力，便于测试注入。
+type OfficePDFConverter interface {
+	// Available 报告转换能力是否可用。
+	Available() bool
+	// ConvertToPDF 将 srcPath 转换为 PDF 输出到 outDir，返回生成的 PDF 路径。
+	ConvertToPDF(ctx context.Context, srcPath, outDir string) (string, error)
+}
+
 // documentService 是 DocumentService 接口的实现。
 // 注意：上传流程不得使用数据库事务包裹 MinIO I/O（规范红线），
 // 因此本服务不持有 Transactor；补偿通过显式删除实现。
@@ -77,10 +89,12 @@ type documentService struct {
 	store           ObjectStore
 	parseConfigHash string
 	assetSignKey    string
+	office          OfficePDFConverter
 }
 
 // NewDocumentService 创建一个新的文档服务实例。
-// assetSignKey 用于签名资产下载 URL（浏览器 <img> 无法携带 Bearer header）。
+// assetSignKey 用于签名资产下载 URL（浏览器 <img> 无法携带 Bearer header）；
+// office 为 nil 时 Office 文档的渲染预览返回明确错误。
 func NewDocumentService(
 	docs repository.DocumentRepository,
 	tasks repository.ImportTaskRepository,
@@ -89,8 +103,9 @@ func NewDocumentService(
 	store ObjectStore,
 	parseConfigHash string,
 	assetSignKey string,
+	office *OfficeConverter,
 ) DocumentService {
-	return &documentService{docs: docs, tasks: tasks, kbs: kbs, dirs: dirs, store: store, parseConfigHash: parseConfigHash, assetSignKey: assetSignKey}
+	return &documentService{docs: docs, tasks: tasks, kbs: kbs, dirs: dirs, store: store, parseConfigHash: parseConfigHash, assetSignKey: assetSignKey, office: office}
 }
 
 // CreateManual 手工创建只读知识文档。
@@ -119,9 +134,13 @@ func (s *documentService) CreateManual(ctx context.Context, userID, kbID string,
 	if len([]byte(content)) > MaxManualContentBytes {
 		return nil, apperrors.New(contracts.ErrPayloadTooLarge, nil)
 	}
+	contentFormat := "txt"
+	if req.Format != nil && *req.Format == "markdown" {
+		contentFormat = "markdown"
+	}
 	doc := &entity.Document{
 		UserID: userID, KnowledgeBaseID: kbID, DirectoryID: req.DirectoryID,
-		Title: strings.TrimSpace(req.Title), Content: &content,
+		Title: strings.TrimSpace(req.Title), Content: &content, ContentFormat: contentFormat,
 		SourceType:       string(contracts.DocumentSourceManual),
 		SourceURL:        req.SourceURL,
 		ProcessingStatus: string(contracts.ProcessingPending),
@@ -130,7 +149,33 @@ func (s *documentService) CreateManual(ctx context.Context, userID, kbID string,
 	if err := s.docs.Create(ctx, doc); err != nil {
 		return nil, apperrors.New(contracts.ErrInternal, err)
 	}
+	// 手工文档进入索引流水线：创建并关联任务后入队，由 Worker 完成分块、
+	// 关键词索引与向量索引（与文件导入共用同一加工 Graph）。
+	fileName := manualTaskFileName(doc)
+	task := &entity.ImportTask{
+		UserID: userID, KnowledgeBaseID: kbID, TargetDirectoryID: req.DirectoryID,
+		SourceType:      string(contracts.DocumentSourceManual),
+		FileName:        &fileName,
+		DuplicatePolicy: "create_new",
+		Status:          string(contracts.TaskStatusPending),
+		DocumentID:      &doc.ID,
+	}
+	if err := s.tasks.Create(ctx, task); err != nil {
+		// 任务创建/入队失败时补偿删除文档，避免残留永远 pending 的孤文档。
+		_ = s.docs.SoftDelete(ctx, userID, doc.ID)
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
 	return documentResponse(doc), nil
+}
+
+// manualTaskFileName 为手工文档构造解析文件名：按正文格式追加扩展名，
+// 供 ParserRouter 按扩展名路由到 Go Markdown/Text 解析器。
+func manualTaskFileName(doc *entity.Document) string {
+	ext := ".txt"
+	if doc.ContentFormat == "markdown" {
+		ext = ".markdown"
+	}
+	return strings.TrimSpace(doc.Title) + ext
 }
 
 // List 分页查询知识库文档列表。
@@ -188,7 +233,11 @@ func (s *documentService) Preview(ctx context.Context, userID, documentID string
 		return nil, apperrors.New(contracts.ErrInternal, err)
 	}
 	if doc.Content != nil {
-		return &dto.DocumentPreviewResponse{Content: *doc.Content, Format: "txt"}, nil
+		format := doc.ContentFormat
+		if format == "" {
+			format = "txt"
+		}
+		return &dto.DocumentPreviewResponse{Content: *doc.Content, Format: format}, nil
 	}
 	parsed, err := s.loadParsedDocument(ctx, userID, doc)
 	if err != nil {
@@ -198,10 +247,58 @@ func (s *documentService) Preview(ctx context.Context, userID, documentID string
 		return nil, apperrors.ErrNotFound
 	}
 	content := parsed.Document.Markdown
+	// Docling 输出中图片为 <!-- image --> 占位符（PDF/DOCX/XLSX/PPTX），
+	// 按文档顺序替换为签名图片 URL；Markdown 的 ![alt](ref) 引用单独重写。
+	content = s.rewriteDoclingImagePlaceholders(content, parsed.Blocks, parsed.Assets, documentID)
 	if strings.EqualFold(parsed.Source.Format, "markdown") {
 		content = s.rewriteMarkdownImageRefs(content, parsed.Assets, documentID)
 	}
 	return &dto.DocumentPreviewResponse{Content: content, Format: parsed.Source.Format}, nil
+}
+
+// doclingImagePlaceholderRe 匹配 Docling markdown 的图片占位符（<!-- image --> 等）。
+var doclingImagePlaceholderRe = regexp.MustCompile(`<!--\s*image[^>]*-->`)
+
+// rewriteDoclingImagePlaceholders 把 Docling 图片占位符按文档顺序替换为签名图片 URL。
+// 占位符序号与 picture Block 顺序严格对齐：omitted/无对象的图片保持占位原样。
+func (s *documentService) rewriteDoclingImagePlaceholders(markdown string, blocks []parser.Block, assets []parser.Asset, documentID string) string {
+	if !doclingImagePlaceholderRe.MatchString(markdown) || s.assetSignKey == "" {
+		return markdown
+	}
+	byID := make(map[string]parser.Asset, len(assets))
+	for _, asset := range assets {
+		byID[asset.ID] = asset
+	}
+	var pictureIDs []string
+	for _, block := range blocks {
+		if block.Type != parser.BlockTypePicture {
+			continue
+		}
+		for _, ref := range block.AssetRefs {
+			if _, ok := byID[ref]; ok {
+				pictureIDs = append(pictureIDs, ref)
+			}
+		}
+	}
+	if len(pictureIDs) == 0 {
+		return markdown
+	}
+	idx := 0
+	return doclingImagePlaceholderRe.ReplaceAllStringFunc(markdown, func(match string) string {
+		if idx >= len(pictureIDs) {
+			return match
+		}
+		asset := byID[pictureIDs[idx]]
+		idx++
+		if asset.Omitted || strings.TrimSpace(asset.ObjectKey) == "" {
+			return match
+		}
+		assetURL, err := asseturl.BuildAssetURL(s.assetSignKey, documentID, asset.ID, asseturl.DefaultTTL)
+		if err != nil {
+			return match
+		}
+		return "![图片](" + assetURL + ")"
+	})
 }
 
 // markdownImageRefRe 匹配 Markdown 图片引用 ![alt](ref)。
@@ -268,7 +365,8 @@ func (s *documentService) loadParsedDocument(ctx context.Context, userID string,
 }
 
 // OpenAsset 流式返回文档资产（图片等）字节。
-// 调用方必须已通过签名 URL 校验（浏览器 <img> 无法携带 Bearer header）。
+// 调用方必须已通过签名 URL 校验（浏览器 <img> 无法携带 Bearer header）；
+// 文档所属用户从实体读取，避免签名 URL 无用户上下文导致 Artifact 前缀错误。
 func (s *documentService) OpenAsset(ctx context.Context, userID, documentID, assetID string) (*OriginalDocumentFile, error) {
 	doc, err := s.docs.FindByIDInternal(ctx, documentID)
 	if errors.Is(err, repository.ErrDocumentNotFound) {
@@ -277,7 +375,7 @@ func (s *documentService) OpenAsset(ctx context.Context, userID, documentID, ass
 	if err != nil {
 		return nil, apperrors.New(contracts.ErrInternal, err)
 	}
-	parsed, err := s.loadParsedDocument(ctx, userID, doc)
+	parsed, err := s.loadParsedDocument(ctx, doc.UserID, doc)
 	if err != nil {
 		return nil, err
 	}
@@ -332,6 +430,155 @@ func (s *documentArtifactObjectStore) RemoveObject(ctx context.Context, key stri
 }
 
 func (s *documentArtifactObjectStore) Bucket() string { return s.inner.Bucket() }
+
+// OpenOriginal 在校验文档所有权后流式返回原始上传文件。
+// OpenRendered 返回适合在线预览的 PDF：PDF 直接返回原文件，
+// Office 文档（PPTX/DOCX/XLSX）通过 LibreOffice 转换并缓存到 MinIO。
+func (s *documentService) OpenRendered(ctx context.Context, userID, documentID string) (*OriginalDocumentFile, error) {
+	doc, err := s.docs.FindByID(ctx, userID, documentID)
+	if errors.Is(err, repository.ErrDocumentNotFound) {
+		return nil, apperrors.ErrNotFound
+	}
+	if err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	if doc.SourceType != string(contracts.DocumentSourceFile) || doc.MinIOObjectKey == nil || strings.TrimSpace(*doc.MinIOObjectKey) == "" {
+		return nil, apperrors.ErrNotFound
+	}
+	fileName := doc.Title
+	if doc.OriginalFileName != nil && strings.TrimSpace(*doc.OriginalFileName) != "" {
+		fileName = strings.TrimSpace(*doc.OriginalFileName)
+	}
+	ext := strings.ToLower(path.Ext(fileName))
+	// PDF 直接返回原始文件。
+	if ext == ".pdf" {
+		return s.OpenOriginal(ctx, userID, documentID)
+	}
+	if !isOfficeRenderableExt(ext) {
+		return nil, apperrors.New(contracts.ErrInvalidState, fmt.Errorf("文档类型 %q 不支持渲染预览", ext))
+	}
+
+	// 缓存 key 按内容版本隔离：文档重新导入后渲染结果自动失效。
+	renderedKey := path.Join("rendered", userID, doc.ID, fmt.Sprintf("v%d.pdf", doc.ContentVersion))
+	// 缓存命中时校验 PDF 魔数：历史坏缓存（转换失败但已上传）必须剔除并重转。
+	if cached, err := s.loadRenderedCache(ctx, renderedKey); err == nil {
+		return cached, nil
+	} else if !errors.Is(err, objectstore.ErrObjectNotFound) {
+		logger.Warn("渲染缓存校验失败，重新转换", zap.String("document_id", doc.ID), zap.Error(err))
+		_ = s.store.RemoveObject(ctx, renderedKey)
+	}
+
+	if s.office == nil || !s.office.Available() {
+		return nil, apperrors.New(contracts.ErrServiceUnavailable, fmt.Errorf("LibreOffice 不可用，无法生成预览"))
+	}
+	rendered, err := s.renderOfficeDocument(ctx, doc, renderedKey)
+	if err != nil {
+		return nil, err
+	}
+	return rendered, nil
+}
+
+// loadRenderedCache 读取渲染缓存并校验 PDF 魔数与大小；对象缺失返回 ErrObjectNotFound。
+func (s *documentService) loadRenderedCache(ctx context.Context, key string) (*OriginalDocumentFile, error) {
+	reader, err := s.store.OpenObject(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	head := make([]byte, 8)
+	n, readErr := io.ReadFull(reader, head)
+	if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+		_ = reader.Close()
+		return nil, readErr
+	}
+	if n < 8 || !bytes.HasPrefix(head, []byte("%PDF-")) {
+		_ = reader.Close()
+		return nil, fmt.Errorf("渲染缓存内容不是有效 PDF")
+	}
+	// 大文件防"空壳"缓存：最小 PDF 应大于 1KB。
+	info, statErr := s.store.StatObject(ctx, key)
+	if statErr != nil || info.Size < 1024 {
+		_ = reader.Close()
+		return nil, fmt.Errorf("渲染缓存 PDF 过小")
+	}
+	// 上面的魔数校验已经消费了文件头。MinIO 返回的是前向流，不能 Seek；必须关闭并
+	// 重新打开对象，确保响应从 PDF 的第 0 字节（%PDF-）开始，否则浏览器会拒绝加载。
+	if err := reader.Close(); err != nil {
+		return nil, err
+	}
+	reader, err = s.store.OpenObject(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return &OriginalDocumentFile{Reader: reader, FileName: "preview.pdf", ContentType: "application/pdf", Size: info.Size}, nil
+}
+
+// renderOfficeDocument 下载原文件 → LibreOffice 转 PDF → 上传 MinIO 缓存 → 返回流。
+func (s *documentService) renderOfficeDocument(ctx context.Context, doc *entity.Document, renderedKey string) (*OriginalDocumentFile, error) {
+	tempDir, err := os.MkdirTemp("", "memora-render-*")
+	if err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	sourceReader, err := s.store.OpenObject(ctx, *doc.MinIOObjectKey)
+	if err != nil {
+		if errors.Is(err, objectstore.ErrObjectNotFound) {
+			return nil, apperrors.ErrNotFound
+		}
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	sourceName := "source"
+	if doc.OriginalFileName != nil && strings.TrimSpace(*doc.OriginalFileName) != "" {
+		sourceName = filepath.Base(strings.ReplaceAll(strings.TrimSpace(*doc.OriginalFileName), "\\", "/"))
+	}
+	sourcePath := filepath.Join(tempDir, sourceName)
+	sourceFile, err := os.Create(sourcePath)
+	if err != nil {
+		_ = sourceReader.Close()
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	if _, err := io.Copy(sourceFile, sourceReader); err != nil {
+		_ = sourceReader.Close()
+		_ = sourceFile.Close()
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	_ = sourceReader.Close()
+	_ = sourceFile.Close()
+
+	pdfPath, err := s.office.ConvertToPDF(ctx, sourcePath, tempDir)
+	if err != nil {
+		logger.Warn("Office 转 PDF 失败", zap.String("document_id", doc.ID), zap.Error(err))
+		return nil, apperrors.New(contracts.ErrServiceUnavailable, err)
+	}
+	pdfData, err := os.ReadFile(pdfPath)
+	if err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	// PDF 魔数校验：LibreOffice 可能输出损坏文件，避免缓存无效 PDF 导致预览永久失败。
+	if !bytes.HasPrefix(pdfData, []byte("%PDF-")) || len(pdfData) < 8 {
+		logger.Warn("Office 转 PDF 输出无效", zap.String("document_id", doc.ID), zap.Int("size", len(pdfData)))
+		return nil, apperrors.New(contracts.ErrServiceUnavailable, fmt.Errorf("转换生成的 PDF 无效"))
+	}
+	logger.Info("Office 转 PDF 完成", zap.String("document_id", doc.ID), zap.Int("size", len(pdfData)))
+	if err := s.store.PutObject(ctx, renderedKey, bytes.NewReader(pdfData), int64(len(pdfData)), "application/pdf"); err != nil {
+		return nil, apperrors.New(contracts.ErrServiceUnavailable, err)
+	}
+	reader, err := s.store.OpenObject(ctx, renderedKey)
+	if err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	ext := strings.ToLower(path.Ext(sourceName))
+	return &OriginalDocumentFile{Reader: reader, FileName: strings.TrimSuffix(sourceName, ext) + ".pdf", ContentType: "application/pdf", Size: -1}, nil
+}
+
+// isOfficeRenderableExt 判断扩展名是否支持 LibreOffice 渲染预览。
+func isOfficeRenderableExt(ext string) bool {
+	switch ext {
+	case ".docx", ".xlsx", ".pptx":
+		return true
+	}
+	return false
+}
 
 // OpenOriginal 在校验文档所有权后流式返回原始上传文件。
 func (s *documentService) OpenOriginal(ctx context.Context, userID, documentID string) (*OriginalDocumentFile, error) {
@@ -774,7 +1021,7 @@ func safeZipPath(name string) string {
 // isMainDocumentExt 判断 zip 内的主文档扩展名。
 func isMainDocumentExt(ext string) bool {
 	switch ext {
-	case ".md", ".markdown", ".txt", ".pdf", ".docx":
+	case ".md", ".markdown", ".txt", ".pdf", ".docx", ".xlsx", ".pptx":
 		return true
 	}
 	return false
@@ -783,7 +1030,7 @@ func isMainDocumentExt(ext string) bool {
 // isImageExt 判断 zip 内的图片附件扩展名。
 func isImageExt(ext string) bool {
 	switch ext {
-	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg":
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".tiff", ".tif":
 		return true
 	}
 	return false
@@ -812,6 +1059,10 @@ func mimeTypeOf(ext string) string {
 			contentType = "text/markdown"
 		case ".txt":
 			contentType = "text/plain"
+		case ".xlsx":
+			contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+		case ".pptx":
+			contentType = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 		}
 	}
 	if contentType == "" {
@@ -824,7 +1075,7 @@ func mimeTypeOf(ext string) string {
 func documentResponse(doc *entity.Document) *dto.DocumentResponse {
 	return &dto.DocumentResponse{
 		ID: doc.ID, KnowledgeBaseID: doc.KnowledgeBaseID, DirectoryID: doc.DirectoryID,
-		Title: doc.Title, Content: doc.Content, SourceType: doc.SourceType,
+		Title: doc.Title, Content: doc.Content, ContentFormat: doc.ContentFormat, SourceType: doc.SourceType,
 		SourceURL: doc.SourceURL, OriginalFileName: doc.OriginalFileName,
 		FileSize: doc.FileSize, MIMEType: doc.MIMEType,
 		ProcessingStatus: doc.ProcessingStatus, IndexMode: documentIndexMode(doc), FailureStep: doc.FailureStep, FailureReason: doc.FailureReason,

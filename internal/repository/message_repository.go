@@ -18,6 +18,11 @@ func NewMessageRepository(db *gorm.DB) MessageRepository {
 	return &messageRepository{db: db}
 }
 
+// Create 创建一条会话消息。
+func (r *messageRepository) Create(ctx context.Context, message *entity.Message) error {
+	return r.db.WithContext(ctx).Create(message).Error
+}
+
 // ListByConversation 获取会话的消息列表，按创建时间升序排列。
 func (r *messageRepository) ListByConversation(ctx context.Context, conversationID string, limit int, offset int) ([]entity.Message, error) {
 	var messages []entity.Message

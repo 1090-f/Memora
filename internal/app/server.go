@@ -9,16 +9,24 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/1090-f/Memora/internal/agent/core"
+	"github.com/1090-f/Memora/internal/agent/tools"
 	"github.com/1090-f/Memora/internal/ai"
 	"github.com/1090-f/Memora/internal/ai/encryption"
 	"github.com/1090-f/Memora/internal/api"
+	"github.com/1090-f/Memora/internal/api/v1/agent"
 	"github.com/1090-f/Memora/internal/background"
+	"github.com/1090-f/Memora/internal/contracts"
+	"github.com/1090-f/Memora/internal/events"
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service"
+	previewservice "github.com/1090-f/Memora/internal/service/preview"
+	previewrenderer "github.com/1090-f/Memora/internal/service/preview/renderer"
 	"github.com/1090-f/Memora/internal/service/rag/parser"
 	ragpipeline "github.com/1090-f/Memora/internal/service/rag/pipeline"
 	ragretrieval "github.com/1090-f/Memora/internal/service/rag/retrieval"
 	"github.com/1090-f/Memora/internal/service/rag/tokenizer"
+	"github.com/1090-f/Memora/internal/worker"
 	"github.com/1090-f/Memora/pkg/audit"
 	"github.com/1090-f/Memora/pkg/config"
 	"github.com/1090-f/Memora/pkg/database"
@@ -26,7 +34,9 @@ import (
 	"github.com/1090-f/Memora/pkg/logger"
 	"github.com/1090-f/Memora/pkg/objectstore"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -39,6 +49,7 @@ type ServerApp struct {
 	server         *http.Server
 	background     *background.Manager
 	documentParser *documentParserProcess
+	workerCancel   context.CancelFunc // Agent Worker 生命周期取消函数
 }
 
 // NewServer 创建一个新的 ServerApp 实例。
@@ -139,7 +150,18 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		_ = a.Close()
 		return fmt.Errorf("计算文档预览解析配置哈希失败: %w", err)
 	}
-	documentService := service.NewDocumentService(docs, importTasks, kbs, dirs, a.store, parseConfigHash, cfg.JWT.Secret)
+	previewRepo := repository.NewDocumentPreviewRepository(a.db)
+	officeRenderer, officeErr := previewrenderer.NewLibreOffice(cfg.Preview.Enabled && cfg.Preview.Office.Enabled, cfg.Preview.Office.MaxConcurrency, cfg.Preview.Office.Timeout)
+	if officeErr != nil {
+		// LibreOffice 缺失不阻断启动：Descriptor 会返回 parsed text/download fallback。
+		logger.Warnf("Office 异步预览不可用，请安装 LibreOffice: %v", officeErr)
+		officeRenderer, _ = previewrenderer.NewLibreOffice(false, 1, cfg.Preview.Office.Timeout)
+	}
+	xlsxRenderer := previewrenderer.NewXLSX(cfg.Preview.XLSX)
+	previewScheduler := previewservice.NewScheduler(docs, previewRepo, cfg.Preview.Enabled, officeRenderer.Info(), xlsxRenderer.Info())
+	previewService := previewservice.NewService(docs, previewRepo, a.store, parseConfigHash, cfg.JWT.Secret, previewScheduler, officeRenderer.Info(), xlsxRenderer.Info(), cfg.Preview.XLSX.MaxUncompressedBytes)
+	previewProcessor := previewservice.NewProcessor(docs, previewRepo, a.store, []previewservice.Renderer{officeRenderer, xlsxRenderer}, cfg.Preview.XLSX.MaxUncompressedBytes)
+	documentService := service.NewDocumentService(docs, importTasks, kbs, dirs, a.store, parseConfigHash, cfg.JWT.Secret, nil)
 	citationService := service.NewCitationService()
 	documentReader, err := service.NewDocumentReader(chunks, citationService, cfg.JWT.Secret)
 	if err != nil {
@@ -171,12 +193,12 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		_ = a.Close()
 		return err
 	}
-	documentProcessService, err := buildDocumentProcessService(cfg, a.store, importTasks, docs, chunks, vectors, documentEmbeddingResolver)
+	documentProcessService, err := buildDocumentProcessService(cfg, a.store, importTasks, docs, chunks, vectors, documentEmbeddingResolver, previewScheduler)
 	if err != nil {
 		_ = a.Close()
 		return err
 	}
-	a.background = background.NewManager(a.redis, importTasks, repository.NewTaskOutboxRepository(a.db), documentProcessService, cfg.DocumentConsumer, cfg.Outbox)
+	a.background = background.NewManager(a.redis, importTasks, previewRepo, repository.NewTaskOutboxRepository(a.db), documentProcessService, previewProcessor, cfg.DocumentConsumer, cfg.Preview, cfg.Outbox)
 
 	// 初始化 ContextBuilder（Phase 3）
 	messages := repository.NewMessageRepository(a.db)
@@ -194,6 +216,15 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	llmRouter := service.NewLLMRouter(modelFactory)
 	routerService := service.NewRouterService(llmRouter)
 
+	// 初始化工具注册表和执行器
+	// 注册内置只读工具：知识检索 + 文档阅读
+	toolRegistry, err := tools.NewBuiltinRegistry(retrievalService, documentReader)
+	if err != nil {
+		_ = a.Close()
+		return fmt.Errorf("初始化工具注册表失败: %w", err)
+	}
+	toolExecutor := tools.NewExecutor(toolRegistry)
+
 	// 初始化 Plan-Execute 服务（Phase 5）
 	planRepo := repository.NewPlanRepository(a.db)
 	planStateStore := service.NewPlanStateStore(planRepo)
@@ -206,7 +237,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 
 	// TODO: 从配置注入 ToolExecutor
 	// 暂时使用 nil，需要在 Agent Core 初始化时注入
-	planExecutorService := service.NewPlanExecutorService(nil, planStateStore, modelFactory, cfg.Agent.MaxToolCalls, cfg.Agent.MaxToolResultBytes)
+	planExecutorService := service.NewPlanExecutorService(toolExecutor, planStateStore, modelFactory, cfg.Agent.MaxToolCalls, cfg.Agent.MaxToolResultBytes)
 	_ = planExecutorService // 用于后续集成
 
 	reviewerService, err := service.NewReviewerService(modelFactory, "internal/ai/prompts/reviewer.yaml", planStateStore)
@@ -214,10 +245,68 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		_ = a.Close()
 		return fmt.Errorf("初始化 ReviewerService 失败: %w", err)
 	}
-	_ = reviewerService // 用于后续集成
 
 	replanService := service.NewReplanService(plannerService, planStateStore, cfg.Agent.MaxReplans)
-	_ = replanService // 用于后续集成
+
+	// 初始化 ReAct Agent 服务（Phase 6）
+	reactService, err := service.NewReactService(modelFactory, toolExecutor, toolRegistry, "internal/ai/prompts/react.yaml")
+	if err != nil {
+		_ = a.Close()
+		return fmt.Errorf("初始化 ReactService 失败: %w", err)
+	}
+
+	// 初始化事件发布器与订阅器（Phase 7）：使用 Redis Pub/Sub 实现实时事件推送。
+	// eventPub 将 AgentEvent 序列化为 JSON 后发布到 Redis 频道；
+	// eventSub 从同一频道过滤出指定 runID 的事件供 SSE 端点使用。
+	eventPub := events.NewRedisEventPublisher(a.redis)
+	eventSub := events.NewRedisEventSubscriber(a.redis)
+	// 用带序列号的发布器包装底层 Redis 发布器，确保事件序号单调递增。
+	sequencedEvents := core.NewSequencedEventPublisher(eventPub)
+
+	// 初始化 ReactRunner（ReAct 模式执行器）
+	reactRunner := core.NewReactRunner(reactService, sequencedEvents)
+
+	// 初始化 PlanRunner（Plan-Execute 模式执行器）
+	planRunner := core.NewPlanRunner(plannerService, planExecutorService, reviewerService, replanService, planStateStore)
+
+	// 初始化 Agent 运行和工具调用 Repository
+	agentRunRepo := repository.NewAgentRunRepository(a.db)
+	toolCallRepo := repository.NewToolCallRepository(a.db)
+
+	// 创建 Repository 适配器，使 repository.AgentRunRepository 适配 core.RunRepository 接口
+	runRepoAdapter := &agentRunRepoAdapter{repo: agentRunRepo}
+
+	// 初始化 Agent Core Service，作为 contracts.AgentRunService 的实现
+	agentCoreService := core.NewService(reactRunner, routerService, runRepoAdapter, sequencedEvents)
+	agentCoreService.SetPlanRunner(planRunner)
+
+	// 初始化 Agent 运行管理的 HTTP 控制器，注入事件订阅器以支持 SSE 流式事件推送
+	agentController := agent.NewController(
+		agentCoreService,
+		agentRunRepo,
+		toolCallRepo,
+		messages,
+		agentConfigs,
+		contextBuilder,
+		eventSub,
+	)
+
+	// 初始化 Agent Worker（异步执行 Agent 运行的后台工作者）
+	// Worker 周期性轮询数据库中状态为 queued 的运行记录，原子性领取后在后台 goroutine 中执行
+	agentWorker := worker.NewAgentWorker(
+		agentCoreService,
+		agentRunRepo,
+		contextBuilder,
+		worker.DefaultAgentWorkerConfig(),
+	)
+	// 使用独立生命周期上下文启动 Worker，服务器关闭时主动取消该上下文。
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	a.workerCancel = workerCancel
+	go func() {
+		if err := agentWorker.Run(workerCtx); err != nil {
+			logger.Error("Agent Worker 运行异常", zap.Error(err))
+		}
+	}()
 
 	// 初始化 Memory 提取与管理服务（Phase 6）
 	memoryManager, err := service.NewMemoryManager(memoryRepo, embeddingSvc, modelFactory, "internal/ai/prompts/memory_dedup.yaml")
@@ -236,12 +325,13 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	router := api.NewRouter(api.Dependencies{
 		Config: cfg.CORS, Auth: authService, Users: userService, MCP: mcpService,
 		KnowledgeBases: kbService, Directories: directoryService, AIModelConfigs: aiModelConfigs, AIEncryption: aiEncryption,
-		Documents: documentService, DocumentReader: documentReader, DocumentProcess: documentProcessService,
+		Documents: documentService, Preview: previewService, DocumentReader: documentReader, DocumentProcess: documentProcessService,
 		Retrieval:      retrievalService,
 		ContextBuilder: contextBuilder,
 		AssetSignKey:   cfg.JWT.Secret,
 		Router:         routerService,
 		MemoryRepo:     memoryRepo,
+		AgentController: agentController,
 		PostgresHealth: func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
 		RedisHealth:    func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
 		MinIOHealth:    a.store.Health,
@@ -294,9 +384,55 @@ func (a *ServerApp) Run(ctx context.Context) error {
 	}
 }
 
+// noopEventPublisher 是 contracts.EventPublisher 的空实现，用于在真正的发布器就绪前保持链路可运行。
+type noopEventPublisher struct{}
+
+func (noopEventPublisher) Publish(_ context.Context, _ contracts.AgentEvent) error { return nil }
+
+// agentRunRepoAdapter 适配 repository.AgentRunRepository 到 core.RunRepository 接口。
+// core.Service.Cancel 和 Retry 只依赖 Cancel 和 Retry 两个方法，无需暴露完整 Repository 给核心层。
+type agentRunRepoAdapter struct {
+	repo repository.AgentRunRepository
+}
+
+// Cancel 通过用户 ID 和运行 ID 取消运行，委托给 repository.MarkCancelled。
+func (a *agentRunRepoAdapter) Cancel(ctx context.Context, runID, userID contracts.ID) error {
+	uid, err := uuid.Parse(string(userID))
+	if err != nil {
+		return fmt.Errorf("解析用户 ID 失败: %w", err)
+	}
+	rid, err := uuid.Parse(string(runID))
+	if err != nil {
+		return fmt.Errorf("解析运行 ID 失败: %w", err)
+	}
+	return a.repo.MarkCancelled(ctx, uid, rid)
+}
+
+// Retry 基于失败运行创建新的排队运行，返回新运行 ID。
+func (a *agentRunRepoAdapter) Retry(ctx context.Context, runID, userID contracts.ID) (contracts.ID, error) {
+	uid, err := uuid.Parse(string(userID))
+	if err != nil {
+		return "", fmt.Errorf("解析用户 ID 失败: %w", err)
+	}
+	rid, err := uuid.Parse(string(runID))
+	if err != nil {
+		return "", fmt.Errorf("解析运行 ID 失败: %w", err)
+	}
+	newID, err := a.repo.CreateRetry(ctx, rid, uid)
+	if err != nil {
+		return "", err
+	}
+	return contracts.ID(newID.String()), nil
+}
+
 // Close 释放服务器应用持有的所有资源。
 func (a *ServerApp) Close() error {
 	var closeErr error
+	// 先停止 Agent Worker，避免数据库和 Redis 关闭后仍有后台任务访问它们。
+	if a.workerCancel != nil {
+		a.workerCancel()
+		a.workerCancel = nil
+	}
 	if a.documentParser != nil {
 		closeErr = errors.Join(closeErr, a.documentParser.Close())
 	}

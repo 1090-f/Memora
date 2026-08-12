@@ -225,6 +225,97 @@ func TestPipelineTextWorksWithoutPython(t *testing.T) {
 	}
 }
 
+// TestPipelineParsesManualContentWithoutObject 验证手工文档正文直接进入流水线：
+// ProcessInput.Content 非空时不访问 MinIO 对象，完成解析、分块与 Artifact 持久化。
+func TestPipelineParsesManualContentWithoutObject(t *testing.T) {
+	store := newFakeStore()
+	p, err := NewDocumentPipeline(testPipelineConfig(store, `{}`))
+	if err != nil {
+		t.Fatalf("构造 pipeline 失败: %v", err)
+	}
+	input := ProcessInput{
+		Content:  "# 手工标题\n\n这是手工文档的正文内容，需要被分块索引。",
+		FileName: "手工文档.markdown",
+		DocMeta: transformer.DocMeta{
+			UserID: "u1", KnowledgeBaseID: "kb1", DocumentID: "d1",
+			IndexVersion: 1, ContentVersion: 1, ChunkVersion: 1, DocumentTitle: "手工文档",
+		},
+	}
+	out, err := p.Run(context.Background(), input)
+	if err != nil {
+		t.Fatalf("运行 pipeline 失败: %v", err)
+	}
+	if out.ChunkCount == 0 {
+		t.Fatal("手工文档未产生 Chunk")
+	}
+	// 未读取任何 MinIO 对象（正文直接来自 Content）。
+	for key, count := range store.opens {
+		if count > 0 {
+			t.Errorf("手工文档不应打开 MinIO 对象 %s（次数 %d）", key, count)
+		}
+	}
+	// Artifact 已保存，重试/重新分块可复用。
+	if _, ok := store.objects["derived/u1/d1/content-1/parse-"+hashOfParseOptions()+"/parsed-document.json.zst"]; !ok {
+		t.Error("手工文档 ParsedDocument 未保存")
+	}
+}
+
+// TestPipelineAllowsZeroChunksForPictureOnlyDocument 验证纯图片文档（图片无
+// OCR/caption 文字）允许 0 Chunk 成功导入：资产与原文件保留，Artifact 持久化，
+// 不再把"无文字图片"当作分块器故障。
+func TestPipelineAllowsZeroChunksForPictureOnlyDocument(t *testing.T) {
+	store := newFakeStore()
+	// 空 alt 的 data-URI 图片：MarkdownParser 产出 picture Block + Asset（Caption 为空），
+	// 分块器对无文字图片不产出单元 → 0 Chunk。
+	content := "![](data:image/png;base64,iVBORw0KGgo=)"
+	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/pic.md", strings.NewReader(content), int64(len(content)), "text/markdown")
+
+	p, err := NewDocumentPipeline(testPipelineConfig(store, `{}`))
+	if err != nil {
+		t.Fatalf("构造 pipeline 失败: %v", err)
+	}
+	out, err := p.Run(context.Background(), processInput(store, "pic.md"))
+	if err != nil {
+		t.Fatalf("纯图片文档应成功导入（0 Chunk）: %v", err)
+	}
+	if out.ChunkCount != 0 {
+		t.Errorf("ChunkCount = %d, want 0", out.ChunkCount)
+	}
+	// 资产与 Artifact 仍持久化：重试/重新分块可复用。
+	if _, ok := store.objects["derived/u1/d1/content-1/parse-"+hashOfParseOptions()+"/parsed-document.json.zst"]; !ok {
+		t.Error("纯图片文档 ParsedDocument 未保存")
+	}
+}
+
+func TestAssetOnlyDocument(t *testing.T) {
+	pic := parser.Block{ID: "b1", Type: parser.BlockTypePicture, AssetRefs: []string{"a1"}}
+	heading := parser.Block{ID: "b2", Type: parser.BlockTypeHeading, Text: "标题"}
+	paragraph := parser.Block{ID: "b3", Type: parser.BlockTypeParagraph, Text: "正文内容"}
+
+	tests := []struct {
+		name string
+		doc  *parser.ParsedDocument
+		want bool
+	}{
+		{name: "nil 文档", doc: nil, want: false},
+		{name: "空文档（无任何块）", doc: &parser.ParsedDocument{}, want: true},
+		{name: "只有图片", doc: &parser.ParsedDocument{Blocks: []parser.Block{pic}}, want: true},
+		{name: "图片+标题", doc: &parser.ParsedDocument{Blocks: []parser.Block{pic, heading}}, want: true},
+		{name: "空白段落", doc: &parser.ParsedDocument{Blocks: []parser.Block{{ID: "b4", Type: parser.BlockTypeParagraph, Text: "   "}}}, want: true},
+		{name: "含正文段落", doc: &parser.ParsedDocument{Blocks: []parser.Block{pic, paragraph}}, want: false},
+		{name: "含表格引用", doc: &parser.ParsedDocument{Blocks: []parser.Block{pic, {ID: "b5", Type: parser.BlockTypeTable, TableRef: "t1"}}}, want: false},
+		{name: "含列表项", doc: &parser.ParsedDocument{Blocks: []parser.Block{pic, {ID: "b6", Type: parser.BlockTypeListItem, Text: "条目"}}}, want: false},
+		{name: "含代码块", doc: &parser.ParsedDocument{Blocks: []parser.Block{pic, {ID: "b7", Type: parser.BlockTypeCode, Text: "code"}}}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := assetOnlyDocument(tt.doc); got != tt.want {
+				t.Errorf("assetOnlyDocument() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func hashOfParseOptions() string {
 	h, _ := parser.ParseConfigHash(parser.DefaultParseOptions())
 	return h

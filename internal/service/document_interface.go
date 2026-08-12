@@ -35,6 +35,8 @@ type DocumentService interface {
 	Preview(ctx context.Context, userID, documentID string) (*dto.DocumentPreviewResponse, error)
 	// OpenOriginal 打开文件导入文档的原始文件流，调用方负责关闭 Reader。
 	OpenOriginal(ctx context.Context, userID, documentID string) (*OriginalDocumentFile, error)
+	// OpenRendered 打开适合在线预览的 PDF：PDF 返回原文件，Office 文档经 LibreOffice 转换并缓存。
+	OpenRendered(ctx context.Context, userID, documentID string) (*OriginalDocumentFile, error)
 	// OpenAsset 打开文档资产（图片等）字节流，调用方负责关闭 Reader。
 	OpenAsset(ctx context.Context, userID, documentID, assetID string) (*OriginalDocumentFile, error)
 	// Delete 软删除文档。

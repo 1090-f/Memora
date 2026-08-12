@@ -12,6 +12,7 @@ import (
 	"github.com/1090-f/Memora/internal/middleware"
 	"github.com/1090-f/Memora/internal/model/dto/request"
 	"github.com/1090-f/Memora/internal/service"
+	previewservice "github.com/1090-f/Memora/internal/service/preview"
 	"github.com/1090-f/Memora/pkg/asseturl"
 	"github.com/gin-gonic/gin"
 )
@@ -19,14 +20,15 @@ import (
 // Controller 处理文档管理相关的 HTTP 请求。
 type Controller struct {
 	docs         service.DocumentService
+	preview      previewservice.Service
 	reader       contracts.DocumentService
 	assetSignKey string
 }
 
 // NewController 创建一个新的文档控制器实例。
 // assetSignKey 用于校验资产下载签名 URL（与 documentService 使用同一密钥）。
-func NewController(docs service.DocumentService, reader contracts.DocumentService, assetSignKey string) *Controller {
-	return &Controller{docs: docs, reader: reader, assetSignKey: assetSignKey}
+func NewController(docs service.DocumentService, preview previewservice.Service, reader contracts.DocumentService, assetSignKey string) *Controller {
+	return &Controller{docs: docs, preview: preview, reader: reader, assetSignKey: assetSignKey}
 }
 
 // CreateManual 手工创建只读知识文档。
@@ -94,19 +96,88 @@ func (ctrl *Controller) Get(c *gin.Context) {
 	response.Success(c, http.StatusOK, result)
 }
 
-// Preview 返回完整解析产物中的阅读版正文，不使用检索 Chunk 拼接。
+// Preview 返回统一的预览描述器；前端只按 preview_type/status/content_url 选择 Viewer。
 func (ctrl *Controller) Preview(c *gin.Context) {
 	user, ok := middleware.GetUser(c)
 	if !ok {
 		response.Failure(c, apperrors.ErrUnauthorized)
 		return
 	}
-	result, err := ctrl.docs.Preview(c.Request.Context(), user.ID, c.Param("document_id"))
+	if ctrl.preview == nil {
+		response.Failure(c, apperrors.New(contracts.ErrServiceUnavailable, nil))
+		return
+	}
+	result, err := ctrl.preview.GetDescriptor(c.Request.Context(), user.ID, c.Param("document_id"))
 	if err != nil {
 		response.Failure(c, err)
 		return
 	}
 	response.Success(c, http.StatusOK, result)
+}
+
+// PreviewText 返回完整 Parsed Artifact 中的阅读正文，不通过检索 Chunk 重组。
+func (ctrl *Controller) PreviewText(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	if ctrl.preview == nil {
+		response.Failure(c, apperrors.New(contracts.ErrServiceUnavailable, nil))
+		return
+	}
+	result, err := ctrl.preview.GetText(c.Request.Context(), user.ID, c.Param("document_id"))
+	if err != nil {
+		response.Failure(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
+}
+
+// PreviewTable 分页返回 XLSX 的结构化 Sheet 数据。
+func (ctrl *Controller) PreviewTable(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	if ctrl.preview == nil {
+		response.Failure(c, apperrors.New(contracts.ErrServiceUnavailable, nil))
+		return
+	}
+	result, err := ctrl.preview.GetTable(c.Request.Context(), user.ID, c.Param("document_id"), previewservice.TableQuery{
+		SheetIndex: parseIntDefault(c.Query("sheet_index"), 0),
+		RowOffset:  parseIntDefault(c.Query("row_offset"), 0),
+		RowLimit:   parseIntDefault(c.Query("row_limit"), 200),
+	})
+	if err != nil {
+		response.Failure(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
+}
+
+// RetryPreview 重新排队当前内容版本中失败的预览任务。
+func (ctrl *Controller) RetryPreview(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	if ctrl.preview == nil {
+		response.Failure(c, apperrors.New(contracts.ErrServiceUnavailable, nil))
+		return
+	}
+	if err := ctrl.preview.Retry(c.Request.Context(), user.ID, c.Param("document_id")); err != nil {
+		response.Failure(c, err)
+		return
+	}
+	result, err := ctrl.preview.GetDescriptor(c.Request.Context(), user.ID, c.Param("document_id"))
+	if err != nil {
+		response.Failure(c, err)
+		return
+	}
+	response.Success(c, http.StatusAccepted, result)
 }
 
 // Original 流式返回文件导入文档的原始文件；inline=true 时优先交给浏览器预览。
@@ -133,6 +204,34 @@ func (ctrl *Controller) Original(c *gin.Context) {
 	}
 	c.DataFromReader(http.StatusOK, file.Size, file.ContentType, file.Reader, headers)
 }
+
+// Rendered 是旧接口兼容别名：只读取异步生成的 Office Preview Artifact，不再同步转换。
+func (ctrl *Controller) Rendered(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	if ctrl.preview == nil {
+		response.Failure(c, apperrors.New(contracts.ErrServiceUnavailable, nil))
+		return
+	}
+	file, err := ctrl.preview.OpenRendered(c.Request.Context(), user.ID, c.Param("document_id"))
+	if err != nil {
+		response.Failure(c, err)
+		return
+	}
+	defer file.Reader.Close()
+	headers := map[string]string{
+		"Content-Disposition":    mime.FormatMediaType("inline", map[string]string{"filename": file.FileName}),
+		"Cache-Control":          "private, no-store",
+		"X-Content-Type-Options": "nosniff",
+	}
+	c.DataFromReader(http.StatusOK, file.Size, file.ContentType, file.Reader, headers)
+}
+
+// PreviewRendered 流式返回异步生成并校验后的 PDF Preview Artifact。
+func (ctrl *Controller) PreviewRendered(c *gin.Context) { ctrl.Rendered(c) }
 
 // Asset 流式返回文档资产（图片等）字节，用于预览 Markdown 图片。
 // 不依赖 Bearer 认证（浏览器 <img> 无法携带 header），改用 HMAC 签名 URL 校验。
