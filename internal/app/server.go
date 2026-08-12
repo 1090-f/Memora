@@ -14,6 +14,7 @@ import (
 	"github.com/1090-f/Memora/internal/ai"
 	"github.com/1090-f/Memora/internal/ai/encryption"
 	"github.com/1090-f/Memora/internal/api"
+	"github.com/1090-f/Memora/internal/api/v1/agent"
 	"github.com/1090-f/Memora/internal/background"
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/repository"
@@ -29,6 +30,7 @@ import (
 	"github.com/1090-f/Memora/pkg/logger"
 	"github.com/1090-f/Memora/pkg/objectstore"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
@@ -238,31 +240,39 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	var eventPub contracts.EventPublisher = noopEventPublisher{}
 	sequencedEvents := core.NewSequencedEventPublisher(eventPub)
 
-	// 初始化 ReactRunner
+	// 初始化 ReactRunner（ReAct 模式执行器）
 	reactRunner := core.NewReactRunner(reactService, sequencedEvents)
-	_ = reactRunner // 用于后续集成
 
-	// 初始化 PlanRunner
+	// 初始化 PlanRunner（Plan-Execute 模式执行器）
 	planRunner := core.NewPlanRunner(plannerService, planExecutorService, reviewerService, replanService, planStateStore)
-	_ = planRunner // 用于后续集成
 
-	// 初始化 Agent Core Service（Phase 8）
-	// TODO: 实现 RunRepository 接口后将 agent 核心服务注册到路由
-	// agentCoreService := core.NewService(reactRunner, routerService, runRepository, sequencedEvents)
-	// agentCoreService.SetPlanRunner(planRunner)
+	// 初始化 Agent 运行和工具调用 Repository
+	agentRunRepo := repository.NewAgentRunRepository(a.db)
+	toolCallRepo := repository.NewToolCallRepository(a.db)
+
+	// 创建 Repository 适配器，使 repository.AgentRunRepository 适配 core.RunRepository 接口
+	runRepoAdapter := &agentRunRepoAdapter{repo: agentRunRepo}
+
+	// 初始化 Agent Core Service，作为 contracts.AgentRunService 的实现
+	agentCoreService := core.NewService(reactRunner, routerService, runRepoAdapter, sequencedEvents)
+	agentCoreService.SetPlanRunner(planRunner)
+
+	// 初始化 Agent 运行管理的 HTTP 控制器
+	agentController := agent.NewController(agentCoreService, agentRunRepo, toolCallRepo, contextBuilder)
 
 	router := api.NewRouter(api.Dependencies{
 		Config: cfg.CORS, Auth: authService, Users: userService, MCP: mcpService,
 		KnowledgeBases: kbService, Directories: directoryService, AIModelConfigs: aiModelConfigs, AIEncryption: aiEncryption,
 		Documents: documentService, DocumentReader: documentReader, DocumentProcess: documentProcessService,
-		Retrieval:      retrievalService,
-		ContextBuilder: contextBuilder,
-		AssetSignKey:   cfg.JWT.Secret,
-		Router:         routerService,
-		PostgresHealth: func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
-		RedisHealth:    func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
-		MinIOHealth:    a.store.Health,
-		ParserHealth:   a.documentParser.Health,
+		Retrieval:       retrievalService,
+		ContextBuilder:  contextBuilder,
+		AssetSignKey:    cfg.JWT.Secret,
+		Router:          routerService,
+		AgentController: agentController,
+		PostgresHealth:  func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
+		RedisHealth:     func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
+		MinIOHealth:     a.store.Health,
+		ParserHealth:    a.documentParser.Health,
 		WorkerCount: func(context.Context) (int64, error) {
 			if cfg.DocumentConsumer.Enabled {
 				return int64(cfg.DocumentConsumer.Concurrency), nil
@@ -315,6 +325,42 @@ func (a *ServerApp) Run(ctx context.Context) error {
 type noopEventPublisher struct{}
 
 func (noopEventPublisher) Publish(_ context.Context, _ contracts.AgentEvent) error { return nil }
+
+// agentRunRepoAdapter 适配 repository.AgentRunRepository 到 core.RunRepository 接口。
+// core.Service.Cancel 和 Retry 只依赖 Cancel 和 Retry 两个方法，无需暴露完整 Repository 给核心层。
+type agentRunRepoAdapter struct {
+	repo repository.AgentRunRepository
+}
+
+// Cancel 通过用户 ID 和运行 ID 取消运行，委托给 repository.MarkCancelled。
+func (a *agentRunRepoAdapter) Cancel(ctx context.Context, runID, userID contracts.ID) error {
+	uid, err := uuid.Parse(string(userID))
+	if err != nil {
+		return fmt.Errorf("解析用户 ID 失败: %w", err)
+	}
+	rid, err := uuid.Parse(string(runID))
+	if err != nil {
+		return fmt.Errorf("解析运行 ID 失败: %w", err)
+	}
+	return a.repo.MarkCancelled(ctx, uid, rid)
+}
+
+// Retry 基于失败运行创建新的排队运行，返回新运行 ID。
+func (a *agentRunRepoAdapter) Retry(ctx context.Context, runID, userID contracts.ID) (contracts.ID, error) {
+	uid, err := uuid.Parse(string(userID))
+	if err != nil {
+		return "", fmt.Errorf("解析用户 ID 失败: %w", err)
+	}
+	rid, err := uuid.Parse(string(runID))
+	if err != nil {
+		return "", fmt.Errorf("解析运行 ID 失败: %w", err)
+	}
+	newID, err := a.repo.CreateRetry(ctx, rid, uid)
+	if err != nil {
+		return "", err
+	}
+	return contracts.ID(newID.String()), nil
+}
 
 // Close 释放服务器应用持有的所有资源。
 func (a *ServerApp) Close() error {
