@@ -190,6 +190,7 @@ func (r *memoryRepository) SearchByKeyword(ctx context.Context, req KeywordMemor
 	where += " AND to_tsquery('simple', ?) @@ fts_vector"
 	args = append(args, query)
 
+	args = append([]any{query}, args...)
 	args = append(args, req.TopK)
 
 	sql := fmt.Sprintf(`

@@ -20,8 +20,10 @@ import (
 	respdto "github.com/1090-f/Memora/internal/model/dto/response"
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/1090-f/Memora/internal/repository"
+	"github.com/1090-f/Memora/pkg/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
 // Controller 处理 Agent 运行相关的 HTTP 请求。
@@ -80,6 +82,10 @@ func (ctrl *Controller) CreateRun(c *gin.Context) {
 	runID := contracts.ID(runUUID.String())
 
 	// 1. 构建 Agent 执行上下文（含 AgentConfig、会话历史、记忆、工具白名单等）
+	logger.Info("Agent 请求开始构建上下文",
+		zap.String("conversation_id", req.ConversationID),
+		zap.String("knowledge_base_id", req.KnowledgeBaseID),
+	)
 	agentCtx, err := ctrl.contextBuilder.Build(c.Request.Context(), contracts.AgentContextRequest{
 		UserID:          contracts.ID(user.ID),
 		KnowledgeBaseID: contracts.ID(req.KnowledgeBaseID),
@@ -92,6 +98,10 @@ func (ctrl *Controller) CreateRun(c *gin.Context) {
 		return
 	}
 	// 上下文构建用于提前校验会话、知识库和 Agent 配置；Worker 会在领取后重新构建最新上下文。
+	logger.Info("Agent 请求上下文构建完成",
+		zap.String("conversation_id", req.ConversationID),
+		zap.Int("history_message_count", len(agentCtx.Conversation.Messages)),
+	)
 	_ = agentCtx
 
 	// 2. 查询 Agent 配置，获取运行记录所需的外键 ID。

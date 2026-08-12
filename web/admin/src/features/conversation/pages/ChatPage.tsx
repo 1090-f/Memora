@@ -7,6 +7,7 @@ import { AgentRunPanel } from '@/features/agent-run/components/AgentRunPanel';
 import { initialAgentRunState, reduceAgentEvent } from '@/features/agent-run/eventReducer';
 import { cancelAgentRun, createAgentRun, getAgentRun } from '@/features/agent-run/api';
 import { ChatWorkspace } from '@/layouts/ChatWorkspace';
+import { createConversation, getConversation } from '../api';
 import { streamAgentEvents } from '../events';
 import { ChatComposer } from '../components/ChatComposer';
 import { ConversationSidebar } from '../components/ConversationSidebar';
@@ -39,28 +40,38 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
     enabled: false,
   });
 
-  const getConversationId = () => {
+  const getConversationId = async () => {
     if (activeConversationId) return activeConversationId;
     const stored = sessionStorage.getItem(conversationStorageKey(kbId));
-    const id = stored || crypto.randomUUID();
-    sessionStorage.setItem(conversationStorageKey(kbId), id);
-    setActiveConversationId(id);
-    navigate(`/chat/${kbId}/${id}`, { replace: true });
-    return id;
+    if (stored) {
+      try {
+        await getConversation(stored);
+        setActiveConversationId(stored);
+        navigate(`/chat/${kbId}/${stored}`, { replace: true });
+        return stored;
+      } catch {
+        sessionStorage.removeItem(conversationStorageKey(kbId));
+      }
+    }
+    const conversation = await createConversation(kbId, '新会话');
+    sessionStorage.setItem(conversationStorageKey(kbId), conversation.id);
+    setActiveConversationId(conversation.id);
+    navigate(`/chat/${kbId}/${conversation.id}`, { replace: true });
+    return conversation.id;
   };
 
   const send = async () => {
     if (!enabled || !draft.trim() || submitting) return;
     const query = draft.trim();
-    const id = getConversationId();
     setSubmitting(true);
-    setDraft('');
-    setMessages((current) => [...current, {
-      id: crypto.randomUUID(), role: 'user', content: query, agent_run_id: null, created_at: new Date().toISOString(),
-    }]);
 
     try {
       setErrorMessage(null);
+      const id = await getConversationId();
+      setDraft('');
+      setMessages((current) => [...current, {
+        id: crypto.randomUUID(), role: 'user', content: query, agent_run_id: null, created_at: new Date().toISOString(),
+      }]);
       const response = await createAgentRun({ knowledge_base_id: kbId, conversation_id: id, query });
       currentRunId.current = response.run_id;
       const controller = new AbortController();
