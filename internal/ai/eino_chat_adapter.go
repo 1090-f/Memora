@@ -68,20 +68,42 @@ func (a *einoChatModelAdapter) Stream(ctx context.Context, request contracts.Cha
 	eventChan := make(chan contracts.ChatStreamEvent, 100)
 	go func() {
 		defer close(eventChan)
+		defer stream.Close()
+
 		for {
-			event, err := stream.Recv()
-			if err != nil {
-				// 流结束或出错
+			event, recvErr := stream.Recv()
+			if recvErr != nil {
+				// 流正常结束
+				usage := &contracts.TokenUsage{}
+				// 尝试从 event 中获取最后一条消息的用法
+				if event != nil && event.ResponseMeta != nil && event.ResponseMeta.Usage != nil {
+					usage.InputTokens = event.ResponseMeta.Usage.PromptTokens
+					usage.OutputTokens = event.ResponseMeta.Usage.CompletionTokens
+					usage.TotalTokens = event.ResponseMeta.Usage.TotalTokens
+				}
 				eventChan <- contracts.ChatStreamEvent{
 					Done:  true,
-					Usage: &contracts.TokenUsage{},
+					Usage: usage,
 				}
 				return
 			}
-			eventChan <- contracts.ChatStreamEvent{
-				Delta: event.Content,
-				Done:  false,
+
+			out := contracts.ChatStreamEvent{Done: false}
+			if event.Content != "" {
+				out.Delta = event.Content
 			}
+			if len(event.ToolCalls) > 0 {
+				tcs := make([]contracts.ToolCall, len(event.ToolCalls))
+				for i, tc := range event.ToolCalls {
+					tcs[i] = contracts.ToolCall{
+						CallID:    contracts.ID(tc.ID),
+						ToolName:  tc.Function.Name,
+						Arguments: []byte(tc.Function.Arguments),
+					}
+				}
+				out.ToolCalls = tcs
+			}
+			eventChan <- out
 		}
 	}()
 

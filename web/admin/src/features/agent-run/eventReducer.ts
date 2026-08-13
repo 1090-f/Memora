@@ -17,7 +17,12 @@ export const initialAgentRunState: AgentRunViewState = {
 const stringValue = (value: unknown, fallback = '') => typeof value === 'string' ? value : fallback;
 const numberValue = (value: unknown, fallback = 0) => typeof value === 'number' ? value : fallback;
 
-export function reduceAgentEvent(state: AgentRunViewState, event: AgentEvent): AgentRunViewState {
+export type ResetAction = { type: 'RESET_AGENT_RUN_STATE' };
+
+export function reduceAgentEvent(state: AgentRunViewState, event: AgentEvent | ResetAction): AgentRunViewState {
+  if (event.type === 'RESET_AGENT_RUN_STATE') {
+    return { ...initialAgentRunState };
+  }
   if (event.sequence <= state.highest_sequence) return state;
   const next: AgentRunViewState = { ...state, highest_sequence: event.sequence };
   const payload = event.payload;
@@ -26,7 +31,7 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentEvent): A
     case 'agent.run.queued':
       return { ...next, status: 'queued', resumable: false };
     case 'agent.run.started':
-      return { ...next, status: 'running', resumable: false, error: null };
+      return { ...next, status: 'running', resumable: false, error: null, answer: '' };
     case 'agent.run.completed':
       return { ...next, status: 'completed', resumable: false };
     case 'agent.run.cancelled':

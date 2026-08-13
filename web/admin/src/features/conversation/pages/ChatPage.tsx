@@ -4,10 +4,11 @@ import { useReducer, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { capabilities } from '@/app/capabilities';
 import { AgentRunPanel } from '@/features/agent-run/components/AgentRunPanel';
-import { initialAgentRunState, reduceAgentEvent } from '@/features/agent-run/eventReducer';
+import { initialAgentRunState, reduceAgentEvent, type ResetAction } from '@/features/agent-run/eventReducer';
 import { cancelAgentRun, createAgentRun, getAgentRun } from '@/features/agent-run/api';
+import { queryKeys } from '@/api/queryKeys';
 import { ChatWorkspace } from '@/layouts/ChatWorkspace';
-import { createConversation, getConversation } from '../api';
+import { createConversation, getConversation, listConversations } from '../api';
 import { streamAgentEvents } from '../events';
 import { ChatComposer } from '../components/ChatComposer';
 import { ConversationSidebar } from '../components/ConversationSidebar';
@@ -25,9 +26,18 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [runState, dispatchRun] = useReducer(reduceAgentEvent, initialAgentRunState);
+  const runStateRef = useRef(runState);
+  runStateRef.current = runState;
   const [activeConversationId, setActiveConversationId] = useState(conversationId);
   const abortRef = useRef<AbortController | null>(null);
   const currentRunId = useRef<string | null>(null);
+
+  // 查询会话列表
+  const conversationsQuery = useQuery({
+    queryKey: queryKeys.conversations(kbId),
+    queryFn: () => listConversations(kbId, { page: 1, page_size: 100 }),
+    enabled: enabled,
+  });
 
   // 通过 Agent 运行详情刷新最终回答，避免只依赖 SSE 连接是否正常结束。
   const activeRunQuery = useQuery({
@@ -57,6 +67,7 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
     sessionStorage.setItem(conversationStorageKey(kbId), conversation.id);
     setActiveConversationId(conversation.id);
     navigate(`/chat/${kbId}/${conversation.id}`, { replace: true });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
     return conversation.id;
   };
 
@@ -74,25 +85,26 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
       }]);
       const response = await createAgentRun({ knowledge_base_id: kbId, conversation_id: id, query });
       currentRunId.current = response.run_id;
+      // 重置 reducer 状态，清除上一轮运行的数据（highest_sequence、answer 等）
+      dispatchRun({ type: 'RESET_AGENT_RUN_STATE' } as ResetAction);
       const controller = new AbortController();
       abortRef.current = controller;
       await streamAgentEvents(`${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${response.run_id}/events`, {
         signal: controller.signal,
-        afterSequence: runState.highest_sequence || undefined,
         onEvent: dispatchRun,
       });
       const completedRun = await activeRunQuery.refetch();
-      const answer = completedRun.data?.final_result || runState.answer;
+      const answer = completedRun.data?.final_result || runStateRef.current.answer;
       if (answer) {
         setMessages((current) => [...current, {
           id: crypto.randomUUID(), role: 'assistant', content: answer, agent_run_id: response.run_id,
           status: completedRun.data?.status || 'completed', created_at: new Date().toISOString(),
         }]);
       }
-      void queryClient.invalidateQueries({ queryKey: ['agent-runs', kbId] });
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '智能问答请求失败');
     } finally {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
       setSubmitting(false);
       abortRef.current = null;
     }
@@ -105,7 +117,7 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
 
   const sidebar = (
     <ConversationSidebar
-      conversations={[]}
+      conversations={conversationsQuery.data?.items || []}
       selectedId={activeConversationId}
       disabled={!enabled || submitting}
       onSelect={(id) => navigate(`/chat/${kbId}/${id}`)}
@@ -116,7 +128,7 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
     <>
       {!enabled && <Alert severity="info" sx={{ m: 2, mb: 0 }}>智能问答后端未启用，请检查服务配置。</Alert>}
       {errorMessage && <Alert severity="error" sx={{ m: 2, mb: 0 }}>{errorMessage}</Alert>}
-      <MessageList messages={messages} streamingAnswer={runState.answer} onSuggestion={setDraft} />
+      <MessageList messages={messages} streamingAnswer={submitting ? runState.answer : ''} onSuggestion={setDraft} />
     </>
   );
   const composer = (

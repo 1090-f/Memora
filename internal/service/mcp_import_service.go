@@ -576,6 +576,70 @@ func (s *importService) ListEnabledTools(ctx context.Context, userID string) ([]
 	return result, nil
 }
 
+// ListEnabledToolsForRegistry 实现 tools.MCPToolProvider 接口。
+// 返回用户已启用的 MCP 工具的完整元数据，包含 Server 连接信息和工具 Schema，
+// 供工具注册表在 Agent 启动前动态加载（第一层校验）。
+func (s *importService) ListEnabledToolsForRegistry(ctx context.Context, userID string) ([]tools.MCPToolMetadata, error) {
+	// 1. 获取用户所有已启用的工具实体（包含 ServerID 和工具基础信息）
+	enabledTools, err := s.tools.ListEnabledByUser(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("查询已启用工具失败: %w", err)
+	}
+
+	if len(enabledTools) == 0 {
+		return []tools.MCPToolMetadata{}, nil
+	}
+
+	// 2. 收集所有涉及的 Server ID
+	serverIDs := make(map[string]struct{})
+	for i := range enabledTools {
+		serverIDs[enabledTools[i].ServerID] = struct{}{}
+	}
+
+	// 3. 批量查询所有相关的 Server 实体（包含连接配置）
+	serverMap := make(map[string]*entity.MCPServer)
+	for serverID := range serverIDs {
+		server, err := s.servers.FindActiveByID(ctx, userID, serverID)
+		if err != nil {
+			// Server 不存在或无权访问时跳过该 Server 的所有工具
+			continue
+		}
+		serverMap[serverID] = server
+	}
+
+	// 4. 组装工具元数据列表
+	result := make([]tools.MCPToolMetadata, 0, len(enabledTools))
+	for i := range enabledTools {
+		tool := &enabledTools[i]
+		server, ok := serverMap[tool.ServerID]
+		if !ok {
+			// Server 不可用，跳过该工具
+			continue
+		}
+
+		// 构造 Server 连接目标（复用 buildTarget，自动解密 headers/args/env）
+		target := s.buildTarget(server)
+
+		// 构造工具元数据
+		toolMetadata := mcp.MCPServerTool{
+			Name:        tool.ToolName,
+			Description: derefString(tool.Description),
+			InputSchema: tool.InputSchema,
+		}
+
+		// 添加到结果集
+		result = append(result, tools.MCPToolMetadata{
+			ServerID:      server.ID,
+			ServerTarget:  target,
+			ToolMetadata:  toolMetadata,
+			Enabled:       tool.Enabled,
+			CallTimeoutMs: server.CallTimeoutMs,
+		})
+	}
+
+	return result, nil
+}
+
 // CheckToolAvailable 实现 tools.ToolAvailabilityChecker。
 // 这是第二层拦截：在 MCP 工具真正执行前，向数据层动态复核 Server 与 Tool 的启用状态，
 // 从而捕捉运行过程中前端动态禁用工具的情况（注册时的快照已经不可信）。
@@ -593,6 +657,9 @@ func (s *importService) CheckToolAvailable(ctx context.Context, userID contracts
 
 // 编译期断言：importService 满足 tools.ToolAvailabilityChecker，可供 Executor 注入。
 var _ tools.ToolAvailabilityChecker = (*importService)(nil)
+
+// 编译期断言：importService 满足 tools.MCPToolProvider，可供 MCPToolRefresher 注入。
+var _ tools.MCPToolProvider = (*importService)(nil)
 
 // determineTransport 根据 config 判定传输类型。
 func determineTransport(config *request.MCPServerConfig) string {

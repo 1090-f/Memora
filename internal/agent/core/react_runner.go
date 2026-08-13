@@ -104,6 +104,10 @@ func (r *reactRunner) Run(ctx context.Context, agentCtx contracts.AgentContext, 
 			// 发布工具调用完成事件
 			return r.events.PublishToolCallCompleted(ctx, runID, callID, toolName, success, summary)
 		},
+		// onAnswerDelta: 流式回答增量回调
+		func(ctx context.Context, delta string) error {
+			return r.events.PublishAnswerDelta(ctx, runID, delta)
+		},
 	)
 
 	// 累加 Token 用量
@@ -119,25 +123,29 @@ func (r *reactRunner) Run(ctx context.Context, agentCtx contracts.AgentContext, 
 		// 检查是否是预算超限错误
 		if isBudgetError(err) && result.FinalResult != "" {
 			return RunOutput{
-				FinalResult: result.FinalResult,
-				Citations:   r.collector.Get(),
-				Usage:       accumulatedUsage,
-				Summary:     result.FinalResult,
+				FinalResult:     result.FinalResult,
+				Citations:       r.collector.Get(),
+				Usage:           accumulatedUsage,
+				Summary:         result.FinalResult,
+				KnowledgeStatus: agentCtx.KnowledgeStatus,
 			}, nil
 		}
 		return RunOutput{
-			FinalResult: result.FinalResult,
-			Citations:   r.collector.Get(),
-			Usage:       accumulatedUsage,
+			FinalResult:     result.FinalResult,
+			Citations:       r.collector.Get(),
+			Usage:           accumulatedUsage,
+			Summary:         result.FinalResult,
+			KnowledgeStatus: agentCtx.KnowledgeStatus,
 		}, err
 	}
 
 	// 归一化最终结果
 	return RunOutput{
-		FinalResult: result.FinalResult,
-		Citations:   r.collector.Get(),
-		Usage:       accumulatedUsage,
-		Summary:     result.FinalResult,
+		FinalResult:     result.FinalResult,
+		Citations:       r.collector.Get(),
+		Usage:           accumulatedUsage,
+		Summary:         result.FinalResult,
+		KnowledgeStatus: agentCtx.KnowledgeStatus,
 	}, nil
 }
 

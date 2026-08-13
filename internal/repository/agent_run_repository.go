@@ -120,21 +120,28 @@ func (r *agentRunRepository) MarkRunning(ctx context.Context, runID uuid.UUID, s
 		}).Error
 }
 
-// MarkCompleted 更新运行状态为 completed，记录最终结果、Token 用量、耗时和结束时间。
-func (r *agentRunRepository) MarkCompleted(ctx context.Context, runID uuid.UUID, finalResult string, inputTokens, outputTokens, totalTokens int, durationMs int64) error {
+// MarkCompleted 更新运行状态为 completed，记录最终结果、Token 用量、耗时、执行模式、知识状态和结束时间。
+func (r *agentRunRepository) MarkCompleted(ctx context.Context, runID uuid.UUID, finalResult string, inputTokens, outputTokens, totalTokens int, durationMs int64, executionMode, knowledgeStatus string) error {
 	now := time.Now().UTC()
+	updates := map[string]interface{}{
+		"status":        "completed",
+		"final_result":  finalResult,
+		"input_tokens":  inputTokens,
+		"output_tokens": outputTokens,
+		"total_tokens":  totalTokens,
+		"duration_ms":   durationMs,
+		"ended_at":      now,
+	}
+	if executionMode != "" {
+		updates["execution_mode"] = executionMode
+	}
+	if knowledgeStatus != "" {
+		updates["knowledge_status"] = knowledgeStatus
+	}
 	return r.db.WithContext(ctx).
 		Model(&entity.AgentRun{}).
 		Where("id = ?", runID).
-		Updates(map[string]interface{}{
-			"status":        "completed",
-			"final_result":  finalResult,
-			"input_tokens":  inputTokens,
-			"output_tokens": outputTokens,
-			"total_tokens":  totalTokens,
-			"duration_ms":   durationMs,
-			"ended_at":      now,
-		}).Error
+		Updates(updates).Error
 }
 
 // MarkFailed 更新运行状态为 failed，记录错误码、错误信息和结束时间。
