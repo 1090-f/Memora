@@ -26,6 +26,8 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [runState, dispatchRun] = useReducer(reduceAgentEvent, initialAgentRunState);
+  const runStateRef = useRef(runState);
+  runStateRef.current = runState;
   const [activeConversationId, setActiveConversationId] = useState(conversationId);
   const abortRef = useRef<AbortController | null>(null);
   const currentRunId = useRef<string | null>(null);
@@ -92,7 +94,7 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
         onEvent: dispatchRun,
       });
       const completedRun = await activeRunQuery.refetch();
-      const answer = completedRun.data?.final_result || runState.answer;
+      const answer = completedRun.data?.final_result || runStateRef.current.answer;
       if (answer) {
         setMessages((current) => [...current, {
           id: crypto.randomUUID(), role: 'assistant', content: answer, agent_run_id: response.run_id,
