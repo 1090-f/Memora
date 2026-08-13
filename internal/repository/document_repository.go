@@ -381,10 +381,11 @@ func (r *importTaskRepository) ReservePending(ctx context.Context) (*entity.Impo
 	// 事务内 SELECT ... FOR UPDATE SKIP LOCKED：跳过被其他 Worker 已锁定的行，天然避免并发重复领取。
 	err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		err := tx.Raw(`
-			SELECT id, user_id, knowledge_base_id, target_directory_id, source_type,
+			SELECT id, user_id, knowledge_base_id, batch_id, source_path, target_directory_id, source_type,
 			       file_name, file_size, mime_type, source_url, source_hash,
-			       minio_bucket, minio_object_key, duplicate_policy, status,
-			       current_step, failure_reason, document_id, created_at, started_at, completed_at
+			       minio_bucket, minio_object_key, duplicate_policy, status, attempt,
+			       current_step, failure_reason, document_id, attachments,
+			       created_at, started_at, completed_at
 			FROM import_tasks
 			WHERE status = 'pending'
 			ORDER BY created_at ASC

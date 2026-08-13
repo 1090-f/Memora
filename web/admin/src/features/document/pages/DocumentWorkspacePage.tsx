@@ -27,7 +27,7 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { errorMessage } from '@/api/errors';
 import { queryKeys } from '@/api/queryKeys';
@@ -91,6 +91,9 @@ const activeProcessingStatuses: DocumentProcessingStatus[] = [
   'keyword_indexing',
 ];
 
+const activeRefreshInterval = 2000;
+const idleRefreshInterval = 5000;
+
 function isProcessing(status?: DocumentProcessingStatus) {
   return status !== undefined && activeProcessingStatuses.includes(status);
 }
@@ -128,8 +131,10 @@ function DocumentList({
       ...documentStatusFilterParams(status),
       source_type: sourceType || undefined,
     }),
-    // 仅存在处理中记录时轮询；进入终态后自动停止，避免无意义请求。
-    refetchInterval: (result) => result.state.data?.items.some((document) => isProcessing(document.processing_status)) ? 3000 : false,
+    // reindex 接口返回时仍可能读到旧终态；空闲期也保持低频刷新以跨过 worker 接单竞态。
+    refetchInterval: (result) => result.state.data?.items.some((document) => isProcessing(document.processing_status))
+      ? activeRefreshInterval
+      : idleRefreshInterval,
   });
 
   if (query.isPending) return <LoadingState label="正在加载文档" />;
@@ -176,14 +181,17 @@ function DocumentList({
 
 function ImportTasks({ kbId, onOpenDocument }: { kbId: string; onOpenDocument: (documentId: string) => void }) {
   const queryClient = useQueryClient();
+  const previousTaskStates = useRef<Map<string, string>>(new Map());
   const [cleanupOpen, setCleanupOpen] = useState(false);
   const [cleanupNotice, setCleanupNotice] = useState('');
   const [cleanupError, setCleanupError] = useState<Error | null>(null);
   const query = useQuery({
     queryKey: queryKeys.importTasks(kbId),
     queryFn: () => listImportTasks(kbId, { page: 1, page_size: 20 }),
-    // pending/running 期间每三秒刷新一次，成功、失败或跳过后停止轮询。
-    refetchInterval: (result) => result.state.data?.items.some((task) => task.status === 'pending' || task.status === 'running') ? 3000 : false,
+    // 最近任务始终低频同步，避免任务在首次查询前快速完成后永久停留在旧缓存。
+    refetchInterval: (result) => result.state.data?.items.some((task) => task.status === 'pending' || task.status === 'running')
+      ? activeRefreshInterval
+      : idleRefreshInterval,
   });
   const retry = useMutation({
     mutationFn: (taskId: string) => retryImportTask(taskId),
@@ -211,8 +219,23 @@ function ImportTasks({ kbId, onOpenDocument }: { kbId: string; onOpenDocument: (
   const completedCount = (query.data?.items ?? []).filter((task) => ['succeeded', 'failed', 'skipped'].includes(task.status)).length;
 
   useEffect(() => {
-    // Worker 创建出文档或完成任务后，主动刷新文档列表以展示最新结果。
-    if (query.data?.items.some((task) => task.document_id || task.status === 'succeeded')) {
+    const nextTaskStates = new Map<string, string>();
+    let hasChanges = false;
+    for (const task of query.data?.items ?? []) {
+      const state = `${task.status}:${task.current_step ?? ''}:${task.document_id ?? ''}`;
+      nextTaskStates.set(task.id, state);
+      if (previousTaskStates.current.get(task.id) === state) continue;
+      hasChanges = true;
+      if (task.document_id) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.document(task.document_id) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.documentProcessing(task.document_id) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.documentContent(task.document_id) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.documentIndexVersions(task.document_id) });
+      }
+    }
+    previousTaskStates.current = nextTaskStates;
+    // Worker 创建文档、推进步骤或完成任务时，把列表和当前文档缓存一起同步。
+    if (hasChanges) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.documents(kbId) });
     }
   }, [kbId, query.dataUpdatedAt, query.data?.items, queryClient]);
@@ -240,9 +263,9 @@ function ImportTasks({ kbId, onOpenDocument }: { kbId: string; onOpenDocument: (
         {tasks.map((task) => (
           <Stack key={task.id} direction="row" alignItems="center" spacing={1}>
             <Box sx={{ flexGrow: 1, minWidth: 0 }}>
-              <Typography variant="body2" noWrap>{task.file_name || task.source_url || task.id}</Typography>
+              <Typography variant="body2" noWrap>{task.source_path || task.file_name || task.source_url || task.id}</Typography>
               <Typography variant="caption" color={task.failure_reason ? 'error' : 'text.secondary'} noWrap display="block">
-                {task.failure_reason || task.current_step || new Date(task.created_at).toLocaleString()}
+                {task.failure_reason || task.current_step || `${task.batch_id ? `批次 ${task.batch_id.slice(0, 8)} · ` : ''}${new Date(task.created_at).toLocaleString()}`}
               </Typography>
             </Box>
             <Chip size="small" color={task.status === 'failed' ? 'error' : task.status === 'succeeded' ? 'success' : task.status === 'running' ? 'info' : 'default'} label={taskLabel[task.status]} />
@@ -305,14 +328,17 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
     queryKey: queryKeys.document(selectedId ?? ''),
     queryFn: () => getDocument(selectedId as string),
     enabled: enabled && Boolean(selectedId),
-    // 文档详情同样只在处理中轮询，避免页面常驻时持续访问后端。
-    refetchInterval: (result) => isProcessing(result.state.data?.processing_status) ? 3000 : false,
+    refetchInterval: (result) => isProcessing(result.state.data?.processing_status)
+      ? activeRefreshInterval
+      : idleRefreshInterval,
   });
   const processingQuery = useQuery({
     queryKey: queryKeys.documentProcessing(selectedId ?? ''),
     queryFn: () => getDocumentProcessing(selectedId as string),
     enabled: enabled && Boolean(selectedId),
-    refetchInterval: (result) => isProcessing(result.state.data?.processing_status) ? 3000 : false,
+    refetchInterval: (result) => isProcessing(result.state.data?.processing_status)
+      ? activeRefreshInterval
+      : idleRefreshInterval,
   });
 
   const createDir = useMutation({
@@ -329,6 +355,7 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
       void queryClient.invalidateQueries({ queryKey: queryKeys.documents(kbId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.document(documentIdValue) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.documentProcessing(documentIdValue) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
       setNotice('已提交处理重试');
     },
     onError: (error) => setActionError(error as Error),
@@ -341,6 +368,7 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
       void queryClient.invalidateQueries({ queryKey: queryKeys.documentProcessing(documentIdValue) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.documentContent(documentIdValue) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.documentIndexVersions(documentIdValue) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
       setNotice('已提交重新索引');
     },
     onError: (error) => setActionError(error as Error),
@@ -400,11 +428,27 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
                   InputProps={{ startAdornment: <InputAdornment position="start"><SearchOutlined fontSize="small" /></InputAdornment> }}
                   sx={{ flexGrow: 1 }}
                 />
-                <TextField select size="small" label="状态" value={processingStatus} onChange={(event) => setProcessingStatus(event.target.value as DocumentStatusFilter)} sx={{ minWidth: 190 }}>
+                <TextField
+                  select
+                  size="small"
+                  label="状态"
+                  value={processingStatus}
+                  onChange={(event) => setProcessingStatus(event.target.value as DocumentStatusFilter)}
+                  slotProps={{ inputLabel: { shrink: true }, select: { displayEmpty: true } }}
+                  sx={{ minWidth: 190 }}
+                >
                   <MenuItem value="">全部状态</MenuItem>
                   {documentStatusOptions.map(({ value, label }) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
                 </TextField>
-                <TextField select size="small" label="来源" value={sourceType} onChange={(event) => setSourceType(event.target.value as '' | DocumentSourceType)} sx={{ minWidth: 130 }}>
+                <TextField
+                  select
+                  size="small"
+                  label="来源"
+                  value={sourceType}
+                  onChange={(event) => setSourceType(event.target.value as '' | DocumentSourceType)}
+                  slotProps={{ inputLabel: { shrink: true }, select: { displayEmpty: true } }}
+                  sx={{ minWidth: 130 }}
+                >
                   <MenuItem value="">全部来源</MenuItem>
                   {Object.entries(sourceLabel).map(([value, label]) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
                 </TextField>

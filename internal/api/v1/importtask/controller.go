@@ -276,6 +276,8 @@ func (ctrl *Controller) Attachments(c *gin.Context) {
 // taskResponse 是导入任务的 API 响应结构。
 type taskResponse struct {
 	ID            string     `json:"id"`
+	BatchID       *string    `json:"batch_id,omitempty"`
+	SourcePath    *string    `json:"source_path,omitempty"`
 	SourceType    string     `json:"source_type"`
 	FileName      *string    `json:"file_name,omitempty"`
 	FileSize      *int64     `json:"file_size,omitempty"`
@@ -293,6 +295,7 @@ type taskResponse struct {
 func taskResponseFromView(view service.ImportTaskView) taskResponse {
 	result := taskResponse{
 		ID: string(view.ID), SourceType: string(view.SourceType),
+		BatchID: view.BatchID, SourcePath: view.SourcePath,
 		FileName: view.FileName, FileSize: view.FileSize, MIMEType: view.MIMEType,
 		SourceURL: view.SourceURL, Status: string(view.Status),
 		CurrentStep: view.CurrentStep, FailureReason: view.FailureReason,

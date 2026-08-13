@@ -14,6 +14,7 @@ import (
 	"github.com/cloudwego/eino/components/embedding"
 	"github.com/cloudwego/eino/components/indexer"
 	"github.com/cloudwego/eino/schema"
+	"github.com/pgvector/pgvector-go"
 )
 
 // PostgresIndexerConfig 定义向量索引器配置。
@@ -157,7 +158,7 @@ func vectorFromDocument(doc *schema.Document, vector []float64, modelID string) 
 		IndexVersion:     indexVersion,
 		EmbeddingModelID: modelID,
 		EmbeddingDim:     len(embedding),
-		Embedding:        embedding,
+		Embedding:        pgvector.NewVector(embedding),
 		Status:           "ready",
 	}, nil
 }

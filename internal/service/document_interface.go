@@ -10,9 +10,12 @@ import (
 
 // UploadFileInput 描述单个待上传文件。
 type UploadFileInput struct {
-	FileName string
-	Size     int64
-	Reader   io.Reader
+	FileName   string
+	Size       int64
+	Reader     io.Reader
+	ImportMode string
+	BatchID    *string
+	SourcePath *string
 }
 
 // OriginalDocumentFile 描述经过所有权校验的原始上传文件流。

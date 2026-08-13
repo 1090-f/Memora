@@ -102,6 +102,8 @@ type DocumentProcessingStatus struct {
 // ImportTaskView 描述导入任务的对外视图。
 type ImportTaskView struct {
 	ID            contracts.ID
+	BatchID       *string
+	SourcePath    *string
 	SourceType    contracts.DocumentSourceType
 	FileName      *string
 	FileSize      *int64

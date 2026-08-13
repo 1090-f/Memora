@@ -153,6 +153,8 @@ export interface ImageScanResult {
 
 export interface ImportTask {
   id: string;
+  batch_id?: string;
+  source_path?: string;
   source_type: 'file' | 'url';
   file_name?: string;
   file_size?: number;
@@ -191,6 +193,22 @@ export interface ImportSubmission {
   task_id: string;
   file_name: string;
   status: ImportTaskStatus;
+  batch_id?: string;
+  source_path?: string;
+  requires_confirmation?: boolean;
+}
+
+export interface ImportUploadRejected {
+  source_path: string;
+  code: string;
+  message: string;
+}
+
+export interface ImportUploadResponse {
+  batch_id: string;
+  summary: { total: number; accepted: number; rejected: number };
+  tasks: ImportSubmission[];
+  rejected: ImportUploadRejected[];
 }
 
 export interface DocumentListParams {

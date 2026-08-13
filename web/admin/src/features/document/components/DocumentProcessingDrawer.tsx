@@ -63,6 +63,7 @@ export function DocumentProcessingDrawer({ open, onClose, document, processing }
     void queryClient.invalidateQueries({ queryKey: queryKeys.documentProcessing(documentId) });
     void queryClient.invalidateQueries({ queryKey: queryKeys.documentContent(documentId) });
     void queryClient.invalidateQueries({ queryKey: queryKeys.documentIndexVersions(documentId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(document.knowledge_base_id) });
   };
 
   const retryMutation = useMutation({

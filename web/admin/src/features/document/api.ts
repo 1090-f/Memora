@@ -14,6 +14,7 @@ import type {
   DocumentTextPreview,
   ImageScanResult,
   ImportSubmission,
+  ImportUploadResponse,
   ImportTask,
   ImportURLInput,
 } from './types';
@@ -65,7 +66,7 @@ export const deleteDocument = (documentId: string) =>
 
 export const importFiles = (kbId: string, formData: FormData) =>
   // FormData 交给 Axios 自动生成带 boundary 的 Content-Type，避免手工设置导致后端无法解析。
-  apiRequest<{ tasks: Array<{ task_id: string; file_name: string; status: ImportTask['status'] }> }>({
+  apiRequest<ImportUploadResponse>({
     url: `/knowledge-bases/${kbId}/imports/files`, method: 'POST', data: formData,
   });
 
