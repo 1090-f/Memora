@@ -30,8 +30,28 @@ func NewDocumentReadTool(service contracts.DocumentService) *DocumentReadTool {
 
 // Spec 返回注册表和 Executor 使用的静态安全规格。
 func (t *DocumentReadTool) Spec() contracts.ToolSpec {
-	return contracts.ToolSpec{Name: DocumentReadToolName, Description: "读取当前知识库内文档的受限内容", Type: contracts.ToolTypeBuiltin, ReadOnly: true, Enabled: true, MaxCalls: 10}
+	return contracts.ToolSpec{
+		Name:        DocumentReadToolName,
+		Description: "读取当前知识库内文档的受限内容",
+		InputSchema: documentReadInputSchema,
+		Type:        contracts.ToolTypeBuiltin,
+		ReadOnly:    true,
+		Enabled:     true,
+		MaxCalls:    10,
+	}
 }
+
+// documentReadInputSchema 是 document_read 工具的 JSON Schema 入参定义。
+var documentReadInputSchema = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"document_id": {"type": "string", "description": "目标文档 ID"},
+		"section":    {"type": "string", "description": "可选章节"},
+		"cursor":     {"type": "string", "description": "继续读取游标"},
+		"max_tokens": {"type": "integer", "description": "最大读取 token 数"}
+	},
+	"required": ["document_id"]
+}`)
 
 // Info 返回文档读取的固定 JSON Schema，避免模型传入用户或知识库身份。
 func (t *DocumentReadTool) Info(context.Context) (*schema.ToolInfo, error) {

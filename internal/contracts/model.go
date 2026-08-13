@@ -7,8 +7,10 @@ import (
 
 // ChatMessage 表示聊天对话中的单条消息。
 type ChatMessage struct {
-	Role    string `json:"role"`    // 角色：system / user / assistant / tool
-	Content string `json:"content"` // 消息内容
+	Role       string     `json:"role"`                   // 角色：system / user / assistant / tool
+	Content    string     `json:"content"`                // 消息内容
+	ToolCallID string     `json:"tool_call_id,omitempty"` // 工具调用 ID（仅 tool 角色消息，关联对应的工具调用）
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // 工具调用列表（仅 assistant 角色消息，表示模型发起的工具调用）
 }
 
 // ChatRequest 表示从 AI 模型生成聊天响应的请求。

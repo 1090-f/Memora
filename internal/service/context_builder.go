@@ -8,6 +8,8 @@ import (
 	"github.com/1090-f/Memora/internal/agent/tools"
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/repository"
+	"github.com/1090-f/Memora/pkg/logger"
+	"go.uber.org/zap"
 )
 
 // contextBuilder 是 contracts.ContextBuilder 接口的实现。
@@ -53,7 +55,10 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 		refreshErr := b.mcpToolRefresher.RefreshForUserWithTimeout(ctx, string(req.UserID), 3*time.Second)
 		if refreshErr != nil {
 			// 刷新失败不阻断核心流程，降级处理：Agent 将只使用内置工具
-			fmt.Printf("警告: MCP 工具列表刷新失败（用户 %s），降级处理: %v\n", req.UserID, refreshErr)
+			logger.Warn("MCP 工具列表刷新失败，降级处理",
+				zap.String("user_id", string(req.UserID)),
+				zap.Error(refreshErr),
+			)
 		}
 	}
 
@@ -177,6 +182,14 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 		agentCtx.KnowledgeStatus = ""
 	} else {
 		agentCtx.KnowledgeStatus = retrievalRes.knowledgeStatus
+	}
+
+	// 日志：记录当前注册的工具数量（用于诊断工具注册问题）
+	if b.mcpToolRefresher != nil {
+		logger.Debug("AgentContext 构建完成，注册表工具状态",
+			zap.Any("allowed_tools", agentCtx.AllowedTools),
+			zap.String("chat_model_id", agentCtx.ChatModelID),
+		)
 	}
 
 	return agentCtx, nil
