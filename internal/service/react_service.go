@@ -90,6 +90,7 @@ func (s *ReactService) RunReActLoop(
 	onRoundStarted func(ctx context.Context, round int) error,
 	onToolStarted func(ctx context.Context, toolName string, callID contracts.ID) error,
 	onToolCompleted func(ctx context.Context, toolName string, callID contracts.ID, success bool, summary string) error,
+	onAnswerDelta func(ctx context.Context, delta string) error,
 ) (ReActResult, error) {
 	startedAt := time.Now()
 
@@ -166,31 +167,59 @@ func (s *ReactService) RunReActLoop(
 			return ReActResult{}, fmt.Errorf("构建工具定义: %w", err)
 		}
 
-		// 调用模型
-		// 使用 Eino ChatModel 生成响应，包含可能的工具调用
-		response, err := model.Generate(ctx, contracts.ChatRequest{
+		// 调用模型（流式）
+		// 使用 Eino ChatModel 流式生成响应，实时推送文本增量
+		streamCh, err := model.Stream(ctx, contracts.ChatRequest{
 			Messages: messages,
 			Tools:    toolDefs,
 		})
 		if err != nil {
-			return ReActResult{}, fmt.Errorf("模型调用失败(轮次 %d): %w", round, err)
+			return ReActResult{}, fmt.Errorf("模型流式调用失败(轮次 %d): %w", round, err)
 		}
 
+		var fullContent strings.Builder
+		var roundToolCalls []contracts.ToolCall
+		var roundUsage contracts.TokenUsage
+
+		for chunk := range streamCh {
+			if chunk.Delta != "" {
+				fullContent.WriteString(chunk.Delta)
+				if onAnswerDelta != nil {
+					if err := onAnswerDelta(ctx, chunk.Delta); err != nil {
+						logger.Warn("发布回答增量事件失败", zap.Error(err))
+					}
+				}
+			}
+			if len(chunk.ToolCalls) > 0 {
+				roundToolCalls = append(roundToolCalls, chunk.ToolCalls...)
+			}
+			if chunk.Usage != nil {
+				roundUsage.InputTokens = chunk.Usage.InputTokens
+				roundUsage.OutputTokens = chunk.Usage.OutputTokens
+				roundUsage.TotalTokens = chunk.Usage.TotalTokens
+			}
+			if chunk.Done {
+				break
+			}
+		}
+
+		content := fullContent.String()
+
 		// 累加 Token 用量
-		accumulatedUsage.InputTokens += response.Usage.InputTokens
-		accumulatedUsage.OutputTokens += response.Usage.OutputTokens
-		accumulatedUsage.TotalTokens += response.Usage.TotalTokens
+		accumulatedUsage.InputTokens += roundUsage.InputTokens
+		accumulatedUsage.OutputTokens += roundUsage.OutputTokens
+		accumulatedUsage.TotalTokens += roundUsage.TotalTokens
 
 		// 添加模型回复到消息列表
 		messages = append(messages, contracts.ChatMessage{
 			Role:    "assistant",
-			Content: response.Content,
+			Content: content,
 		})
 
 		// 检查是否有工具调用
-		if len(response.ToolCalls) == 0 {
+		if len(roundToolCalls) == 0 {
 			// 没有工具调用，模型给出最终答案
-			finalResult = strings.TrimSpace(response.Content)
+			finalResult = strings.TrimSpace(content)
 			logger.Info("ReAct 循环完成",
 				zap.Int("round", round),
 				zap.Int("tool_calls", toolCallCount),
@@ -198,8 +227,8 @@ func (s *ReactService) RunReActLoop(
 			break
 		}
 
-		// 处理工具调用
-		for _, call := range response.ToolCalls {
+		// 处理工具调用（使用流式收集的工具调用列表）
+		for _, call := range roundToolCalls {
 			toolCallCount++
 			if toolCallCount > cfg.MaxToolCalls {
 				logger.Warn("工具调用次数超限",

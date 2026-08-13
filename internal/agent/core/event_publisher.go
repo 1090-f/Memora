@@ -26,6 +26,8 @@ type EventPublisher interface {
 	PublishToolCallStarted(ctx context.Context, runID contracts.ID, toolName string, callID contracts.ID) error
 	// PublishToolCallCompleted 发布工具调用完成事件。
 	PublishToolCallCompleted(ctx context.Context, runID contracts.ID, callID contracts.ID, toolName string, success bool, summary string) error
+	// PublishAnswerDelta 发布流式回答增量事件。
+	PublishAnswerDelta(ctx context.Context, runID contracts.ID, delta string) error
 }
 
 // NoopEventPublisher 用于未接入事件存储时保持执行链路可运行。
@@ -55,6 +57,7 @@ func (NoopEventPublisher) PublishToolCallStarted(context.Context, contracts.ID, 
 func (NoopEventPublisher) PublishToolCallCompleted(context.Context, contracts.ID, contracts.ID, string, bool, string) error {
 	return nil
 }
+func (NoopEventPublisher) PublishAnswerDelta(context.Context, contracts.ID, string) error { return nil }
 
 // SequencedEventPublisher 为每个 Run 分配单调递增的事件序号。
 type SequencedEventPublisher struct {
@@ -133,4 +136,8 @@ func (p *SequencedEventPublisher) PublishToolCallCompleted(ctx context.Context, 
 		"success":   success,
 		"summary":   summary,
 	})
+}
+
+func (p *SequencedEventPublisher) PublishAnswerDelta(ctx context.Context, id contracts.ID, delta string) error {
+	return p.publish(ctx, id, contracts.EventAnswerDelta, map[string]any{"delta": delta})
 }
