@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/1090-f/Memora/internal/model/entity"
 	"gorm.io/gorm"
@@ -82,4 +83,31 @@ func (r *aiModelConfigRepository) ListByUser(ctx context.Context, userID string,
 		return nil, fmt.Errorf("list model configs: %w", err)
 	}
 	return configs, nil
+}
+
+// Update 更新模型配置。
+func (r *aiModelConfigRepository) Update(ctx context.Context, config *entity.AIModelConfig) error {
+	if err := r.db.WithContext(ctx).Save(config).Error; err != nil {
+		return fmt.Errorf("update model config: %w", err)
+	}
+	return nil
+}
+
+// Delete 软删除模型配置。
+func (r *aiModelConfigRepository) Delete(ctx context.Context, id, userID string) error {
+	now := time.Now().UTC()
+	result := r.db.WithContext(ctx).
+		Model(&entity.AIModelConfig{}).
+		Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, userID).
+		Updates(map[string]interface{}{
+			"deleted_at": now,
+			"updated_at": now,
+		})
+	if result.Error != nil {
+		return fmt.Errorf("delete model config: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrModelConfigNotFound
+	}
+	return nil
 }

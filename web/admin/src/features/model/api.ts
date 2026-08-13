@@ -7,3 +7,5 @@ export const createModelConfig = (input: Omit<ModelConfig, 'id' | 'api_key_maske
   apiRequest<ModelConfig>({ url: '/model-configs', method: 'POST', data: input });
 export const updateModelConfig = (id: string, input: Partial<ModelConfig> & { api_key?: string }) =>
   apiRequest<ModelConfig>({ url: `/model-configs/${id}`, method: 'PATCH', data: input });
+export const deleteModelConfig = (id: string) =>
+  apiRequest<void>({ url: `/model-configs/${id}`, method: 'DELETE' });
