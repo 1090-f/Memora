@@ -57,12 +57,32 @@ type DocumentPreviewResponse struct {
 
 // UploadTaskItem 表示文件上传后创建的任务项。
 type UploadTaskItem struct {
-	TaskID   string `json:"task_id"`   // TaskID 导入任务 ID
-	FileName string `json:"file_name"` // FileName 上传的文件名
-	Status   string `json:"status"`    // Status 任务状态（pending/running/succeeded/failed/skipped）
+	TaskID               string  `json:"task_id"`               // TaskID 导入任务 ID
+	FileName             string  `json:"file_name"`             // FileName 上传的文件名
+	Status               string  `json:"status"`                // Status 任务状态（pending/running/succeeded/failed/skipped）
+	BatchID              *string `json:"batch_id,omitempty"`    // BatchID 同一次批量上传的批次 ID
+	SourcePath           *string `json:"source_path,omitempty"` // SourcePath 文件夹归档内的相对路径
+	RequiresConfirmation bool    `json:"requires_confirmation"` // RequiresConfirmation 是否需要前端确认 Markdown 图片
+}
+
+// UploadSummary 汇总一次批量上传的处理结果。
+type UploadSummary struct {
+	Total    int `json:"total"`
+	Accepted int `json:"accepted"`
+	Rejected int `json:"rejected"`
+}
+
+// UploadRejectedItem 表示文件夹归档中未创建任务的条目。
+type UploadRejectedItem struct {
+	SourcePath string `json:"source_path"`
+	Code       string `json:"code"`
+	Message    string `json:"message"`
 }
 
 // UploadFilesResponse 表示文件上传响应。
 type UploadFilesResponse struct {
-	Tasks []UploadTaskItem `json:"tasks"` // Tasks 上传创建的任务列表
+	BatchID  string               `json:"batch_id"`
+	Summary  UploadSummary        `json:"summary"`
+	Tasks    []UploadTaskItem     `json:"tasks"` // Tasks 上传创建的任务列表
+	Rejected []UploadRejectedItem `json:"rejected"`
 }

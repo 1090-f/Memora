@@ -19,12 +19,15 @@ import { queryKeys } from '@/api/queryKeys';
 import { errorMessage } from '@/api/errors';
 import { importFiles, importURL, scanImportTask, startImportTask, uploadTaskAttachments } from '../api';
 import { flattenDirectories } from '../directoryOptions';
-import type { DirectoryNode, ImageScanResult, ImageRefStatus, ImportSubmission } from '../types';
+import type { DirectoryNode, ImageScanResult, ImageRefStatus, ImportUploadResponse } from '../types';
 
 const MAX_FILES = 20;
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
-const allowedExtensions = ['.md', '.txt', '.pdf', '.docx', '.xlsx', '.pptx', '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.gif', '.webp'];
-const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'];
+const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.tiff', '.tif'];
+const primaryDocumentExtensions = ['.md', '.txt', '.pdf', '.docx', '.xlsx', '.pptx'];
+const standaloneImageExtensions = imageExtensions.filter((extension) => extension !== '.svg');
+const importableDocumentExtensions = [...primaryDocumentExtensions, ...standaloneImageExtensions];
+const allowedExtensions = [...importableDocumentExtensions, '.zip'];
 
 // 浏览器目录选择（webkitdirectory 为非标准属性，在浏览器类型上扩展，与 HTMLInputElement 兼容）。
 interface DirectoryInputElement extends HTMLInputElement {
@@ -36,6 +39,7 @@ interface DirectoryInputElement extends HTMLInputElement {
 interface PendingTask {
   taskId: string;
   fileName: string;
+  sourcePath?: string;
   scan?: ImageScanResult;
   scanError?: string;
   scanning: boolean;
@@ -62,6 +66,7 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
   const imageInputRef = useRef<HTMLInputElement>(null);
   const [sourceMode, setSourceMode] = useState<'file' | 'url'>('file');
   const [files, setFiles] = useState<File[]>([]);
+  const [fileImportMode, setFileImportMode] = useState<'files' | 'folder_archive'>('files');
   const [packing, setPacking] = useState(false);
   const [sourceURL, setSourceURL] = useState('');
   const [directoryId, setDirectoryId] = useState('');
@@ -73,38 +78,55 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
   const [pendingImages, setPendingImages] = useState<File[]>([]);
 
   const uploadMutation = useMutation({
-    mutationFn: async (): Promise<ImportSubmission[]> => {
+    mutationFn: async (): Promise<ImportUploadResponse> => {
       if (sourceMode === 'url') {
         const task = await importURL(kbId, {
           url: sourceURL.trim(),
           directory_id: directoryId || undefined,
           duplicate_policy: duplicatePolicy,
         });
-        return [task];
+        return {
+          batch_id: task.batch_id ?? '',
+          summary: { total: 1, accepted: 1, rejected: 0 },
+          tasks: [task],
+          rejected: [],
+        };
       }
       const formData = new FormData();
       files.forEach((file) => formData.append('files', file));
       if (directoryId) formData.append('directory_id', directoryId);
       formData.append('duplicate_policy', duplicatePolicy);
-      const result = await importFiles(kbId, formData);
-      return result.tasks;
+      if (fileImportMode === 'folder_archive') formData.append('import_mode', 'folder_archive');
+      return importFiles(kbId, formData);
     },
-    onSuccess: (tasks) => {
+    onSuccess: (result) => {
       setFiles([]);
+      setFileImportMode('files');
       setSourceURL('');
       if (fileInputRef.current) fileInputRef.current.value = '';
       if (folderInputRef.current) folderInputRef.current.value = '';
       void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
       if (sourceMode === 'url') {
-        setNotice(`已创建抓取任务：${tasks.map((task) => task.file_name).join('、')}`);
+        setNotice(`已创建抓取任务：${result.tasks.map((task) => task.file_name).join('、')}`);
         return;
       }
-      // Markdown/ZIP 任务需扫描确认；其余（pdf/docx/txt）已自动开始处理。
-      const pending: PendingTask[] = tasks.map((task) => ({
-        taskId: task.task_id, fileName: task.file_name, scanning: false, started: false,
+      // 只有后端明确标记 requires_confirmation 的 Markdown/传统 ZIP 任务才进入补图确认。
+      const pending: PendingTask[] = result.tasks.filter((task) => task.requires_confirmation).map((task) => ({
+        taskId: task.task_id,
+        fileName: task.file_name,
+        sourcePath: task.source_path,
+        scanning: false,
+        started: false,
       }));
       setPendingTasks(pending);
       pending.forEach((task) => void refreshScan(task.taskId));
+      const rejectedNotice = result.rejected.length > 0
+        ? `；${result.rejected.length} 个文件未导入：${result.rejected.slice(0, 3).map((item) => item.source_path).join('、')}`
+        : '';
+      setNotice(`已创建 ${result.summary.accepted} 个文档任务${rejectedNotice}`);
+      if (result.rejected.length > 0) {
+        setValidationError(result.rejected.map((item) => `${item.source_path}：${item.message}`).join('；'));
+      }
     },
   });
 
@@ -192,6 +214,7 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
     }
     setValidationError('');
     setNotice('');
+    setFileImportMode('files');
     setFiles(selected);
   }
 
@@ -199,20 +222,10 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
   // 后端按文件名（basename）匹配 Markdown 中的本机绝对路径图片引用。
   // File.webkitRelativePath 由 DOM 库提供（目录选择时携带相对路径）。
   async function selectFolder(selected: File[]) {
-    const main = selected.find((file) =>
-      allowedExtensions.some((extension) => file.name.toLowerCase().endsWith(extension)));
-    if (!main) {
-      setValidationError('文件夹中没有 Markdown、TXT、PDF 或 DOCX 文档');
-      return;
-    }
-    const unsupported = selected.find((file) => {
-      const name = file.name.toLowerCase();
-      const supported = allowedExtensions.some((extension) => name.endsWith(extension))
-        || imageExtensions.some((extension) => name.endsWith(extension));
-      return !supported;
-    });
-    if (unsupported) {
-      setValidationError(`文件夹中含不支持的文件：${unsupported.name}`);
+    const documents = selected.filter((file) =>
+      importableDocumentExtensions.some((extension) => file.name.toLowerCase().endsWith(extension)));
+    if (documents.length === 0) {
+      setValidationError('文件夹中没有可导入的文档或图片');
       return;
     }
     const oversized = selected.find((file) => file.size <= 0 || file.size > MAX_FILE_SIZE);
@@ -232,9 +245,15 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
       const blob = await zip.generateAsync({ type: 'blob' });
       const folderName = (selected[0].webkitRelativePath || 'import').split('/')[0] || 'import';
       const zipFile = new File([blob], `${folderName}.zip`, { type: 'application/zip' });
+      if (zipFile.size > MAX_FILE_SIZE) {
+        setFiles([]);
+        setValidationError('文件夹压缩后超过 50 MB，请拆分文件夹后导入');
+        return;
+      }
       setFiles([zipFile]);
+      setFileImportMode('folder_archive');
       setValidationError('');
-      setNotice(`已打包 ${selected.length} 个文件为 ${zipFile.name}`);
+      setNotice(`已打包 ${documents.length} 个可识别文件和 ${selected.length - documents.length} 个资源/待校验文件为 ${zipFile.name}`);
     } catch {
       setValidationError('打包文件夹失败，请重试');
     } finally {
@@ -304,7 +323,7 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
                 {pendingTasks.map((task) => (
                   <Box key={task.taskId} sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
                     <Stack direction="row" spacing={1} alignItems="center">
-                      <Typography variant="body2" fontWeight={700} sx={{ flexGrow: 1 }}>{task.fileName}</Typography>
+                      <Typography variant="body2" fontWeight={700} sx={{ flexGrow: 1 }}>{task.sourcePath || task.fileName}</Typography>
                       {task.started
                         ? <Chip size="small" color="primary" label="已开始" />
                         : task.scanError

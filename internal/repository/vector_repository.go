@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/1090-f/Memora/internal/model/entity"
+	"github.com/pgvector/pgvector-go"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -96,11 +97,12 @@ func (r *vectorRepository) SearchCosine(ctx context.Context, params VectorSearch
 	if len(params.QueryVector) == 0 || params.TopK <= 0 {
 		return nil, nil
 	}
+	queryVector := pgvector.NewVector(params.QueryVector)
 	// args 严格按 SQL 占位符出现顺序构造。
-	args := []any{params.QueryVector} // SELECT 1 - (embedding <=> ?)
+	args := []any{queryVector} // SELECT 1 - (embedding <=> ?)
 	where := `dv.user_id = ? AND dv.knowledge_base_id = ? AND dv.status = 'ready' AND d.deleted_at IS NULL AND d.processing_status = 'succeeded'`
 	where += ` AND 1 - (dv.embedding <=> ?) > 0`
-	args = append(args, params.UserID, params.KnowledgeBaseID, params.QueryVector) // WHERE user/kb/dist
+	args = append(args, params.UserID, params.KnowledgeBaseID, queryVector) // WHERE user/kb/dist
 
 	if len(params.DocumentIDs) > 0 {
 		where += fmt.Sprintf(" AND dv.document_id IN (%s)", placeholders(len(params.DocumentIDs)))
@@ -116,7 +118,7 @@ func (r *vectorRepository) SearchCosine(ctx context.Context, params VectorSearch
 	}
 	if params.ScoreThreshold != nil {
 		where += " AND 1 - (dv.embedding <=> ?) >= ?"
-		args = append(args, params.QueryVector, *params.ScoreThreshold)
+		args = append(args, queryVector, *params.ScoreThreshold)
 	}
 	// ORDER BY 的距离占位符。
 	sql := fmt.Sprintf(`
@@ -130,7 +132,7 @@ func (r *vectorRepository) SearchCosine(ctx context.Context, params VectorSearch
 		WHERE %s
 		ORDER BY dv.embedding <=> ? ASC
 		LIMIT ?`, where)
-	args = append(args, params.QueryVector, params.TopK) // ORDER BY dist, LIMIT
+	args = append(args, queryVector, params.TopK) // ORDER BY dist, LIMIT
 
 	var hits []*VectorHit
 	if err := dbFromContext(ctx, r.db).WithContext(ctx).Raw(sql, args...).Scan(&hits).Error; err != nil {

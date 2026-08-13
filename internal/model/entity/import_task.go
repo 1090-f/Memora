@@ -11,6 +11,8 @@ type ImportTask struct {
 	ID                string  `gorm:"column:id;type:uuid;primaryKey;default:gen_random_uuid()" json:"id"` // ID 主键（UUID）
 	UserID            string  `gorm:"column:user_id" json:"user_id"`                                      // UserID 所属用户 ID
 	KnowledgeBaseID   string  `gorm:"column:knowledge_base_id" json:"knowledge_base_id"`                  // KnowledgeBaseID 所属知识库 ID
+	BatchID           *string `gorm:"column:batch_id;type:uuid" json:"batch_id,omitempty"`                // BatchID 同一次批量上传的批次 ID
+	SourcePath        *string `gorm:"column:source_path" json:"source_path,omitempty"`                    // SourcePath 文件夹归档内的规范化相对路径
 	TargetDirectoryID *string `gorm:"column:target_directory_id" json:"target_directory_id,omitempty"`    // TargetDirectoryID 目标目录 ID，为空表示默认目录
 	SourceType        string  `gorm:"column:source_type" json:"source_type"`                              // SourceType 导入来源类型：file/url
 	FileName          *string `gorm:"column:file_name" json:"file_name,omitempty"`                        // FileName 源文件名，可选
