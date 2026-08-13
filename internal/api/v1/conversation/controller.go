@@ -109,6 +109,40 @@ func (ctrl *Controller) List(c *gin.Context) {
 	})
 }
 
+// Update 更新会话标题。
+func (ctrl *Controller) Update(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+
+	conversationID := c.Param("conversation_id")
+	if conversationID == "" {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+
+	var req struct {
+		Title string `json:"title"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+	if req.Title == "" {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+
+	if err := ctrl.conversations.Update(c.Request.Context(), user.ID, conversationID, req.Title); err != nil {
+		response.Failure(c, err)
+		return
+	}
+
+	response.Success(c, http.StatusOK, gin.H{"updated": true})
+}
+
 // Delete 删除会话。
 func (ctrl *Controller) Delete(c *gin.Context) {
 	user, ok := middleware.GetUser(c)

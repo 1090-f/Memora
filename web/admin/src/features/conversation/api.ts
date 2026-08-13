@@ -14,6 +14,9 @@ export const getConversation = (id: string) =>
 export const listMessages = (id: string, params: Record<string, unknown> = {}) =>
   apiRequest<PageResult<Message>>({ url: `/conversations/${id}/messages`, params });
 
+export const updateConversation = (id: string, title: string) =>
+  apiRequest<void>({ url: `/conversations/${id}`, method: 'PATCH', data: { title } });
+
 export const deleteConversation = (id: string) =>
   apiRequest<void>({ url: `/conversations/${id}`, method: 'DELETE' });
 

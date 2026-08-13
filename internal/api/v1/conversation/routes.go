@@ -9,6 +9,7 @@ func (ctrl *Controller) RegisterRoutes(v1 *gin.RouterGroup, authRequired gin.Han
 	conversations.GET("", ctrl.List)
 	conversations.GET("/:conversation_id", ctrl.Get)
 	conversations.GET("/:conversation_id/messages", ctrl.ListMessages)
+	conversations.PATCH("/:conversation_id", ctrl.Update)
 	conversations.DELETE("/:conversation_id", ctrl.Delete)
 
 	// 知识库下的会话创建路由
