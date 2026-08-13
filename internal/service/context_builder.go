@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/1090-f/Memora/internal/agent/tools"
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/repository"
 )
@@ -11,10 +13,11 @@ import (
 // contextBuilder 是 contracts.ContextBuilder 接口的实现。
 // 使用固定插槽 + 结构化标签策略组装 AgentContext。
 type contextBuilder struct {
-	agentConfigRepo repository.AgentConfigRepository
-	convCtxService  contracts.ConversationContextService
-	memoryRetriever contracts.MemoryRetriever
-	retrievalSvc    contracts.RetrievalService
+	agentConfigRepo  repository.AgentConfigRepository
+	convCtxService   contracts.ConversationContextService
+	memoryRetriever  contracts.MemoryRetriever
+	retrievalSvc     contracts.RetrievalService
+	mcpToolRefresher *tools.MCPToolRefresher // 可选：MCP 工具刷新器（第一层校验）
 }
 
 // NewContextBuilder 创建新的上下文构建器实例。
@@ -32,9 +35,28 @@ func NewContextBuilder(
 	}
 }
 
+// SetMCPToolRefresher 注入 MCP 工具刷新器，用于 Agent 启动前的第一层校验。
+func (b *contextBuilder) SetMCPToolRefresher(refresher *tools.MCPToolRefresher) {
+	b.mcpToolRefresher = refresher
+}
+
 // Build 根据请求构建 AgentContext。
 // 采用固定优先级插槽策略组装上下文。
 func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRequest) (contracts.AgentContext, error) {
+	// ====== 双层校验机制的第一层：Agent 启动前刷新 MCP 工具列表 ======
+	// 在构建上下文之前，先刷新该用户的 MCP 工具列表。
+	// 从数据库查询用户已启用的 MCP Server 和 Tool，只把已启用的工具注册到工具表，
+	// 这样模型只能看到已启用的工具，避免尝试调用被禁用的工具。
+	// 注：这里不会阻塞整个请求，即使刷新失败也继续执行（降级处理）。
+	if b.mcpToolRefresher != nil {
+		// 使用带超时的刷新，防止 MCP 工具查询阻塞过久
+		refreshErr := b.mcpToolRefresher.RefreshForUserWithTimeout(ctx, string(req.UserID), 3*time.Second)
+		if refreshErr != nil {
+			// 刷新失败不阻断核心流程，降级处理：Agent 将只使用内置工具
+			fmt.Printf("警告: MCP 工具列表刷新失败（用户 %s），降级处理: %v\n", req.UserID, refreshErr)
+		}
+	}
+
 	// 1. 加载 Agent 配置（必须存在）
 	agentConfig, err := b.agentConfigRepo.FindByKnowledgeBase(ctx, string(req.UserID), string(req.KnowledgeBaseID))
 	if err != nil {

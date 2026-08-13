@@ -18,6 +18,7 @@ import (
 	"github.com/1090-f/Memora/internal/background"
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/events"
+	"github.com/1090-f/Memora/internal/mcp"
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service"
 	previewservice "github.com/1090-f/Memora/internal/service/preview"
@@ -121,9 +122,9 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	kbService := service.NewKnowledgeBaseService(kbs, dirs, searchConfigs, agentConfigs, modelConfigs, transactor)
 	directoryService := service.NewDirectoryService(kbs, dirs)
 
+	// MCP Server 和 Tool 仓库（稍后用于初始化 MCP 服务和工具刷新器）
 	mcpServers := repository.NewMCPServerRepository(a.db)
 	mcpTools := repository.NewMCPToolRepository(a.db)
-	mcpService := service.NewImportService(mcpServers, mcpTools, cfg)
 
 	aiModelConfigs := repository.NewAIModelConfigRepository(a.db)
 	keyMaterial := cfg.AI.EncryptionKey
@@ -224,6 +225,24 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		return fmt.Errorf("初始化工具注册表失败: %w", err)
 	}
 	toolExecutor := tools.NewExecutor(toolRegistry)
+
+	// 初始化 MCP ImportService（用于 MCP Server 和工具管理）
+	// 使用前面已创建的 mcpServers 和 mcpTools 仓库
+	mcpImportService := service.NewImportService(mcpServers, mcpTools, cfg)
+	mcpService := mcpImportService // 供 HTTP 路由使用
+
+	// 注入第二层校验器：工具调用前实时校验 MCP 工具启用状态
+	toolExecutor.SetAvailabilityChecker(mcpImportService)
+
+	// 创建 MCP 工具刷新器：负责在 Agent 启动前动态加载用户已启用的 MCP 工具（第一层校验）
+	mcpClient := mcp.NewMCPClient()
+	mcpToolRefresher := tools.NewMCPToolRefresher(toolRegistry, mcpImportService, mcpClient)
+
+	// 将 MCP 工具刷新器注入到 ContextBuilder，使其在构建 AgentContext 时自动刷新工具列表
+	// contextBuilder 变量以 contracts.ContextBuilder 接口暴露，这里通过类型断言注入刷新器
+	if cb, ok := contextBuilder.(interface{ SetMCPToolRefresher(*tools.MCPToolRefresher) }); ok {
+		cb.SetMCPToolRefresher(mcpToolRefresher)
+	}
 
 	// 初始化 Plan-Execute 服务（Phase 5）
 	planRepo := repository.NewPlanRepository(a.db)
