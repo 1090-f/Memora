@@ -60,7 +60,8 @@ func (e *Executor) Execute(ctx context.Context, toolContext contracts.ToolContex
 	if !spec.ReadOnly {
 		return failure(call, contracts.ErrWriteMCPToolForbidden, "write tool is forbidden")
 	}
-	if !contains(toolContext.AllowedToolNames, call.ToolName) {
+	// 仅在显式设置了白名单时才进行过滤。当 AllowedToolNames 为空时，表示无限制，所有已启用工具均可调用。
+	if len(toolContext.AllowedToolNames) > 0 && !contains(toolContext.AllowedToolNames, call.ToolName) {
 		return failure(call, contracts.ErrForbidden, "tool is not allowed")
 	}
 	if spec.NetworkRequired && !toolContext.NetworkEnabled {

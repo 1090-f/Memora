@@ -203,6 +203,13 @@ func (s *ReactService) RunReActLoop(
 			}
 		}
 
+		// 过滤和去重工具调用：流式响应可能产生增量 chunks，其中某些 chunk 的
+		// ToolCalls 可能缺少 CallID 或 ToolName（增量中间态），这些空调用会导致：
+		// 1. RESOURCE_NOT_FOUND — 找不到名称为空的工具
+		// 2. 400 Bad Request — tool_calls 缺少 id 字段
+		// 处理策略：按 CallID 去重（保留最后一个，含最完整参数），过滤掉 CallID 或 ToolName 为空的条目
+		roundToolCalls = deduplicateToolCalls(roundToolCalls)
+
 		content := fullContent.String()
 
 		// 累加 Token 用量
@@ -548,4 +555,28 @@ func (s *ReactService) buildToolCallSummary(result contracts.ToolResult, execErr
 		summary += fmt.Sprintf("，结果长度 %d 字符", textLen)
 	}
 	return summary
+}
+
+// deduplicateToolCalls 对工具调用列表进行去重和过滤。
+// 流式响应中同一工具调用可能以多个 chunk 形式返回（增量式），
+// 按 CallID 去重保留最后一个（含最完整参数），并过滤掉 CallID 或 ToolName 为空的无效条目。
+func deduplicateToolCalls(calls []contracts.ToolCall) []contracts.ToolCall {
+	seen := make(map[contracts.ID]int) // CallID → index in result
+	var result []contracts.ToolCall
+
+	for _, call := range calls {
+		// 过滤无效条目（流式增量 chunk 可能缺失 ID 或名称）
+		if call.CallID == "" || call.ToolName == "" {
+			continue
+		}
+		// 按 CallID 去重：如果已存在，替换为最新版本（含更完整的参数）
+		if idx, ok := seen[call.CallID]; ok {
+			result[idx] = call
+		} else {
+			seen[call.CallID] = len(result)
+			result = append(result, call)
+		}
+	}
+
+	return result
 }

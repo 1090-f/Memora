@@ -20,6 +20,7 @@ type contextBuilder struct {
 	memoryRetriever  contracts.MemoryRetriever
 	retrievalSvc     contracts.RetrievalService
 	mcpToolRefresher *tools.MCPToolRefresher // 可选：MCP 工具刷新器（第一层校验）
+	toolRegistry     contracts.ToolRegistry  // 可选：工具注册表，用于检测已注册的 MCP 工具
 }
 
 // NewContextBuilder 创建新的上下文构建器实例。
@@ -28,12 +29,14 @@ func NewContextBuilder(
 	convCtxService contracts.ConversationContextService,
 	memoryRetriever contracts.MemoryRetriever,
 	retrievalSvc contracts.RetrievalService,
+	toolRegistry contracts.ToolRegistry,
 ) contracts.ContextBuilder {
 	return &contextBuilder{
 		agentConfigRepo: agentConfigRepo,
 		convCtxService:  convCtxService,
 		memoryRetriever: memoryRetriever,
 		retrievalSvc:    retrievalSvc,
+		toolRegistry:    toolRegistry,
 	}
 }
 
@@ -184,10 +187,26 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 		agentCtx.KnowledgeStatus = retrievalRes.knowledgeStatus
 	}
 
+	// 自动启用网络：当注册表中存在 MCP 类型工具时，自动将 NetworkEnabled 设为 true。
+	// 因为 MCP 工具（如 baidu_search）必然需要网络访问，且用户已在 MCP 管理页面显式启用了这些工具。
+	if !agentCtx.NetworkEnabled && b.toolRegistry != nil {
+		for _, spec := range b.toolRegistry.Specs() {
+			if spec.Type == contracts.ToolTypeMCP && spec.Enabled {
+				agentCtx.NetworkEnabled = true
+				logger.Debug("自动启用网络：检测到已注册的 MCP 工具",
+					zap.String("tool_name", spec.Name),
+					zap.String("source_id", spec.SourceID),
+				)
+				break
+			}
+		}
+	}
+
 	// 日志：记录当前注册的工具数量（用于诊断工具注册问题）
 	if b.mcpToolRefresher != nil {
 		logger.Debug("AgentContext 构建完成，注册表工具状态",
 			zap.Any("allowed_tools", agentCtx.AllowedTools),
+			zap.Bool("network_enabled", agentCtx.NetworkEnabled),
 			zap.String("chat_model_id", agentCtx.ChatModelID),
 		)
 	}
