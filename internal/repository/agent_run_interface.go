@@ -42,6 +42,9 @@ type AgentRunRepository interface {
 	// MarkCancelled 更新运行状态为 cancelled（需同时验证用户 ID 确保所有者可取消）。
 	MarkCancelled(ctx context.Context, userID, runID uuid.UUID) error
 
+	// SetAssistantMessageID 设置运行记录的助手消息 ID（运行完成后调用）。
+	SetAssistantMessageID(ctx context.Context, runID uuid.UUID, assistantMessageID uuid.UUID) error
+
 	// MarkCancelledAdmin 直接按 runID 取消运行（用于 Worker 超时或内部取消）。
 	MarkCancelledAdmin(ctx context.Context, runID uuid.UUID) error
 

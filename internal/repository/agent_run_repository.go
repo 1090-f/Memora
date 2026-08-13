@@ -189,6 +189,14 @@ func (r *agentRunRepository) MarkCancelledAdmin(ctx context.Context, runID uuid.
 		}).Error
 }
 
+// SetAssistantMessageID 设置运行记录的助手消息 ID。
+func (r *agentRunRepository) SetAssistantMessageID(ctx context.Context, runID uuid.UUID, assistantMessageID uuid.UUID) error {
+	return r.db.WithContext(ctx).
+		Model(&entity.AgentRun{}).
+		Where("id = ?", runID).
+		Update("assistant_message_id", assistantMessageID).Error
+}
+
 // CreateRetry 基于失败运行创建新的排队运行，返回新运行 ID。
 // 新运行的 retry_of_run_id 指向原始运行，其他字段从原始运行复制。
 func (r *agentRunRepository) CreateRetry(ctx context.Context, originalRunID, userID uuid.UUID) (uuid.UUID, error) {

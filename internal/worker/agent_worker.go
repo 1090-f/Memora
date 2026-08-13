@@ -13,6 +13,7 @@ import (
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/pkg/logger"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -41,22 +42,26 @@ type AgentWorker struct {
 	agentService   contracts.AgentRunService     // Agent 核心执行服务（负责路由和执行）
 	runRepo        repository.AgentRunRepository // 运行记录 Repository（用于领取和更新状态）
 	contextBuilder contracts.ContextBuilder      // 上下文构建器（从数据库加载会话、配置等信息）
+	messageRepo    repository.MessageRepository  // 消息 Repository（用于持久化助手消息）
 	config         AgentWorkerConfig             // Worker 配置
 	mu             sync.Mutex                    // 保护 running 状态的互斥锁
 	running        bool                          // 是否正在运行
 }
 
 // NewAgentWorker 创建 Agent Worker 实例。
-// 需要 AgentRunService（执行路由和运行）、AgentRunRepository（领取和状态更新）和 ContextBuilder（从数据库重建上下文）。
+// 需要 AgentRunService（执行路由和运行）、AgentRunRepository（领取和状态更新）、
+// MessageRepository（持久化助手消息）和 ContextBuilder（从数据库重建上下文）。
 func NewAgentWorker(
 	agentService contracts.AgentRunService,
 	runRepo repository.AgentRunRepository,
+	messageRepo repository.MessageRepository,
 	contextBuilder contracts.ContextBuilder,
 	config AgentWorkerConfig,
 ) *AgentWorker {
 	return &AgentWorker{
 		agentService:   agentService,
 		runRepo:        runRepo,
+		messageRepo:    messageRepo,
 		contextBuilder: contextBuilder,
 		config:         config,
 	}
@@ -204,6 +209,31 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 	); markErr != nil {
 		logger.Error("标记 Agent 运行完成状态出错", zap.String("run_id", run.ID.String()), zap.Error(markErr))
 		return
+	}
+
+	// 持久化助手消息（AI 回复）
+	if result.FinalResult != "" {
+		msgID := uuid.New()
+		runIDStr := run.ID.String()
+		assistantMsg := &entity.Message{
+			ID:              msgID.String(),
+			ConversationID:  run.ConversationID.String(),
+			UserID:          run.UserID.String(),
+			KnowledgeBaseID: run.KnowledgeBaseID.String(),
+			AgentRunID:      &runIDStr,
+			Role:            "assistant",
+			Content:         result.FinalResult,
+			Status:          "completed",
+			CreatedAt:       time.Now().UTC(),
+		}
+		if createErr := w.messageRepo.Create(context.Background(), assistantMsg); createErr != nil {
+			logger.Error("持久化助手消息失败", zap.String("run_id", run.ID.String()), zap.Error(createErr))
+		} else {
+			// 回填 assistant_message_id
+			if setErr := w.runRepo.SetAssistantMessageID(context.Background(), run.ID, msgID); setErr != nil {
+				logger.Error("设置 assistant_message_id 失败", zap.String("run_id", run.ID.String()), zap.Error(setErr))
+			}
+		}
 	}
 
 	logger.Info("Agent 运行执行完成", zap.String("run_id", run.ID.String()))
