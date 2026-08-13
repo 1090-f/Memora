@@ -5,7 +5,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { capabilities } from '@/app/capabilities';
 import { AgentRunPanel } from '@/features/agent-run/components/AgentRunPanel';
 import { initialAgentRunState, reduceAgentEvent, type ResetAction } from '@/features/agent-run/eventReducer';
-import { cancelAgentRun, createAgentRun, getAgentRun } from '@/features/agent-run/api';
+import { cancelAgentRun, createAgentRun, getAgentRun, retryAgentRun } from '@/features/agent-run/api';
 import { queryKeys } from '@/api/queryKeys';
 import { ChatWorkspace } from '@/layouts/ChatWorkspace';
 import { createConversation, deleteConversation, listConversations, listMessages, updateConversation } from '../api';
@@ -140,6 +140,51 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
     }
   };
 
+  // 重试：基于已存在的 agent_run_id 创建新的运行并重新流式输出。
+  // 调用后端 retry API 创建新运行，随后通过 SSE 实时接收事件，最终获取结果并追加助手消息。
+  const handleRetry = async (agentRunId: string, query: string) => {
+    if (!enabled || submitting || !conversationId) return;
+    setSubmitting(true);
+    try {
+      setErrorMessage(null);
+      // 1. 调用 retry API 获取新的运行 ID
+      const { new_run_id } = await retryAgentRun(agentRunId);
+      currentRunId.current = new_run_id;
+      // 2. 重置 Agent 运行状态，准备接收新运行的事件
+      dispatchRun({ type: 'RESET_AGENT_RUN_STATE' } as ResetAction);
+      const controller = new AbortController();
+      abortRef.current = controller;
+      // 3. SSE 流式订阅新运行的生命周期事件
+      try {
+        await streamAgentEvents(`${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${new_run_id}/events`, {
+          signal: controller.signal,
+          onEvent: dispatchRun,
+          timeout: 120_000,
+        });
+      } catch (e) {
+        console.warn('重试 SSE 流异常结束，将通过 API 获取最终结果', e);
+      }
+      // 4. SSE 结束后从 API 获取最终结果
+      const completedRun = await activeRunQuery.refetch();
+      const run = completedRun.data;
+      const answer = run?.final_result
+        || runStateRef.current.answer
+        || (run?.status === 'failed' ? run.error_message : '');
+      if (answer) {
+        setMessages((current) => [...current, {
+          id: crypto.randomUUID(), role: 'assistant', content: answer, agent_run_id: new_run_id,
+          status: run?.status || 'completed', created_at: new Date().toISOString(),
+        }]);
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '重试运行失败');
+    } finally {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
+      setSubmitting(false);
+      abortRef.current = null;
+    }
+  };
+
   const stop = () => {
     abortRef.current?.abort();
     if (currentRunId.current) void cancelAgentRun(currentRunId.current);
@@ -197,7 +242,7 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
     <>
       {!enabled && <Alert severity="info" sx={{ m: 2, mb: 0 }}>智能问答后端未启用，请检查服务配置。</Alert>}
       {errorMessage && <Alert severity="error" sx={{ m: 2, mb: 0 }}>{errorMessage}</Alert>}
-      <MessageList messages={messages} streamingAnswer={submitting ? runState.answer : ''} onSuggestion={setDraft} scrollToBottom={shouldScrollToBottom} />
+      <MessageList messages={messages} streamingAnswer={submitting ? runState.answer : ''} onSuggestion={setDraft} scrollToBottom={shouldScrollToBottom} onRetry={handleRetry} />
     </>
   );
 

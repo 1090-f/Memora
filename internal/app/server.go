@@ -290,8 +290,8 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	// 初始化 ReactRunner（ReAct 模式执行器）
 	reactRunner := core.NewReactRunner(reactService, sequencedEvents)
 
-	// 初始化 PlanRunner（Plan-Execute 模式执行器）
-	planRunner := core.NewPlanRunner(plannerService, planExecutorService, reviewerService, replanService, planStateStore)
+	// 初始化 PlanRunner（Plan-Execute 模式执行器），注入 sequencedEvents 用于实时推送计划与步骤事件。
+	planRunner := core.NewPlanRunner(plannerService, planExecutorService, reviewerService, replanService, planStateStore, sequencedEvents)
 
 	// 初始化 Agent 运行和工具调用 Repository
 	agentRunRepo := repository.NewAgentRunRepository(a.db)

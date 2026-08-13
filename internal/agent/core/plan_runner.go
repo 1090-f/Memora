@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -19,22 +20,29 @@ type planRunner struct {
 	reviewer      *service.ReviewerService
 	replanService *service.ReplanService
 	stateStore    service.PlanStateStore
+	events        EventPublisher // 事件发布器，用于实时推送 Plan/Step 生命周期事件
 }
 
 // NewPlanRunner 创建 Plan-Execute 执行器。
+// events: 事件发布器（由 SequencedEventPublisher 包装），注入后 PlanRunner 可在各阶段发布实时事件。
 func NewPlanRunner(
 	planner *service.PlannerService,
 	executor *service.PlanExecutorService,
 	reviewer *service.ReviewerService,
 	replanService *service.ReplanService,
 	stateStore service.PlanStateStore,
+	events EventPublisher,
 ) PlanRunner {
+	if events == nil {
+		events = NoopEventPublisher{}
+	}
 	return &planRunner{
 		planner:       planner,
 		executor:      executor,
 		reviewer:      reviewer,
 		replanService: replanService,
 		stateStore:    stateStore,
+		events:        events,
 	}
 }
 
@@ -75,6 +83,35 @@ func (r *planRunner) Run(ctx context.Context, agentCtx contracts.AgentContext, c
 			plan.ID = planID
 		}
 
+		// 发布计划创建事件，前端据此初始化计划展示面板
+		if err := r.events.PublishPlanCreated(ctx, agentCtx.RunID, plan); err != nil {
+			logger.Warn("发布计划创建事件失败",
+				zap.String("plan_id", string(plan.ID)),
+				zap.Error(err),
+			)
+		}
+
+		// 设置步骤事件回调，让 PlanExecutorService 在执行步骤时实时发布生命周期事件。
+		// 参考 ReAct 的回调模式：PlanRunner 持有 EventPublisher，通过闭包桥接到 service 层。
+		r.executor.SetStepEventCallbacks(
+			// onStepStarted：步骤开始时发布 step.started 事件
+			func(ctx context.Context, runID contracts.ID, stepNo int, title string) error {
+				return r.events.Publish(ctx, contracts.AgentEvent{
+					RunID:     runID,
+					EventType: contracts.EventStepStarted,
+					Data:      mustMarshal(map[string]any{"step_no": stepNo, "title": title, "status": "running"}),
+				})
+			},
+			// onStepCompleted：步骤完成时发布 step.completed 事件
+			func(ctx context.Context, runID contracts.ID, stepNo int, title string) error {
+				return r.events.Publish(ctx, contracts.AgentEvent{
+					RunID:     runID,
+					EventType: contracts.EventStepCompleted,
+					Data:      mustMarshal(map[string]any{"step_no": stepNo, "title": title, "status": "completed"}),
+				})
+			},
+		)
+
 		// 3. 执行计划
 		plan, err = r.executor.Execute(ctx, agentCtx, plan)
 		if err != nil {
@@ -109,6 +146,14 @@ func (r *planRunner) Run(ctx context.Context, agentCtx contracts.AgentContext, c
 		if err != nil {
 			return RunOutput{}, newCoreError(contracts.ErrInternal, err)
 		}
+
+		// 发布计划重新规划事件，前端据此更新计划展示面板（版本递增、步骤刷新）
+		if err := r.events.PublishPlanReplanned(ctx, agentCtx.RunID, plan); err != nil {
+			logger.Warn("发布计划重新规划事件失败",
+				zap.String("plan_id", string(plan.ID)),
+				zap.Error(err),
+			)
+		}
 	}
 
 	// 构建最终结果
@@ -125,4 +170,14 @@ func (r *planRunner) Run(ctx context.Context, agentCtx contracts.AgentContext, c
 		Summary:         result,
 		KnowledgeStatus: agentCtx.KnowledgeStatus,
 	}, nil
+}
+
+// mustMarshal 将任意值序列化为 JSON RawMessage，序列化失败时 panic。
+// 用于步骤事件回调中的数据序列化，因为回调中不应吞掉编码错误。
+func mustMarshal(v any) json.RawMessage {
+	data, err := json.Marshal(v)
+	if err != nil {
+		panic(fmt.Sprintf("序列化事件数据失败: %v", err))
+	}
+	return data
 }
