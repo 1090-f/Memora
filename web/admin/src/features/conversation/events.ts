@@ -3,10 +3,11 @@ import type { AgentEvent, AgentEventType } from '@/features/agent-run/types';
 
 export const streamAgentEvents = (
   url: string,
-  options: { signal: AbortSignal; afterSequence?: number; onEvent: (event: AgentEvent) => void },
+  options: { signal: AbortSignal; afterSequence?: number; onEvent: (event: AgentEvent) => void; timeout?: number },
 ) => readSseStream(url, {
   signal: options.signal,
   afterSequence: options.afterSequence,
+  timeout: options.timeout,
   onEvent: (event) => {
     const body = event.data as {
       run_id: string;

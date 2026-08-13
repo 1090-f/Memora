@@ -318,6 +318,12 @@ func (ctrl *Controller) SubscribeEvents(c *gin.Context) {
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no") // 禁用 Nginx 缓冲，确保流式推送的实时性
 
+	// 禁用 WriteTimeout：SSE 是长期流式连接，HTTP Server 的全局 WriteTimeout
+	// 会强制中断流式推送。使用 http.ResponseController 将写入截止时间置零。
+	if rc := http.NewResponseController(c.Writer); rc != nil {
+		rc.SetWriteDeadline(time.Time{}) // zero value = no deadline
+	}
+
 	// 3. 订阅事件通道
 	eventCh, err := ctrl.eventSub.Subscribe(c.Request.Context(), runID, afterSeq)
 	if err != nil {
@@ -362,6 +368,14 @@ func (ctrl *Controller) SubscribeEvents(c *gin.Context) {
 			//   data: {"event_id":"...","sequence":1,...}
 			fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event.EventType, eventData)
 			c.Writer.Flush()
+
+			// 终端事件处理：Agent 运行已结束（完成/失败/取消），无需继续等待。
+			// 立即退出循环避免 handler 长时间空转占用连接。
+			if event.EventType == contracts.EventRunCompleted ||
+				event.EventType == contracts.EventRunFailed ||
+				event.EventType == contracts.EventRunCancelled {
+				return
+			}
 		}
 	}
 }
