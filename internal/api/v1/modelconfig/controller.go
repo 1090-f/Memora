@@ -159,3 +159,138 @@ func (ctrl *Controller) CreateModelConfig(c *gin.Context) {
 
 	response.Success(c, http.StatusCreated, config)
 }
+
+// UpdateModelConfig 更新模型配置。
+func (ctrl *Controller) UpdateModelConfig(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+
+	configID := c.Param("id")
+	if configID == "" {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+
+	// 先查询现有配置
+	existing, err := ctrl.repo.FindByID(c.Request.Context(), configID)
+	if err != nil {
+		response.Failure(c, err)
+		return
+	}
+	if existing.UserID != user.ID {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+
+	var input struct {
+		Name                *string  `json:"name"`
+		Provider            *string  `json:"provider"`
+		ModelType           *string  `json:"model_type" binding:"omitempty,oneof=chat embedding reranker"`
+		BaseURL             *string  `json:"base_url"`
+		APIKey              *string  `json:"api_key"`
+		TimeoutSeconds      *int     `json:"timeout_seconds"`
+		RetryTimes          *int     `json:"retry_times"`
+		IsDefault           *bool    `json:"is_default"`
+		Enabled             *bool    `json:"enabled"`
+		MaxTokens           *int     `json:"max_tokens,omitempty"`
+		Temperature         *float64 `json:"temperature,omitempty"`
+		VectorDimension     *int     `json:"vector_dimension,omitempty"`
+		SupportsToolCalling *bool    `json:"supports_tool_calling"`
+		SupportsStreaming   *bool    `json:"supports_streaming"`
+	}
+
+	if err := c.ShouldBindJSON(&input); err != nil {
+		response.Failure(c, err)
+		return
+	}
+
+	// 更新字段
+	if input.Name != nil {
+		existing.Name = *input.Name
+	}
+	if input.Provider != nil {
+		existing.Provider = *input.Provider
+	}
+	if input.ModelType != nil {
+		existing.ModelType = *input.ModelType
+	}
+	if input.BaseURL != nil {
+		existing.BaseURL = *input.BaseURL
+	}
+	if input.APIKey != nil && *input.APIKey != "" {
+		// 重新加密 API Key
+		if ctrl.crypto != nil {
+			ciphertext, err := ctrl.crypto.Encrypt(*input.APIKey)
+			if err != nil {
+				response.Failure(c, apperrors.New(contracts.ErrInternal, err))
+				return
+			}
+			existing.APIKeyCiphertext = ciphertext
+			// 更新脱敏显示
+			if len(*input.APIKey) > 8 {
+				existing.APIKeyMasked = (*input.APIKey)[:4] + "****" + (*input.APIKey)[len(*input.APIKey)-4:]
+			} else {
+				existing.APIKeyMasked = "****"
+			}
+		}
+	}
+	if input.TimeoutSeconds != nil {
+		existing.TimeoutSeconds = *input.TimeoutSeconds
+	}
+	if input.RetryTimes != nil {
+		existing.RetryTimes = *input.RetryTimes
+	}
+	if input.IsDefault != nil {
+		existing.IsDefault = *input.IsDefault
+	}
+	if input.Enabled != nil {
+		existing.Enabled = *input.Enabled
+	}
+	if input.MaxTokens != nil {
+		existing.MaxTokens = input.MaxTokens
+	}
+	if input.Temperature != nil {
+		existing.Temperature = input.Temperature
+	}
+	if input.VectorDimension != nil {
+		existing.VectorDimension = input.VectorDimension
+	}
+	if input.SupportsToolCalling != nil {
+		existing.SupportsToolCalling = *input.SupportsToolCalling
+	}
+	if input.SupportsStreaming != nil {
+		existing.SupportsStreaming = *input.SupportsStreaming
+	}
+
+	if err := ctrl.repo.Update(c.Request.Context(), existing); err != nil {
+		response.Failure(c, err)
+		return
+	}
+
+	response.Success(c, http.StatusOK, existing)
+}
+
+// DeleteModelConfig 删除模型配置。
+func (ctrl *Controller) DeleteModelConfig(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+
+	configID := c.Param("id")
+	if configID == "" {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+
+	if err := ctrl.repo.Delete(c.Request.Context(), configID, user.ID); err != nil {
+		response.Failure(c, err)
+		return
+	}
+
+	response.Success(c, http.StatusOK, gin.H{"deleted": true})
+}

@@ -18,4 +18,8 @@ type AIModelConfigRepository interface {
 	FindDefaultByUserAndType(ctx context.Context, userID, modelType string) (*entity.AIModelConfig, error)
 	// ListByUser 列出用户的所有模型配置。
 	ListByUser(ctx context.Context, userID string, modelType string) ([]entity.AIModelConfig, error)
+	// Update 更新模型配置。
+	Update(ctx context.Context, config *entity.AIModelConfig) error
+	// Delete 软删除模型配置。
+	Delete(ctx context.Context, id, userID string) error
 }

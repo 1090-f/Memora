@@ -210,7 +210,10 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	embeddingSvc := service.NewEmbeddingService(nil, "") // TODO: 从配置加载 embedding 模型
 	memoryRetriever := service.NewMemoryRetriever(memoryRepo, embeddingSvc)
 
-	contextBuilder := service.NewContextBuilder(agentConfigs, convCtxService, memoryRetriever, retrievalService)
+	conversationRepo := repository.NewConversationRepository(a.db)
+	conversationService := service.NewConversationService(conversationRepo)
+
+	contextBuilder := service.NewContextBuilder(agentConfigs, convCtxService, memoryRetriever,retrievalService)
 
 	// 初始化 RouterService（Phase 4）
 	// 使用用户配置的 ChatModelID 做路由判断
@@ -349,7 +352,9 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		ContextBuilder:  contextBuilder,
 		AssetSignKey:    cfg.JWT.Secret,
 		Router:          routerService,
+		MemoryRepo:      memoryRepo,
 		AgentController: agentController,
+		Conversations:   conversationService,
 		PostgresHealth:  func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
 		RedisHealth:     func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
 		MinIOHealth:     a.store.Health,
