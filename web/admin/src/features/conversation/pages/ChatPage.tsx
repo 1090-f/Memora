@@ -140,21 +140,58 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
     }
   };
 
-  // 重试：基于已存在的 agent_run_id 创建新的运行并重新流式输出。
-  // 调用后端 retry API 创建新运行，随后通过 SSE 实时接收事件，最终获取结果并追加助手消息。
-  const handleRetry = async (agentRunId: string, query: string) => {
+  /**
+   * handleRetry 重试指定 agent_run 的消息。
+   * - 在原始消息上原地更新，将旧内容保存到 versions 历史中
+   * - SSE 结束后将新答案设为消息内容
+   * - 通过 current_version_index 实现版本切换
+   */
+  const handleRetry = async (agentRunId: string, _query: string) => {
     if (!enabled || submitting || !conversationId) return;
     setSubmitting(true);
+
+    let targetIndex: number = -1;
+
     try {
       setErrorMessage(null);
-      // 1. 调用 retry API 获取新的运行 ID
+
+      // 1. 找到原始消息索引（保存下来后续使用，避免闭包过期）
+      targetIndex = messages.findIndex(m => m.agent_run_id === agentRunId);
+      if (targetIndex === -1) throw new Error('未找到对应的消息');
+
+      // 2. 调用 retry API 获取新的运行 ID
       const { new_run_id } = await retryAgentRun(agentRunId);
       currentRunId.current = new_run_id;
-      // 2. 重置 Agent 运行状态，准备接收新运行的事件
+
+      // 3. 立即将原始消息的内容保存为历史版本，清空当前内容等待新结果
+      setMessages((current) => {
+        const updated = [...current];
+        const oldMsg = updated[targetIndex];
+        if (!oldMsg) return current;
+        // 将旧内容保存为历史版本
+        const oldVersion = {
+          content: oldMsg.content,
+          agent_run_id: agentRunId,
+          status: oldMsg.status || 'completed',
+          created_at: oldMsg.created_at,
+        };
+        updated[targetIndex] = {
+          ...oldMsg,
+          content: '', // 清空，等待新答案
+          agent_run_id: new_run_id,
+          status: 'running' as const,
+          versions: [oldVersion], // 历史版本列表
+          current_version_index: -1, // -1 表示显示 content（最新版本）
+        };
+        return updated;
+      });
+
+      // 4. 重置 Agent 运行状态，准备接收新运行的事件
       dispatchRun({ type: 'RESET_AGENT_RUN_STATE' } as ResetAction);
       const controller = new AbortController();
       abortRef.current = controller;
-      // 3. SSE 流式订阅新运行的生命周期事件
+
+      // 5. SSE 流式订阅新运行的生命周期事件
       try {
         await streamAgentEvents(`${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${new_run_id}/events`, {
           signal: controller.signal,
@@ -164,25 +201,74 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
       } catch (e) {
         console.warn('重试 SSE 流异常结束，将通过 API 获取最终结果', e);
       }
-      // 4. SSE 结束后从 API 获取最终结果
+
+      // 6. SSE 结束后从 API 获取最终结果
       const completedRun = await activeRunQuery.refetch();
       const run = completedRun.data;
       const answer = run?.final_result
         || runStateRef.current.answer
         || (run?.status === 'failed' ? run.error_message : '');
-      if (answer) {
-        setMessages((current) => [...current, {
-          id: crypto.randomUUID(), role: 'assistant', content: answer, agent_run_id: new_run_id,
-          status: run?.status || 'completed', created_at: new Date().toISOString(),
-        }]);
+
+      if (answer && targetIndex >= 0) {
+        // 原地更新消息：设置新答案，追加到版本历史
+        setMessages((current) => {
+          const updated = [...current];
+          const msg = updated[targetIndex];
+          if (!msg || msg.agent_run_id !== new_run_id) return current; // 防止并发覆盖
+          const prevVersions = msg.versions || [];
+          return updated.map((m, i) => i === targetIndex ? {
+            ...m,
+            content: answer,
+            status: run?.status || 'completed',
+            agent_run_id: new_run_id,
+            versions: [...prevVersions, {
+              content: answer,
+              agent_run_id: new_run_id,
+              status: run?.status || 'completed',
+              created_at: new Date().toISOString(),
+            }],
+            current_version_index: -1, // -1 显示最新版本（content）
+          } : m);
+        });
       }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '重试运行失败');
+      // 恢复消息到原始状态
+      if (targetIndex >= 0) {
+        setMessages((current) => {
+          const updated = [...current];
+          const msg = updated[targetIndex];
+          if (msg && msg.versions && msg.versions.length > 0) {
+            // 从历史版本中恢复第一个版本的内容
+            const firstVersion = msg.versions[0];
+            updated[targetIndex] = {
+              ...msg,
+              content: firstVersion.content,
+              agent_run_id: firstVersion.agent_run_id,
+              status: firstVersion.status || 'completed',
+              versions: undefined,
+              current_version_index: undefined,
+            };
+          }
+          return updated;
+        });
+      }
     } finally {
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
       setSubmitting(false);
       abortRef.current = null;
     }
+  };
+
+  /**
+   * handleSwitchVersion 切换消息的版本显示。
+   * current_version_index >= 0 时显示对应历史版本内容；
+   * -1 时显示 content（最新版本）。
+   */
+  const handleSwitchVersion = (messageId: string, newIndex: number) => {
+    setMessages((current) => current.map(m =>
+      m.id === messageId ? { ...m, current_version_index: newIndex } : m
+    ));
   };
 
   const stop = () => {
@@ -242,7 +328,7 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
     <>
       {!enabled && <Alert severity="info" sx={{ m: 2, mb: 0 }}>智能问答后端未启用，请检查服务配置。</Alert>}
       {errorMessage && <Alert severity="error" sx={{ m: 2, mb: 0 }}>{errorMessage}</Alert>}
-      <MessageList messages={messages} streamingAnswer={submitting ? runState.answer : ''} onSuggestion={setDraft} scrollToBottom={shouldScrollToBottom} onRetry={handleRetry} />
+      <MessageList messages={messages} streamingAnswer={submitting ? runState.answer : ''} onSuggestion={setDraft} scrollToBottom={shouldScrollToBottom} onRetry={handleRetry} onSwitchVersion={handleSwitchVersion} />
     </>
   );
 
