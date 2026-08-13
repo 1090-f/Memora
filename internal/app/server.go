@@ -213,7 +213,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	conversationRepo := repository.NewConversationRepository(a.db)
 	conversationService := service.NewConversationService(conversationRepo)
 
-	contextBuilder := service.NewContextBuilder(agentConfigs, convCtxService, memoryRetriever,retrievalService)
+	contextBuilder := service.NewContextBuilder(agentConfigs, convCtxService, memoryRetriever, retrievalService)
 
 	// 初始化 RouterService（Phase 4）
 	// 使用用户配置的 ChatModelID 做路由判断
@@ -318,6 +318,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	agentWorker := worker.NewAgentWorker(
 		agentCoreService,
 		agentRunRepo,
+		messages,
 		contextBuilder,
 		worker.DefaultAgentWorkerConfig(),
 	)
@@ -355,6 +356,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		MemoryRepo:      memoryRepo,
 		AgentController: agentController,
 		Conversations:   conversationService,
+		Messages:        messages,
 		PostgresHealth:  func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
 		RedisHealth:     func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
 		MinIOHealth:     a.store.Health,

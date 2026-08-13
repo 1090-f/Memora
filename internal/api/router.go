@@ -58,6 +58,7 @@ type Dependencies struct {
 	AgentController *agent.Controller // Agent 运行管理的 HTTP 控制器
 	MemoryRepo      repository.MemoryRepository
 	Conversations   service.ConversationService
+	Messages        repository.MessageRepository
 	PostgresHealth  HealthCheck
 	RedisHealth     HealthCheck
 	MinIOHealth     HealthCheck
@@ -97,7 +98,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 		memory.NewController(deps.MemoryRepo).RegisterRoutes(v1, authRequired)
 	}
 	if deps.Conversations != nil {
-		conversation.NewController(deps.Conversations).RegisterRoutes(v1, authRequired)
+		conversation.NewController(deps.Conversations, deps.Messages).RegisterRoutes(v1, authRequired)
 	}
 	return engine
 }

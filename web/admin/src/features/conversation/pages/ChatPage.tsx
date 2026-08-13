@@ -1,6 +1,6 @@
-import { Alert } from '@mui/material';
+import { Alert, Button, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle } from '@mui/material';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useReducer, useRef, useState } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { capabilities } from '@/app/capabilities';
 import { AgentRunPanel } from '@/features/agent-run/components/AgentRunPanel';
@@ -8,14 +8,12 @@ import { initialAgentRunState, reduceAgentEvent, type ResetAction } from '@/feat
 import { cancelAgentRun, createAgentRun, getAgentRun } from '@/features/agent-run/api';
 import { queryKeys } from '@/api/queryKeys';
 import { ChatWorkspace } from '@/layouts/ChatWorkspace';
-import { createConversation, getConversation, listConversations } from '../api';
+import { createConversation, deleteConversation, listConversations, listMessages, updateConversation } from '../api';
 import { streamAgentEvents } from '../events';
 import { ChatComposer } from '../components/ChatComposer';
 import { ConversationSidebar } from '../components/ConversationSidebar';
 import { MessageList } from '../components/MessageList';
 import type { Message } from '../types';
-
-const conversationStorageKey = (kbId: string) => `memora:conversation:${kbId}`;
 
 export function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationId?: string }) {
   const enabled = capabilities.conversation === 'available';
@@ -28,18 +26,36 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
   const [runState, dispatchRun] = useReducer(reduceAgentEvent, initialAgentRunState);
   const runStateRef = useRef(runState);
   runStateRef.current = runState;
-  const [activeConversationId, setActiveConversationId] = useState(conversationId);
   const abortRef = useRef<AbortController | null>(null);
   const currentRunId = useRef<string | null>(null);
 
-  // 查询会话列表
+  // 会话列表
   const conversationsQuery = useQuery({
     queryKey: queryKeys.conversations(kbId),
     queryFn: () => listConversations(kbId, { page: 1, page_size: 100 }),
-    enabled: enabled,
+    enabled,
   });
 
-  // 通过 Agent 运行详情刷新最终回答，避免只依赖 SSE 连接是否正常结束。
+  // 当前会话信息
+  const currentConversation = useMemo(() =>
+    conversationsQuery.data?.items?.find(c => c.id === conversationId),
+    [conversationsQuery.data, conversationId],
+  );
+
+  // 切换会话时加载历史消息
+  useEffect(() => {
+    if (!conversationId || !enabled) {
+      setMessages([]);
+      return;
+    }
+    listMessages(conversationId, { page: 1, page_size: 100 }).then((result) => {
+      setMessages(result.items || []);
+    }).catch(() => {
+      setMessages([]);
+    });
+  }, [conversationId, kbId, enabled]);
+
+  // Agent 运行详情查询（用于 SSE 结束后获取最终结果）
   const activeRunQuery = useQuery({
     queryKey: ['agent-run', currentRunId.current],
     queryFn: () => {
@@ -50,42 +66,29 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
     enabled: false,
   });
 
-  const getConversationId = async () => {
-    if (activeConversationId) return activeConversationId;
-    const stored = sessionStorage.getItem(conversationStorageKey(kbId));
-    if (stored) {
-      try {
-        await getConversation(stored);
-        setActiveConversationId(stored);
-        navigate(`/chat/${kbId}/${stored}`, { replace: true });
-        return stored;
-      } catch {
-        sessionStorage.removeItem(conversationStorageKey(kbId));
-      }
-    }
-    const conversation = await createConversation(kbId, '新会话');
-    sessionStorage.setItem(conversationStorageKey(kbId), conversation.id);
-    setActiveConversationId(conversation.id);
-    navigate(`/chat/${kbId}/${conversation.id}`, { replace: true });
-    void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
-    return conversation.id;
-  };
-
   const send = async () => {
-    if (!enabled || !draft.trim() || submitting) return;
+    if (!enabled || !draft.trim() || submitting || !conversationId) return;
     const query = draft.trim();
     setSubmitting(true);
-
     try {
       setErrorMessage(null);
-      const id = await getConversationId();
       setDraft('');
       setMessages((current) => [...current, {
         id: crypto.randomUUID(), role: 'user', content: query, agent_run_id: null, created_at: new Date().toISOString(),
       }]);
-      const response = await createAgentRun({ knowledge_base_id: kbId, conversation_id: id, query });
+
+      // 如果当前会话还是默认标题 "新会话"，用第一个问题更新会话名
+      if (currentConversation?.title === '新会话') {
+        try {
+          await updateConversation(conversationId, query);
+          void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
+        } catch {
+          // 标题更新失败不影响问答流程
+        }
+      }
+
+      const response = await createAgentRun({ knowledge_base_id: kbId, conversation_id: conversationId, query });
       currentRunId.current = response.run_id;
-      // 重置 reducer 状态，清除上一轮运行的数据（highest_sequence、answer 等）
       dispatchRun({ type: 'RESET_AGENT_RUN_STATE' } as ResetAction);
       const controller = new AbortController();
       abortRef.current = controller;
@@ -115,15 +118,54 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
     if (currentRunId.current) void cancelAgentRun(currentRunId.current);
   };
 
+  const handleSelectConversation = (id: string) => {
+    navigate(`/chat/${kbId}/${id}`);
+  };
+
+  const handleCreateConversation = async () => {
+    // 如果已存在标题为 "新会话" 的未使用会话，直接跳转不再新建
+    const existingNew = conversationsQuery.data?.items?.find(c => c.title === '新会话');
+    if (existingNew) {
+      navigate(`/chat/${kbId}/${existingNew.id}`);
+      return;
+    }
+    try {
+      const conversation = await createConversation(kbId, '新会话');
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
+      navigate(`/chat/${kbId}/${conversation.id}`);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '创建会话失败');
+    }
+  };
+
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    try {
+      await deleteConversation(deleteTarget);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
+      if (deleteTarget === conversationId) {
+        navigate(`/chat/${kbId}`);
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '删除会话失败');
+    } finally {
+      setDeleteTarget(null);
+    }
+  };
+
   const sidebar = (
     <ConversationSidebar
       conversations={conversationsQuery.data?.items || []}
-      selectedId={activeConversationId}
+      selectedId={conversationId}
       disabled={!enabled || submitting}
-      onSelect={(id) => navigate(`/chat/${kbId}/${id}`)}
-      onCreate={() => navigate(`/chat/${kbId}`)}
+      onSelect={handleSelectConversation}
+      onCreate={handleCreateConversation}
+      onDelete={(id) => setDeleteTarget(id)}
     />
   );
+
   const messageArea = (
     <>
       {!enabled && <Alert severity="info" sx={{ m: 2, mb: 0 }}>智能问答后端未启用，请检查服务配置。</Alert>}
@@ -131,7 +173,8 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
       <MessageList messages={messages} streamingAnswer={submitting ? runState.answer : ''} onSuggestion={setDraft} />
     </>
   );
-  const composer = (
+
+  const composer = conversationId ? (
     <ChatComposer
       draft={draft}
       disabled={!enabled || submitting}
@@ -140,9 +183,23 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
       onSend={() => void send()}
       onStop={stop}
     />
-  );
+  ) : null;
 
-  return <ChatWorkspace sidebar={sidebar} messages={messageArea} composer={composer} agentPanel={<AgentRunPanel state={runState} />} />;
+  return (
+    <>
+      <ChatWorkspace sidebar={sidebar} messages={messageArea} composer={composer} agentPanel={<AgentRunPanel state={runState} />} />
+      <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
+        <DialogTitle>确认删除</DialogTitle>
+        <DialogContent>
+          <DialogContentText>确定要删除此会话吗？删除后不可恢复。</DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteTarget(null)}>取消</Button>
+          <Button onClick={confirmDelete} color="error" variant="contained">删除</Button>
+        </DialogActions>
+      </Dialog>
+    </>
+  );
 }
 
 export function ChatPage() {
