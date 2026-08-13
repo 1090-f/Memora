@@ -21,13 +21,24 @@ export function MessageList({ messages, streamingAnswer, onSuggestion }: {
   }
   return (
     <Stack spacing={2} sx={{ flex: 1, overflow: 'auto', p: 3 }}>
-      {messages.map((message) => (
-        <Box key={message.id} alignSelf={message.role === 'user' ? 'flex-end' : 'stretch'} maxWidth="82%">
-          <Paper variant="outlined" sx={{ p: 2, bgcolor: message.role === 'user' ? '#efefff' : '#fff' }}>
-            <Typography sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{message.content}</Typography>
-          </Paper>
-        </Box>
-      ))}
+      {messages.map((message) => {
+        const failed = message.role === 'assistant' && message.status === 'failed';
+        return (
+          <Box key={message.id} alignSelf={message.role === 'user' ? 'flex-end' : 'stretch'} maxWidth="82%">
+            <Paper
+              variant="outlined"
+              sx={{
+                p: 2,
+                bgcolor: message.role === 'user' ? '#efefff' : failed ? '#fff4f2' : '#fff',
+                borderColor: failed ? 'error.light' : undefined,
+              }}
+            >
+              {failed && <Typography color="error" variant="caption" sx={{ display: 'block', mb: 0.5 }}>运行失败</Typography>}
+              <Typography sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{message.content}</Typography>
+            </Paper>
+          </Box>
+        );
+      })}
       {streamingAnswer && <Paper variant="outlined" sx={{ p: 2 }}><Typography sx={{ whiteSpace: 'pre-wrap' }}>{streamingAnswer}</Typography></Paper>}
     </Stack>
   );

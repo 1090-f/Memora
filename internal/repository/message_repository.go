@@ -28,7 +28,7 @@ func (r *messageRepository) ListByConversation(ctx context.Context, conversation
 	var messages []entity.Message
 
 	query := r.db.WithContext(ctx).
-		Where("conversation_id = ? AND status = ?", conversationID, "completed").
+		Where("conversation_id = ? AND status != ?", conversationID, "streaming").
 		Order("created_at ASC")
 
 	if offset > 0 {
@@ -50,7 +50,7 @@ func (r *messageRepository) CountByConversation(ctx context.Context, conversatio
 	var count int64
 	err := r.db.WithContext(ctx).
 		Model(&entity.Message{}).
-		Where("conversation_id = ? AND status = ?", conversationID, "completed").
+		Where("conversation_id = ? AND status != ?", conversationID, "streaming").
 		Count(&count).Error
 	if err != nil {
 		return 0, fmt.Errorf("count messages by conversation: %w", err)

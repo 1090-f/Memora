@@ -106,11 +106,14 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
 
       // SSE 结束后（无论是否成功），总是尝试从 API 获取答案
       const completedRun = await activeRunQuery.refetch();
-      const answer = completedRun.data?.final_result || runStateRef.current.answer;
+      const run = completedRun.data;
+      const answer = run?.final_result
+        || runStateRef.current.answer
+        || (run?.status === 'failed' ? run.error_message : '');
       if (answer) {
         setMessages((current) => [...current, {
           id: crypto.randomUUID(), role: 'assistant', content: answer, agent_run_id: response.run_id,
-          status: completedRun.data?.status || 'completed', created_at: new Date().toISOString(),
+          status: run?.status || 'completed', created_at: new Date().toISOString(),
         }]);
       }
     } catch (error) {
