@@ -1,19 +1,19 @@
 import AccountCircleOutlined from '@mui/icons-material/AccountCircleOutlined';
 import AutoAwesomeOutlined from '@mui/icons-material/AutoAwesomeOutlined';
 import BuildOutlined from '@mui/icons-material/BuildOutlined';
-import KeyboardArrowRightOutlined from '@mui/icons-material/KeyboardArrowRightOutlined';
+import KeyboardArrowDownOutlined from '@mui/icons-material/KeyboardArrowDownOutlined';
 import MemoryOutlined from '@mui/icons-material/MemoryOutlined';
 import MenuBookOutlined from '@mui/icons-material/MenuBookOutlined';
 import MenuOpenOutlined from '@mui/icons-material/MenuOpenOutlined';
 import MenuOutlined from '@mui/icons-material/MenuOutlined';
 import NotificationsNoneOutlined from '@mui/icons-material/NotificationsNoneOutlined';
 import QuestionAnswerOutlined from '@mui/icons-material/QuestionAnswerOutlined';
-import SearchOutlined from '@mui/icons-material/SearchOutlined';
 import TimelineOutlined from '@mui/icons-material/TimelineOutlined';
 import type { SvgIconProps } from '@mui/material';
 import clsx from 'clsx';
 import { useEffect, useRef, useState, type ComponentType } from 'react';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
+import { GlobalKnowledgeBaseSearch } from '@/components/shared/GlobalKnowledgeBaseSearch';
 import { useAppSelector } from '@/store';
 
 const navigation: Array<{
@@ -182,34 +182,26 @@ export function AppShell() {
           })}
         </nav>
 
-        <div
-          className={clsx(
-            'shrink-0 p-3',
-            collapsed && 'lg:p-2',
-          )}
-        >
-          {user && (
-            <div
-              className={clsx(
-                'flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3',
-                collapsed && 'lg:justify-center lg:px-0',
-              )}
-            >
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-indigo-400 text-sm font-medium text-white shadow-[0_6px_14px_rgba(86,105,255,0.25)]">
-                {(user.nickname || user.email || 'A').trim().charAt(0).toUpperCase()}
-              </span>
-              <div className={clsx('min-w-0 flex-1', collapsed && 'lg:hidden')}>
-                <p className="truncate text-sm font-semibold text-slate-900">
-                  {user.nickname}
-                </p>
-                <p className="truncate text-xs text-slate-400">{user.email}</p>
-              </div>
-              <KeyboardArrowRightOutlined
-                className={clsx('h-5 w-5 text-slate-500', collapsed && 'lg:hidden')}
-              />
-            </div>
-          )}
-        </div>
+        {user && (
+          <Link
+            to="/settings/profile"
+            aria-label="进入个人资料"
+            className={clsx(
+              'mx-3 mb-3 flex shrink-0 items-center gap-3 rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-slate-900 transition hover:border-blue-200 hover:bg-blue-50/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30',
+              collapsed && 'lg:mx-2 lg:justify-center lg:px-0',
+            )}
+          >
+            <span className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-blue-500 to-indigo-400 text-sm font-medium text-white shadow-[0_6px_14px_rgba(86,105,255,0.25)]">
+              {(user.nickname || user.email || 'A').trim().charAt(0).toUpperCase()}
+              {user.avatar_url && <img src={user.avatar_url} alt={`${user.nickname} 的头像`} className="absolute inset-0 h-full w-full object-cover" onError={(event) => { event.currentTarget.style.display = 'none'; }} />}
+            </span>
+            <span className={clsx('min-w-0 flex-1', collapsed && 'lg:hidden')}>
+              <span className="block truncate text-sm font-semibold">{user.nickname}</span>
+              <span className="block truncate text-xs text-slate-400">{user.email}</span>
+            </span>
+            <KeyboardArrowDownOutlined className={clsx('h-5 w-5 text-slate-500', collapsed && 'lg:hidden')} />
+          </Link>
+        )}
       </aside>
 
       <div
@@ -242,19 +234,7 @@ export function AppShell() {
           {title}
         </h1>
         <div className="hidden min-w-0 flex-1 items-center justify-center lg:flex">
-          <label className="flex h-11 w-full max-w-[326px] items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 text-slate-400 shadow-sm transition focus-within:border-blue-400 focus-within:ring-4 focus-within:ring-blue-500/10">
-            <SearchOutlined className="h-5 w-5 shrink-0" />
-            <input
-              ref={searchInputRef}
-              type="search"
-              aria-label="搜索知识库"
-              placeholder="搜索知识库..."
-              className="min-w-0 flex-1 bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-400"
-            />
-            <span className="shrink-0 rounded-md border border-slate-200 px-1.5 py-0.5 text-xs text-slate-400 shadow-sm">
-              Ctrl K
-            </span>
-          </label>
+          <GlobalKnowledgeBaseSearch inputRef={searchInputRef} />
         </div>
         <div className="ml-auto hidden items-center gap-5 lg:flex">
           <button
@@ -266,9 +246,15 @@ export function AppShell() {
             <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-blue-500 ring-2 ring-white" />
           </button>
           {user && (
-            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-indigo-400 text-sm font-medium text-white shadow-[0_6px_14px_rgba(86,105,255,0.25)]">
+            <Link
+              to="/settings/profile"
+              aria-label="进入个人资料"
+              title="个人资料"
+              className="relative flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-blue-500 to-indigo-400 text-sm font-medium text-white shadow-[0_6px_14px_rgba(86,105,255,0.25)] transition duration-200 hover:scale-105 hover:shadow-[0_8px_20px_rgba(86,105,255,0.35)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2 active:scale-95"
+            >
               {(user.nickname || user.email || 'A').trim().charAt(0).toUpperCase()}
-            </span>
+              {user.avatar_url && <img src={user.avatar_url} alt={`${user.nickname} 的头像`} className="absolute inset-0 h-full w-full object-cover" onError={(event) => { event.currentTarget.style.display = 'none'; }} />}
+            </Link>
           )}
         </div>
       </header>

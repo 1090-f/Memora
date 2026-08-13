@@ -9,7 +9,6 @@ export interface User {
 
 export interface UpdateCurrentUserInput {
   nickname?: string;
-  avatar_url?: string;
   bio?: string;
   email?: string;
 }

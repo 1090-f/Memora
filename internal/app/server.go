@@ -101,7 +101,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	}
 
 	users := repository.NewUserRepository(a.db)
-	userService := service.NewUserService(users)
+	userService := service.NewUserService(users, a.store)
 	tokens, err := jwtmanager.NewManager(cfg.JWT.Secret, cfg.JWT.AccessTTL)
 	if err != nil {
 		_ = a.Close()
