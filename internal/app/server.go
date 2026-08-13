@@ -435,7 +435,7 @@ func (a *agentRunRepoAdapter) Cancel(ctx context.Context, runID, userID contract
 	return a.repo.MarkCancelled(ctx, uid, rid)
 }
 
-// Retry 基于失败运行创建新的排队运行，返回新运行 ID。
+// Retry 基于已有运行创建新的排队运行，返回新运行 ID。
 func (a *agentRunRepoAdapter) Retry(ctx context.Context, runID, userID contracts.ID) (contracts.ID, error) {
 	uid, err := uuid.Parse(string(userID))
 	if err != nil {

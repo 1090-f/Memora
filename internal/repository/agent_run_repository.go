@@ -4,7 +4,6 @@ package repository
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -214,12 +213,7 @@ func (r *agentRunRepository) CreateRetry(ctx context.Context, originalRunID, use
 			return fmt.Errorf("查找原始运行记录失败: %w", err)
 		}
 
-		// 2. 只允许对 failed 状态创建重试
-		if original.Status != "failed" {
-			return errors.New("仅允许对失败状态的运行创建重试")
-		}
-
-		// 3. 创建新运行，从原始运行复制关键字段
+		// 2. 创建新运行，从原始运行复制关键字段
 		retry := &entity.AgentRun{
 			UserID:          original.UserID,
 			KnowledgeBaseID: original.KnowledgeBaseID,
