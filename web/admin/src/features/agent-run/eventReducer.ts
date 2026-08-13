@@ -55,17 +55,16 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentEvent | R
         },
       };
     case 'agent.step.started':
-    case 'agent.step.completed':
-    case 'agent.tool.call.failed': {
+    case 'agent.step.completed': {
       if (!state.plan) return next;
-      const status = event.type === 'agent.step.started' ? 'running' : event.type === 'agent.step.completed' ? 'completed' : 'failed';
+      const status = event.type === 'agent.step.started' ? 'running' : 'completed';
       const stepNo = numberValue(payload.step_no);
       return {
         ...next,
         plan: {
           ...state.plan,
           steps: state.plan.steps.map((step) => step.step_no === stepNo
-            ? { ...step, status, ...(status === 'failed' ? { error_message: stringValue(payload.error_message) } : {}) }
+            ? { ...step, status }
             : step),
         },
       };

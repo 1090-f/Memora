@@ -64,10 +64,22 @@ export const getRenderedDocument = (documentId: string) =>
 export const deleteDocument = (documentId: string) =>
   apiRequest<{ deleted: boolean }>({ url: `/documents/${documentId}`, method: 'DELETE' });
 
-export const importFiles = (kbId: string, formData: FormData) =>
+export const importFiles = (
+  kbId: string,
+  formData: FormData,
+  options: { onUploadProgress?: (percent: number) => void; signal?: AbortSignal } = {},
+) =>
   // FormData 交给 Axios 自动生成带 boundary 的 Content-Type，避免手工设置导致后端无法解析。
   apiRequest<ImportUploadResponse>({
     url: `/knowledge-bases/${kbId}/imports/files`, method: 'POST', data: formData,
+    signal: options.signal,
+    onUploadProgress: options.onUploadProgress
+      ? (event) => {
+          if (event.total && event.total > 0) {
+            options.onUploadProgress?.(Math.round((event.loaded / event.total) * 100));
+          }
+        }
+      : undefined,
   });
 
 export const importURL = (kbId: string, input: ImportURLInput) =>
