@@ -7,12 +7,13 @@ import "github.com/gin-gonic/gin"
 // auth 是认证中间件，所有端点均需要用户认证。
 //
 // 端点列表：
-//   POST /api/v1/agent/runs 创建运行
-//   GET /api/v1/agent/runs 分页查询运行记录
-//   GET /api/v1/agent/runs/:id 获取运行详情
-//   GET /api/v1/agent/runs/:id/events SSE 流式订阅运行事件
-//   POST /api/v1/agent/runs/:id/cancel 取消运行
-//   POST /api/v1/agent/runs/:id/retry 重试运行
+//
+//	POST /api/v1/agent/runs 创建运行
+//	GET /api/v1/agent/runs 分页查询运行记录
+//	GET /api/v1/agent/runs/:id 获取运行详情
+//	GET /api/v1/agent/runs/:id/events SSE 流式订阅运行事件
+//	POST /api/v1/agent/runs/:id/cancel 取消运行
+//	POST /api/v1/agent/runs/:id/retry 重试运行
 func RegisterRoutes(rg *gin.RouterGroup, auth gin.HandlerFunc, ctrl *Controller) {
 	// agent 路由组，所有端点均需认证。
 	agent := rg.Group("/agent", auth)
