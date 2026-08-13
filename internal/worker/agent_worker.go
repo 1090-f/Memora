@@ -147,6 +147,8 @@ func (w *AgentWorker) pollAndExecute(ctx context.Context) {
 //  3. 构造 AgentRunRequest 并调用 AgentRunService.Run 执行
 //  4. 执行结果由核心服务内部处理（状态更新、Token 记录、事件发布等）
 func (w *AgentWorker) executeRun(run *entity.AgentRun) {
+	startedAt := time.Now()
+
 	// 创建独立的执行上下文，带超时控制
 	execCtx, cancel := context.WithTimeout(context.Background(), w.config.MaxRunTime)
 	defer cancel()
@@ -168,7 +170,7 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 		)
 		// 标记运行失败，避免一直处于 running 状态
 		failureMessage := fmt.Sprintf("构建上下文失败: %v", err)
-		if markErr := w.runRepo.MarkFailed(execCtx, run.ID, "context_build_error", failureMessage); markErr != nil {
+		if markErr := w.runRepo.MarkFailed(execCtx, run.ID, "context_build_error", failureMessage, "", time.Since(startedAt).Milliseconds()); markErr != nil {
 			logger.Error("标记运行失败状态出错", zap.String("run_id", run.ID.String()), zap.Error(markErr))
 		}
 		// 创建失败状态的助手消息，确保问答页面能够展示本次运行失败的结果。
@@ -187,11 +189,17 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 	result, err := w.agentService.Run(execCtx, runRequest)
 	if err != nil {
 		// 执行失败时显式落库，避免运行记录一直停留在 running 状态。
+		executionMode := ""
+		var runErr *contracts.AgentRunError
+		if errors.As(err, &runErr) {
+			executionMode = string(runErr.ExecutionMode)
+		}
 		logger.Error("Agent 运行执行失败",
 			zap.String("run_id", run.ID.String()),
+			zap.String("execution_mode", executionMode),
 			zap.Error(err),
 		)
-		if markErr := w.runRepo.MarkFailed(context.Background(), run.ID, "agent_run_error", err.Error()); markErr != nil {
+		if markErr := w.runRepo.MarkFailed(context.Background(), run.ID, "agent_run_error", err.Error(), executionMode, time.Since(startedAt).Milliseconds()); markErr != nil {
 			logger.Error("标记 Agent 运行失败状态出错", zap.String("run_id", run.ID.String()), zap.Error(markErr))
 		}
 		// 创建失败状态的助手消息，向用户反馈本次运行执行失败。

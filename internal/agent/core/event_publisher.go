@@ -15,7 +15,7 @@ type EventPublisher interface {
 	Publish(ctx context.Context, event contracts.AgentEvent) error
 	PublishRunStarted(ctx context.Context, runID contracts.ID, mode contracts.ExecutionMode) error
 	PublishRunCompleted(ctx context.Context, runID contracts.ID, result contracts.AgentRunResult) error
-	PublishRunFailed(ctx context.Context, runID contracts.ID, err error) error
+	PublishRunFailed(ctx context.Context, runID contracts.ID, mode contracts.ExecutionMode, err error) error
 	PublishRunCancelled(ctx context.Context, runID contracts.ID) error
 	PublishRouterSelected(ctx context.Context, runID contracts.ID, decision contracts.RouterDecision) error
 	// PublishReactRoundStarted 发布 ReAct 轮次开始事件。
@@ -40,8 +40,10 @@ func (NoopEventPublisher) PublishRunStarted(context.Context, contracts.ID, contr
 func (NoopEventPublisher) PublishRunCompleted(context.Context, contracts.ID, contracts.AgentRunResult) error {
 	return nil
 }
-func (NoopEventPublisher) PublishRunFailed(context.Context, contracts.ID, error) error { return nil }
-func (NoopEventPublisher) PublishRunCancelled(context.Context, contracts.ID) error     { return nil }
+func (NoopEventPublisher) PublishRunFailed(context.Context, contracts.ID, contracts.ExecutionMode, error) error {
+	return nil
+}
+func (NoopEventPublisher) PublishRunCancelled(context.Context, contracts.ID) error { return nil }
 func (NoopEventPublisher) PublishRouterSelected(context.Context, contracts.ID, contracts.RouterDecision) error {
 	return nil
 }
@@ -103,8 +105,11 @@ func (p *SequencedEventPublisher) PublishRunStarted(ctx context.Context, id cont
 func (p *SequencedEventPublisher) PublishRunCompleted(ctx context.Context, id contracts.ID, result contracts.AgentRunResult) error {
 	return p.publish(ctx, id, contracts.EventRunCompleted, map[string]any{"final_result": result.FinalResult})
 }
-func (p *SequencedEventPublisher) PublishRunFailed(ctx context.Context, id contracts.ID, runErr error) error {
-	return p.publish(ctx, id, contracts.EventRunFailed, map[string]any{"error_code": errorCode(runErr)})
+func (p *SequencedEventPublisher) PublishRunFailed(ctx context.Context, id contracts.ID, mode contracts.ExecutionMode, runErr error) error {
+	return p.publish(ctx, id, contracts.EventRunFailed, map[string]any{
+		"execution_mode": mode,
+		"error_code":     errorCode(runErr),
+	})
 }
 func (p *SequencedEventPublisher) PublishRunCancelled(ctx context.Context, id contracts.ID) error {
 	return p.publish(ctx, id, contracts.EventRunCancelled, nil)

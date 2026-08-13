@@ -144,18 +144,23 @@ func (r *agentRunRepository) MarkCompleted(ctx context.Context, runID uuid.UUID,
 		Updates(updates).Error
 }
 
-// MarkFailed 更新运行状态为 failed，记录错误码、错误信息和结束时间。
-func (r *agentRunRepository) MarkFailed(ctx context.Context, runID uuid.UUID, errorCode, errorMessage string) error {
+// MarkFailed 更新运行状态为 failed，记录错误码、错误信息、执行模式、耗时和结束时间。
+func (r *agentRunRepository) MarkFailed(ctx context.Context, runID uuid.UUID, errorCode, errorMessage, executionMode string, durationMs int64) error {
 	now := time.Now().UTC()
+	updates := map[string]interface{}{
+		"status":        "failed",
+		"error_code":    errorCode,
+		"error_message": errorMessage,
+		"duration_ms":   durationMs,
+		"ended_at":      now,
+	}
+	if executionMode != "" {
+		updates["execution_mode"] = executionMode
+	}
 	return r.db.WithContext(ctx).
 		Model(&entity.AgentRun{}).
 		Where("id = ?", runID).
-		Updates(map[string]interface{}{
-			"status":        "failed",
-			"error_code":    errorCode,
-			"error_message": errorMessage,
-			"ended_at":      now,
-		}).Error
+		Updates(updates).Error
 }
 
 // MarkCancelled 更新运行状态为 cancelled（需同时验证用户 ID 确保所有者可取消）。
