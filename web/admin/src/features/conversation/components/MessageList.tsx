@@ -1,5 +1,6 @@
 import { Box, Button, Paper, Stack, Typography } from '@mui/material';
 import { useEffect, useRef } from 'react';
+import { MarkdownViewer } from '@/features/document/components/preview/MarkdownViewer';
 import type { Message } from '../types';
 
 const suggestions = ['总结当前知识库', '列出关键概念', '生成学习路径'];
@@ -44,12 +45,14 @@ export function MessageList({ messages, streamingAnswer, onSuggestion, scrollToB
               }}
             >
               {failed && <Typography color="error" variant="caption" sx={{ display: 'block', mb: 0.5 }}>运行失败</Typography>}
-              <Typography sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{message.content}</Typography>
+              {message.role === 'assistant'
+                ? <MarkdownViewer content={message.content} />
+                : <Typography sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{message.content}</Typography>}
             </Paper>
           </Box>
         );
       })}
-      {streamingAnswer && <Paper variant="outlined" sx={{ p: 2 }}><Typography sx={{ whiteSpace: 'pre-wrap' }}>{streamingAnswer}</Typography></Paper>}
+      {streamingAnswer && <Paper variant="outlined" sx={{ p: 2 }}><MarkdownViewer content={streamingAnswer} /></Paper>}
       {/* 滚动锚点：用于自动滚动到消息列表底部 */}
       <div ref={bottomRef} />
     </Stack>
