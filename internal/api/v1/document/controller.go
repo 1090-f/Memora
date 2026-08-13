@@ -298,8 +298,8 @@ func (ctrl *Controller) Delete(c *gin.Context) {
 }
 
 // UploadFiles 文件导入，支持多文件上传到指定知识库。
-// 请求格式：multipart/form-data，字段 "files" 为文件列表，可选字段 "directory_id" 和 "duplicate_policy"。
-// 每个文件会创建一条 pending 状态的 ImportTask，由 Worker 异步解析。
+// 请求格式：multipart/form-data，字段 "files" 为文件列表，可选字段 "directory_id"、"duplicate_policy" 和 "import_mode"。
+// import_mode=folder_archive 时，单个 ZIP 是文件夹传输容器，ZIP 内每个文档会创建独立 ImportTask。
 func (ctrl *Controller) UploadFiles(c *gin.Context) {
 	// 1. 从认证中间件获取当前用户
 	user, ok := middleware.GetUser(c)
@@ -326,12 +326,13 @@ func (ctrl *Controller) UploadFiles(c *gin.Context) {
 		return
 	}
 
-	// 4. 读取可选表单字段：目标目录 ID 和重复策略（skip/create_new）
+	// 4. 读取可选表单字段：目标目录 ID、重复策略和导入模式。
 	var directoryID *string
 	if value := c.PostForm("directory_id"); value != "" {
 		directoryID = &value
 	}
 	duplicatePolicy := c.PostForm("duplicate_policy")
+	importMode := c.PostForm("import_mode")
 
 	// 5. 逐个打开文件，校验单文件大小，构建 UploadFileInput 列表
 	files := make([]service.UploadFileInput, 0, len(headers))
@@ -353,9 +354,10 @@ func (ctrl *Controller) UploadFiles(c *gin.Context) {
 		}
 		closers = append(closers, file) // 收集文件句柄，函数返回时统一关闭
 		files = append(files, service.UploadFileInput{
-			FileName: header.Filename,
-			Size:     header.Size,
-			Reader:   file, // 流式读取，不加载完整文件到内存
+			FileName:   header.Filename,
+			Size:       header.Size,
+			Reader:     file, // 流式读取，不加载完整文件到内存
+			ImportMode: importMode,
 		})
 	}
 

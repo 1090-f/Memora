@@ -662,6 +662,8 @@ func (s *documentProcessService) CleanupImportTasks(ctx context.Context, userID,
 func importTaskView(task *entity.ImportTask) ImportTaskView {
 	view := ImportTaskView{
 		ID:            contracts.ID(task.ID),
+		BatchID:       task.BatchID,
+		SourcePath:    task.SourcePath,
 		SourceType:    contracts.DocumentSourceType(task.SourceType),
 		FileName:      task.FileName,
 		FileSize:      task.FileSize,

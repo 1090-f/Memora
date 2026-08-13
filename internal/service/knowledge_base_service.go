@@ -277,6 +277,11 @@ func (s *knowledgeBaseService) Update(ctx context.Context, userID, kbID string, 
 				return nil, apperrors.New(contracts.ErrInternal, err)
 			}
 			updates["default_chat_model_id"] = *req.DefaultChatModelID
+			// 问答/Agent 运行时读取 agent_configs.chat_model_id（创建知识库时固化），
+			// 必须同步，否则修改 KB 默认 Chat 模型不会影响实际问答。
+			if err := s.agentConfigs.UpdateChatModel(ctx, userID, kbID, *req.DefaultChatModelID); err != nil && !errors.Is(err, repository.ErrAgentConfigNotFound) {
+				return nil, apperrors.New(contracts.ErrInternal, err)
+			}
 		} else {
 			updates["default_chat_model_id"] = nil
 		}

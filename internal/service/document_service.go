@@ -28,6 +28,7 @@ import (
 	"github.com/1090-f/Memora/pkg/asseturl"
 	"github.com/1090-f/Memora/pkg/logger"
 	"github.com/1090-f/Memora/pkg/objectstore"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -41,6 +42,8 @@ const (
 	MaxManualContentBytes = 2 * 1024 * 1024
 	// minioUploadTimeout 单文件上传超时。
 	minioUploadTimeout = 5 * time.Minute
+	// ImportModeFolderArchive 表示 ZIP 是文件夹传输容器，内部每个文档都应创建独立任务。
+	ImportModeFolderArchive = "folder_archive"
 )
 
 // 支持的文件扩展名。
@@ -53,7 +56,13 @@ var supportedExtensions = map[string]bool{
 // zip 导入限制。
 const (
 	// maxZipEntries 是 zip 内条目数上限（含目录）。
-	maxZipEntries = 100
+	maxZipEntries = 1000
+	// maxFolderArchiveDocuments 是单个文件夹归档允许创建的最大文档任务数。
+	maxFolderArchiveDocuments = MaxUploadFilesPerRequest
+	// maxZipUncompressedSize 是 ZIP 解压后的累计大小上限（500MB）。
+	maxZipUncompressedSize = 500 * 1024 * 1024
+	// maxZipCompressionRatio 防止异常高压缩率的 ZIP 炸弹。
+	maxZipCompressionRatio = 100
 )
 
 // ObjectStore 是文档服务依赖的对象存储能力接口，便于测试注入。
@@ -645,6 +654,13 @@ func (s *documentService) UploadFiles(ctx context.Context, userID, kbID string, 
 			return nil, err
 		}
 	}
+	importMode := strings.TrimSpace(files[0].ImportMode)
+	if importMode != "" && importMode != ImportModeFolderArchive {
+		return nil, apperrors.ErrInvalidArgument
+	}
+	if importMode == ImportModeFolderArchive && (len(files) != 1 || !strings.EqualFold(path.Ext(files[0].FileName), ".zip")) {
+		return nil, apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("folder_archive 模式仅接受单个 ZIP 文件"))
+	}
 	if directoryID != nil && *directoryID != "" {
 		if _, err := s.dirs.FindByIDInKB(ctx, userID, kbID, *directoryID); err != nil {
 			if errors.Is(err, repository.ErrDirectoryNotFound) {
@@ -660,12 +676,30 @@ func (s *documentService) UploadFiles(ctx context.Context, userID, kbID string, 
 		return nil, apperrors.New(contracts.ErrInternal, err)
 	}
 
-	result := &dto.UploadFilesResponse{Tasks: make([]dto.UploadTaskItem, 0, len(files))}
+	batchID := uuid.NewString()
+	result := &dto.UploadFilesResponse{
+		BatchID:  batchID,
+		Tasks:    make([]dto.UploadTaskItem, 0, len(files)),
+		Rejected: make([]dto.UploadRejectedItem, 0),
+	}
 	bucket := s.store.Bucket()
+	if importMode == ImportModeFolderArchive {
+		items, rejected, err := s.uploadFolderArchive(ctx, userID, kbID, directoryID, duplicatePolicy, files[0], bucket, batchID)
+		if err != nil {
+			return nil, err
+		}
+		result.Tasks = items
+		result.Rejected = rejected
+		result.Summary = dto.UploadSummary{Total: len(items) + len(rejected), Accepted: len(items), Rejected: len(rejected)}
+		return result, nil
+	}
 	createdTaskIDs := make([]string, 0, len(files))
 	// 任务创建与对象上传之间不共享数据库事务：MinIO 属外部 I/O 无法纳入事务原子性，
 	// 任一步失败改走显式补偿删除（见 compensateUploads），避免长事务持锁与不可回滚的问题。
 	for _, file := range files {
+		file.BatchID = &batchID
+		sourcePath := file.FileName
+		file.SourcePath = &sourcePath
 		var item *dto.UploadTaskItem
 		var objectKey string
 		var err error
@@ -687,6 +721,7 @@ func (s *documentService) UploadFiles(ctx context.Context, userID, kbID string, 
 		_ = objectKey
 		result.Tasks = append(result.Tasks, *item)
 	}
+	result.Summary = dto.UploadSummary{Total: len(result.Tasks), Accepted: len(result.Tasks)}
 	return result, nil
 }
 
@@ -746,6 +781,20 @@ func (s *documentService) compensateUploads(ctx context.Context, userID string, 
 					zap.String("user_id", userID), zap.String("object_key", *task.MinIOObjectKey), zap.Error(removeErr))
 			}
 		}
+		attachmentKeys := make(map[string]struct{}, len(task.Attachments))
+		for _, objectKey := range task.Attachments {
+			if objectKey == "" {
+				continue
+			}
+			if _, duplicate := attachmentKeys[objectKey]; duplicate {
+				continue
+			}
+			attachmentKeys[objectKey] = struct{}{}
+			if removeErr := s.store.RemoveObject(ctx, objectKey); removeErr != nil {
+				logger.Error("补偿删除附件对象失败",
+					zap.String("user_id", userID), zap.String("object_key", objectKey), zap.Error(removeErr))
+			}
+		}
 		if deleteErr := s.tasks.Delete(ctx, userID, taskID); deleteErr != nil {
 			logger.Error("补偿删除导入任务失败",
 				zap.String("user_id", userID), zap.String("task_id", taskID), zap.Error(deleteErr))
@@ -775,6 +824,7 @@ func (s *documentService) uploadOne(ctx context.Context, userID, kbID string, di
 	mimeType := mimeTypeOf(ext)
 	task := &entity.ImportTask{
 		UserID: userID, KnowledgeBaseID: kbID, TargetDirectoryID: directoryID,
+		BatchID: file.BatchID, SourcePath: file.SourcePath,
 		SourceType:      string(contracts.DocumentSourceFile),
 		FileName:        &file.FileName,
 		FileSize:        &file.Size,
@@ -808,7 +858,10 @@ func (s *documentService) uploadOne(ctx context.Context, userID, kbID string, di
 		return nil, "", apperrors.New(contracts.ErrInternal, err)
 	}
 	logger.Info("文件上传完成", zap.String("user_id", userID), zap.String("task_id", task.ID), zap.String("object_key", objectKey))
-	return &dto.UploadTaskItem{TaskID: task.ID, FileName: file.FileName, Status: task.Status}, objectKey, nil
+	return &dto.UploadTaskItem{
+		TaskID: task.ID, FileName: file.FileName, Status: task.Status,
+		BatchID: file.BatchID, SourcePath: file.SourcePath,
+	}, objectKey, nil
 }
 
 // uploadOneDeferred 处理 Markdown/ZIP 上传：创建任务并落 MinIO，但不入队触发解析；
@@ -818,6 +871,7 @@ func (s *documentService) uploadOneDeferred(ctx context.Context, userID, kbID st
 	mimeType := mimeTypeOf(ext)
 	task := &entity.ImportTask{
 		UserID: userID, KnowledgeBaseID: kbID, TargetDirectoryID: directoryID,
+		BatchID: file.BatchID, SourcePath: file.SourcePath,
 		SourceType:      string(contracts.DocumentSourceFile),
 		FileName:        &file.FileName,
 		FileSize:        &file.Size,
@@ -846,7 +900,312 @@ func (s *documentService) uploadOneDeferred(ctx context.Context, userID, kbID st
 	}
 	logger.Info("Markdown/ZIP 上传完成（待确认补传图片）",
 		zap.String("user_id", userID), zap.String("task_id", task.ID), zap.String("object_key", objectKey))
-	return &dto.UploadTaskItem{TaskID: task.ID, FileName: file.FileName, Status: task.Status}, objectKey, nil
+	return &dto.UploadTaskItem{
+		TaskID: task.ID, FileName: file.FileName, Status: task.Status,
+		BatchID: file.BatchID, SourcePath: file.SourcePath, RequiresConfirmation: true,
+	}, objectKey, nil
+}
+
+type folderArchiveEntry struct {
+	file *zip.File
+	name string
+}
+
+type folderArchiveDocument struct {
+	entry       folderArchiveEntry
+	attachments map[string]folderArchiveEntry
+}
+
+// uploadFolderArchive 将文件夹 ZIP 作为传输批次处理：每个主文档创建独立 ImportTask，
+// Markdown 图片只挂到实际引用它的文档；未被引用且可独立解析的图片会成为独立文档任务。
+func (s *documentService) uploadFolderArchive(
+	ctx context.Context,
+	userID, kbID string,
+	directoryID *string,
+	duplicatePolicy string,
+	file UploadFileInput,
+	bucket, batchID string,
+) ([]dto.UploadTaskItem, []dto.UploadRejectedItem, error) {
+	data, err := io.ReadAll(io.LimitReader(file.Reader, MaxUploadFileSize+1))
+	if err != nil {
+		return nil, nil, apperrors.New(contracts.ErrServiceUnavailable, err)
+	}
+	if int64(len(data)) > MaxUploadFileSize {
+		return nil, nil, apperrors.New(contracts.ErrPayloadTooLarge, nil)
+	}
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, nil, apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("不是有效的文件夹 ZIP %q", file.FileName))
+	}
+	if len(reader.File) > maxZipEntries {
+		return nil, nil, apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("ZIP 内条目数超过上限 %d", maxZipEntries))
+	}
+
+	entryNames := make(map[string]string, len(reader.File))
+	images := make(map[string]folderArchiveEntry)
+	documents := make([]folderArchiveDocument, 0)
+	rejected := make([]dto.UploadRejectedItem, 0)
+	var totalUncompressed uint64
+
+	for _, archiveFile := range reader.File {
+		if archiveFile.FileInfo().IsDir() {
+			continue
+		}
+		if archiveFile.Flags&0x1 != 0 {
+			return nil, nil, apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("ZIP 包含加密条目 %q", archiveFile.Name))
+		}
+		if archiveFile.FileInfo().Mode()&os.ModeSymlink != 0 {
+			return nil, nil, apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("ZIP 包含符号链接 %q", archiveFile.Name))
+		}
+		name := safeZipPath(archiveFile.Name)
+		if name == "" {
+			return nil, nil, apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("ZIP 包含不安全路径 %q", archiveFile.Name))
+		}
+		nameKey := strings.ToLower(name)
+		if previous, exists := entryNames[nameKey]; exists {
+			return nil, nil, apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("ZIP 路径冲突 %q 与 %q", previous, name))
+		}
+		entryNames[nameKey] = name
+		entry := folderArchiveEntry{file: archiveFile, name: name}
+		totalUncompressed += archiveFile.UncompressedSize64
+		if totalUncompressed > maxZipUncompressedSize {
+			return nil, nil, apperrors.New(contracts.ErrPayloadTooLarge, fmt.Errorf("ZIP 解压后总大小超过 500MB"))
+		}
+		if archiveFile.UncompressedSize64 == 0 {
+			rejected = append(rejected, uploadRejected(name, "empty_file", "文件为空"))
+			continue
+		}
+		if archiveFile.UncompressedSize64 > MaxUploadFileSize {
+			rejected = append(rejected, uploadRejected(name, "file_too_large", "文件解压后超过 50MB"))
+			continue
+		}
+		if archiveFile.UncompressedSize64 > 0 && (archiveFile.CompressedSize64 == 0 || archiveFile.UncompressedSize64/archiveFile.CompressedSize64 > maxZipCompressionRatio) {
+			return nil, nil, apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("ZIP 条目 %q 压缩率异常", name))
+		}
+
+		ext := strings.ToLower(path.Ext(name))
+		switch {
+		case isMainDocumentExt(ext):
+			documents = append(documents, folderArchiveDocument{entry: entry})
+		case isImageExt(ext):
+			images[nameKey] = entry
+		default:
+			rejected = append(rejected, uploadRejected(name, "unsupported_type", "不支持该文件格式"))
+		}
+	}
+
+	referencedImages := make(map[string]struct{})
+	for index := range documents {
+		ext := strings.ToLower(path.Ext(documents[index].entry.name))
+		if ext != ".md" && ext != ".markdown" {
+			continue
+		}
+		content, readErr := readZipEntry(documents[index].entry.file)
+		if readErr != nil {
+			return nil, nil, apperrors.New(contracts.ErrInvalidArgument, readErr)
+		}
+		documents[index].attachments = resolveFolderArchiveAttachments(
+			documents[index].entry.name,
+			string(content),
+			images,
+			referencedImages,
+		)
+	}
+
+	// 未被 Markdown 引用的图片按独立图片文档处理；SVG 仅可作为附件，不能独立解析。
+	for nameKey, image := range images {
+		if _, referenced := referencedImages[nameKey]; referenced {
+			continue
+		}
+		if !supportedExtensions[strings.ToLower(path.Ext(image.name))] {
+			rejected = append(rejected, uploadRejected(image.name, "unsupported_type", "该图片格式只能作为 Markdown 附件"))
+			continue
+		}
+		documents = append(documents, folderArchiveDocument{entry: image})
+	}
+	if len(documents) == 0 {
+		return nil, nil, apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("文件夹 ZIP 内没有可导入文档"))
+	}
+	if len(documents) > maxFolderArchiveDocuments {
+		return nil, nil, apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("文件夹内可导入文档超过上限 %d", maxFolderArchiveDocuments))
+	}
+
+	items := make([]dto.UploadTaskItem, 0, len(documents))
+	for _, document := range documents {
+		item, createErr := s.uploadFolderArchiveDocument(
+			ctx, userID, kbID, directoryID, duplicatePolicy, bucket, batchID, document,
+		)
+		if createErr != nil {
+			logger.Error("文件夹内文档任务创建失败",
+				zap.String("batch_id", batchID), zap.String("source_path", document.entry.name), zap.Error(createErr))
+			rejected = append(rejected, uploadRejected(document.entry.name, "upload_failed", "创建或上传任务失败"))
+			continue
+		}
+		items = append(items, *item)
+	}
+	logger.Info("文件夹批量上传完成",
+		zap.String("user_id", userID), zap.String("batch_id", batchID),
+		zap.Int("accepted", len(items)), zap.Int("rejected", len(rejected)))
+	return items, rejected, nil
+}
+
+func (s *documentService) uploadFolderArchiveDocument(
+	ctx context.Context,
+	userID, kbID string,
+	directoryID *string,
+	duplicatePolicy, bucket, batchID string,
+	document folderArchiveDocument,
+) (*dto.UploadTaskItem, error) {
+	sourcePath := document.entry.name
+	fileName := path.Base(sourcePath)
+	fileSize := int64(document.entry.file.UncompressedSize64)
+	mimeType := mimeTypeOf(strings.ToLower(path.Ext(sourcePath)))
+	task := &entity.ImportTask{
+		UserID: userID, KnowledgeBaseID: kbID, TargetDirectoryID: directoryID,
+		BatchID: &batchID, SourcePath: &sourcePath,
+		SourceType:      string(contracts.DocumentSourceFile),
+		FileName:        &fileName,
+		FileSize:        &fileSize,
+		MIMEType:        &mimeType,
+		DuplicatePolicy: duplicatePolicy,
+		Status:          string(contracts.TaskStatusPending),
+	}
+	if err := s.tasks.Create(ctx, task); err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	cleanupTask := func() { _ = s.tasks.Delete(ctx, userID, task.ID) }
+	uploadedKeys := make([]string, 0, len(document.attachments)+1)
+
+	attachments := make(map[string]string, len(document.attachments))
+	uploadedAttachments := make(map[string]string)
+	for alias, attachment := range document.attachments {
+		key, exists := uploadedAttachments[attachment.name]
+		if !exists {
+			attachmentData, err := readZipEntry(attachment.file)
+			if err != nil {
+				s.removeObjects(ctx, uploadedKeys)
+				cleanupTask()
+				return nil, err
+			}
+			key = objectstore.BuildObjectKey(userID, kbID, task.ID, archiveAttachmentObjectName(attachment.name))
+			if err := s.store.PutObject(ctx, key, bytes.NewReader(attachmentData), int64(len(attachmentData)), mimeTypeOf(strings.ToLower(path.Ext(attachment.name)))); err != nil {
+				s.removeObjects(ctx, uploadedKeys)
+				cleanupTask()
+				return nil, apperrors.New(contracts.ErrServiceUnavailable, err)
+			}
+			uploadedAttachments[attachment.name] = key
+			uploadedKeys = append(uploadedKeys, key)
+		}
+		attachments[alias] = key
+	}
+
+	mainReader, err := document.entry.file.Open()
+	if err != nil {
+		s.removeObjects(ctx, uploadedKeys)
+		cleanupTask()
+		return nil, apperrors.New(contracts.ErrInvalidArgument, err)
+	}
+	objectKey := objectstore.BuildObjectKey(userID, kbID, task.ID, fileName)
+	hash, err := s.putObjectWithHash(ctx, objectKey, mainReader, fileSize, mimeType)
+	_ = mainReader.Close()
+	if err != nil {
+		s.removeObjects(ctx, uploadedKeys)
+		cleanupTask()
+		return nil, apperrors.New(contracts.ErrServiceUnavailable, err)
+	}
+	uploadedKeys = append(uploadedKeys, objectKey)
+
+	if err := s.tasks.UpdateAttachments(ctx, userID, task.ID, attachments); err != nil {
+		s.removeObjects(ctx, uploadedKeys)
+		cleanupTask()
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	// 文件夹归档已经包含其附件，所有文档直接入队，不再要求逐 Markdown 手工确认。
+	if err := s.tasks.UpdateObjectInfo(ctx, userID, task.ID, bucket, objectKey, &hash); err != nil {
+		s.removeObjects(ctx, uploadedKeys)
+		cleanupTask()
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	return &dto.UploadTaskItem{
+		TaskID: task.ID, FileName: fileName, Status: task.Status,
+		BatchID: &batchID, SourcePath: &sourcePath, RequiresConfirmation: false,
+	}, nil
+}
+
+func resolveFolderArchiveAttachments(
+	markdownPath, content string,
+	images map[string]folderArchiveEntry,
+	referenced map[string]struct{},
+) map[string]folderArchiveEntry {
+	attachments := make(map[string]folderArchiveEntry)
+	imagesByBase := make(map[string][]folderArchiveEntry)
+	for _, image := range images {
+		base := strings.ToLower(path.Base(image.name))
+		imagesByBase[base] = append(imagesByBase[base], image)
+	}
+	for _, imageRef := range parser.ScanMarkdownImageRefs(content) {
+		ref := strings.TrimSpace(imageRef.Ref)
+		lower := strings.ToLower(ref)
+		if ref == "" || strings.HasPrefix(lower, "data:image/") || strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+			continue
+		}
+		ref = strings.Trim(ref, "<>")
+		if unescaped, err := url.PathUnescape(ref); err == nil {
+			ref = unescaped
+		}
+		if marker := strings.IndexAny(ref, "?#"); marker >= 0 {
+			ref = ref[:marker]
+		}
+		normalizedRef := strings.ReplaceAll(strings.TrimSpace(ref), "\\", "/")
+		if normalizedRef == "" {
+			continue
+		}
+		alias := path.Clean(normalizedRef)
+		var match folderArchiveEntry
+		matched := false
+		if !strings.HasPrefix(normalizedRef, "/") && !(len(normalizedRef) >= 2 && normalizedRef[1] == ':') {
+			candidate := safeZipPath(path.Join(path.Dir(markdownPath), normalizedRef))
+			if candidate != "" {
+				match, matched = images[strings.ToLower(candidate)]
+			}
+		}
+		if !matched {
+			candidates := imagesByBase[strings.ToLower(path.Base(normalizedRef))]
+			if len(candidates) == 1 {
+				match, matched = candidates[0], true
+			}
+		}
+		if matched {
+			attachments[alias] = match
+			referenced[strings.ToLower(match.name)] = struct{}{}
+		}
+	}
+	return attachments
+}
+
+func readZipEntry(entry *zip.File) ([]byte, error) {
+	reader, err := entry.Open()
+	if err != nil {
+		return nil, fmt.Errorf("读取 ZIP 条目 %q 失败: %w", entry.Name, err)
+	}
+	defer func() { _ = reader.Close() }()
+	data, err := io.ReadAll(io.LimitReader(reader, MaxUploadFileSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("读取 ZIP 条目 %q 失败: %w", entry.Name, err)
+	}
+	if int64(len(data)) > MaxUploadFileSize {
+		return nil, fmt.Errorf("ZIP 条目 %q 解压后超过 50MB", entry.Name)
+	}
+	return data, nil
+}
+
+func archiveAttachmentObjectName(sourcePath string) string {
+	hash := sha256.Sum256([]byte(sourcePath))
+	return fmt.Sprintf("attachments/%s-%s", hex.EncodeToString(hash[:6]), path.Base(sourcePath))
+}
+
+func uploadRejected(sourcePath, code, message string) dto.UploadRejectedItem {
+	return dto.UploadRejectedItem{SourcePath: sourcePath, Code: code, Message: message}
 }
 
 // uploadZip 处理 zip 打包导入：zip 内主文档（md/txt/pdf/docx）走正常导入流程，
@@ -870,19 +1229,35 @@ func (s *documentService) uploadZip(ctx context.Context, userID, kbID string, di
 
 	// 第一遍：定位主文档并收集图片附件条目（zip 内顺序即相对引用顺序）。
 	var mainEntry *zip.File
+	mainDocumentCount := 0
+	var totalUncompressed uint64
 	type imageEntry struct {
 		file *zip.File
 		name string
 	}
 	var imageEntries []imageEntry
 	for _, entry := range reader.File {
+		if entry.FileInfo().IsDir() {
+			continue
+		}
+		if entry.Flags&0x1 != 0 || entry.FileInfo().Mode()&os.ModeSymlink != 0 {
+			return nil, "", apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("zip 包含不安全条目 %q", entry.Name))
+		}
 		name := safeZipPath(entry.Name)
 		if name == "" {
-			continue
+			return nil, "", apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("zip 包含不安全路径 %q", entry.Name))
+		}
+		totalUncompressed += entry.UncompressedSize64
+		if totalUncompressed > maxZipUncompressedSize || entry.UncompressedSize64 > MaxUploadFileSize {
+			return nil, "", apperrors.New(contracts.ErrPayloadTooLarge, nil)
+		}
+		if entry.UncompressedSize64 > 0 && (entry.CompressedSize64 == 0 || entry.UncompressedSize64/entry.CompressedSize64 > maxZipCompressionRatio) {
+			return nil, "", apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("zip 条目 %q 压缩率异常", name))
 		}
 		ext := strings.ToLower(path.Ext(name))
 		switch {
 		case isMainDocumentExt(ext):
+			mainDocumentCount++
 			if mainEntry == nil {
 				mainEntry = entry
 			}
@@ -893,6 +1268,9 @@ func (s *documentService) uploadZip(ctx context.Context, userID, kbID string, di
 	if mainEntry == nil {
 		return nil, "", apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("zip %q 内没有主文档（md/txt/pdf/docx）", file.FileName))
 	}
+	if mainDocumentCount > 1 {
+		return nil, "", apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("传统 ZIP 仅支持一个主文档；文件夹批量导入请使用 folder_archive 模式"))
+	}
 
 	// 创建 pending 任务（主文档信息）。
 	mainName := safeZipPath(mainEntry.Name)
@@ -900,6 +1278,7 @@ func (s *documentService) uploadZip(ctx context.Context, userID, kbID string, di
 	mainSize := int64(mainEntry.UncompressedSize64)
 	task := &entity.ImportTask{
 		UserID: userID, KnowledgeBaseID: kbID, TargetDirectoryID: directoryID,
+		BatchID: file.BatchID, SourcePath: &mainName,
 		SourceType:      string(contracts.DocumentSourceFile),
 		FileName:        &mainName,
 		FileSize:        &mainSize,
@@ -963,6 +1342,12 @@ func (s *documentService) uploadZip(ctx context.Context, userID, kbID string, di
 		return nil, "", apperrors.New(contracts.ErrServiceUnavailable, putErr)
 	}
 
+	// 先保存附件映射，再发布任务，避免 Worker 在附件元数据落库前领取任务。
+	if updateErr := s.tasks.UpdateAttachments(ctx, userID, task.ID, attachments); updateErr != nil {
+		s.removeObjects(ctx, append(uploadedKeys, objectKey))
+		cleanup()
+		return nil, "", apperrors.New(contracts.ErrInternal, updateErr)
+	}
 	// 主文档为 Markdown 时不入队（等待图片补传确认）；其他格式立即进入解析。
 	updateErr := s.tasks.UpdateObjectInfo(ctx, userID, task.ID, bucket, objectKey, &hash)
 	if strings.EqualFold(path.Ext(mainName), ".md") || strings.EqualFold(path.Ext(mainName), ".markdown") {
@@ -973,15 +1358,14 @@ func (s *documentService) uploadZip(ctx context.Context, userID, kbID string, di
 		cleanup()
 		return nil, "", apperrors.New(contracts.ErrInternal, updateErr)
 	}
-	if updateErr := s.tasks.UpdateAttachments(ctx, userID, task.ID, attachments); updateErr != nil {
-		s.removeObjects(ctx, append(uploadedKeys, objectKey))
-		cleanup()
-		return nil, "", apperrors.New(contracts.ErrInternal, updateErr)
-	}
 	logger.Info("zip 导入上传完成",
 		zap.String("user_id", userID), zap.String("task_id", task.ID),
 		zap.String("object_key", objectKey), zap.Int("attachments", len(attachments)))
-	return &dto.UploadTaskItem{TaskID: task.ID, FileName: mainName, Status: task.Status}, objectKey, nil
+	requiresConfirmation := strings.EqualFold(path.Ext(mainName), ".md") || strings.EqualFold(path.Ext(mainName), ".markdown")
+	return &dto.UploadTaskItem{
+		TaskID: task.ID, FileName: path.Base(mainName), Status: task.Status,
+		BatchID: file.BatchID, SourcePath: &mainName, RequiresConfirmation: requiresConfirmation,
+	}, objectKey, nil
 }
 
 // removeObjects 批量删除对象（补偿用，失败仅记录）。

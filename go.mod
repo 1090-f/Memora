@@ -16,6 +16,7 @@ require (
 	github.com/klauspost/compress v1.18.2
 	github.com/mark3labs/mcp-go v0.43.0
 	github.com/minio/minio-go/v7 v7.0.99
+	github.com/pgvector/pgvector-go v0.4.0
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1

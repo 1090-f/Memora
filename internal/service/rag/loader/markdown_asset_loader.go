@@ -8,7 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"path/filepath"
+	"path"
 	"strings"
 	"time"
 
@@ -90,7 +90,7 @@ func (l *MarkdownAssetLoader) Open(ctx context.Context, ref string) (io.ReadClos
 	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
 		return l.openURL(ctx, ref)
 	}
-	key, ok := l.attachments[filepath.Clean(ref)]
+	key, ok := l.attachments[archiveRefPath(ref)]
 	if !ok {
 		// 兼容绝对路径引用（如 C:\...）：按文件名匹配 zip 内附件。
 		key, ok = l.matchByBaseName(ref)
@@ -108,18 +108,30 @@ func (l *MarkdownAssetLoader) Open(ctx context.Context, ref string) (io.ReadClos
 	return reader, "", nil
 }
 
-// matchByBaseName 按文件名（不含目录，兼容 / 与 \ 分隔符）匹配附件；重名时取首个匹配。
+// matchByBaseName 按文件名（不含目录，兼容 / 与 \ 分隔符）匹配附件；
+// 只有文件名唯一时才回退，避免同名图片随机串到错误目录。
 func (l *MarkdownAssetLoader) matchByBaseName(ref string) (string, bool) {
 	want := strings.ToLower(fileBase(ref))
 	if want == "" || want == "." || want == ".." {
 		return "", false
 	}
+	var matchedKey string
+	matches := 0
 	for attachmentPath, key := range l.attachments {
 		if strings.ToLower(fileBase(attachmentPath)) == want {
-			return key, true
+			matchedKey = key
+			matches++
 		}
 	}
-	return "", false
+	if matches != 1 {
+		return "", false
+	}
+	return matchedKey, true
+}
+
+func archiveRefPath(ref string) string {
+	normalized := strings.ReplaceAll(strings.TrimSpace(ref), "\\", "/")
+	return path.Clean(normalized)
 }
 
 // fileBase 返回路径最后一段，兼容 Windows（\）与 Unix（/）分隔符。
