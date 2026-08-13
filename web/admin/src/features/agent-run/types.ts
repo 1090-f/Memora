@@ -1,7 +1,9 @@
 export type AgentRunStatus = 'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type AgentEventType =
   | 'agent.run.queued' | 'agent.run.started' | 'agent.run.completed' | 'agent.run.failed' | 'agent.run.cancelled'
-  | 'agent.router.completed' | 'agent.step.started' | 'agent.step.completed'
+  | 'agent.router.completed'
+  | 'agent.plan.created' | 'agent.plan.replanned'
+  | 'agent.step.started' | 'agent.step.completed'
   | 'agent.react.round.started' | 'agent.react.round.completed'
   | 'agent.tool.started' | 'agent.tool.completed' | 'agent.tool.call.failed'
   | 'agent.answer.delta' | 'citation.created' | 'usage.updated' | 'memory.updated';

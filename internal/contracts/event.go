@@ -21,6 +21,10 @@ const (
 	EventStepStarted EventType = "agent.step.started"
 	// EventStepCompleted 表示计划步骤已完成执行。
 	EventStepCompleted EventType = "agent.step.completed"
+	// EventPlanCreated 表示计划已创建（包含所有步骤信息）。
+	EventPlanCreated EventType = "agent.plan.created"
+	// EventPlanReplanned 表示计划已重新规划（版本递增）。
+	EventPlanReplanned EventType = "agent.plan.replanned"
 	// EventToolStarted 表示工具调用已开始。
 	EventToolStarted EventType = "agent.tool.started"
 	// EventToolCompleted 表示工具调用已完成。

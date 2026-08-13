@@ -147,6 +147,8 @@ func (w *AgentWorker) pollAndExecute(ctx context.Context) {
 //  3. 构造 AgentRunRequest 并调用 AgentRunService.Run 执行
 //  4. 执行结果由核心服务内部处理（状态更新、Token 记录、事件发布等）
 func (w *AgentWorker) executeRun(run *entity.AgentRun) {
+	startedAt := time.Now()
+
 	// 创建独立的执行上下文，带超时控制
 	execCtx, cancel := context.WithTimeout(context.Background(), w.config.MaxRunTime)
 	defer cancel()
@@ -167,9 +169,12 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 			zap.Error(err),
 		)
 		// 标记运行失败，避免一直处于 running 状态
-		if markErr := w.runRepo.MarkFailed(execCtx, run.ID, "context_build_error", fmt.Sprintf("构建上下文失败: %v", err)); markErr != nil {
+		failureMessage := fmt.Sprintf("构建上下文失败: %v", err)
+		if markErr := w.runRepo.MarkFailed(execCtx, run.ID, "context_build_error", failureMessage, "", time.Since(startedAt).Milliseconds()); markErr != nil {
 			logger.Error("标记运行失败状态出错", zap.String("run_id", run.ID.String()), zap.Error(markErr))
 		}
+		// 创建失败状态的助手消息，确保问答页面能够展示本次运行失败的结果。
+		w.createFailureMessage(context.Background(), run, fmt.Sprintf("抱歉，系统在准备回答时遇到了问题。失败原因：%s", failureMessage))
 		return
 	}
 
@@ -184,13 +189,21 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 	result, err := w.agentService.Run(execCtx, runRequest)
 	if err != nil {
 		// 执行失败时显式落库，避免运行记录一直停留在 running 状态。
+		executionMode := ""
+		var runErr *contracts.AgentRunError
+		if errors.As(err, &runErr) {
+			executionMode = string(runErr.ExecutionMode)
+		}
 		logger.Error("Agent 运行执行失败",
 			zap.String("run_id", run.ID.String()),
+			zap.String("execution_mode", executionMode),
 			zap.Error(err),
 		)
-		if markErr := w.runRepo.MarkFailed(context.Background(), run.ID, "agent_run_error", err.Error()); markErr != nil {
+		if markErr := w.runRepo.MarkFailed(context.Background(), run.ID, "agent_run_error", err.Error(), executionMode, time.Since(startedAt).Milliseconds()); markErr != nil {
 			logger.Error("标记 Agent 运行失败状态出错", zap.String("run_id", run.ID.String()), zap.Error(markErr))
 		}
+		// 创建失败状态的助手消息，向用户反馈本次运行执行失败。
+		w.createFailureMessage(context.Background(), run, w.getFriendlyErrorMessage(err))
 		return
 	}
 
@@ -237,4 +250,38 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 	}
 
 	logger.Info("Agent 运行执行完成", zap.String("run_id", run.ID.String()))
+}
+
+// createFailureMessage 创建失败状态的助手消息，确保失败运行也能在问答页面留下可见结果。
+func (w *AgentWorker) createFailureMessage(ctx context.Context, run *entity.AgentRun, content string) {
+	msgID := uuid.New()
+	runIDStr := run.ID.String()
+	failureMsg := &entity.Message{
+		ID:              msgID.String(),
+		ConversationID:  run.ConversationID.String(),
+		UserID:          run.UserID.String(),
+		KnowledgeBaseID: run.KnowledgeBaseID.String(),
+		AgentRunID:      &runIDStr,
+		Role:            "assistant",
+		Content:         content,
+		Status:          "failed",
+		CreatedAt:       time.Now().UTC(),
+	}
+	if createErr := w.messageRepo.Create(ctx, failureMsg); createErr != nil {
+		logger.Error("持久化 Agent 失败消息出错", zap.String("run_id", run.ID.String()), zap.Error(createErr))
+		return
+	}
+
+	// 回填运行记录中的助手消息 ID，建立运行记录和失败消息之间的关联。
+	if setErr := w.runRepo.SetAssistantMessageID(ctx, run.ID, msgID); setErr != nil {
+		logger.Error("设置失败消息 ID 出错", zap.String("run_id", run.ID.String()), zap.Error(setErr))
+	}
+}
+
+// getFriendlyErrorMessage 将底层执行错误转换为用户可读的聊天提示。
+func (w *AgentWorker) getFriendlyErrorMessage(err error) string {
+	if err == nil {
+		return "抱歉，AI 暂时无法完成回答，请稍后重试。"
+	}
+	return fmt.Sprintf("抱歉，AI 在处理您的问题时遇到了错误：%s", err.Error())
 }

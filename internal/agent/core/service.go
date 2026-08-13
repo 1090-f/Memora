@@ -71,7 +71,7 @@ func (s *Service) Run(ctx context.Context, request contracts.AgentRunRequest) (c
 		}
 	}
 	if err := s.events.PublishRunStarted(runCtx, request.RunID, mode); err != nil {
-		return contracts.AgentRunResult{}, err
+		return contracts.AgentRunResult{}, &contracts.AgentRunError{ExecutionMode: mode, Err: err}
 	}
 	s.mu.Lock()
 	s.cancel[request.RunID] = cancel
@@ -89,9 +89,9 @@ func (s *Service) Run(ctx context.Context, request contracts.AgentRunRequest) (c
 		if runCtx.Err() != nil || ctx.Err() != nil {
 			_ = s.events.PublishRunCancelled(context.Background(), request.RunID)
 		} else {
-			_ = s.events.PublishRunFailed(context.Background(), request.RunID, err)
+			_ = s.events.PublishRunFailed(context.Background(), request.RunID, mode, err)
 		}
-		return contracts.AgentRunResult{}, err
+		return contracts.AgentRunResult{}, &contracts.AgentRunError{ExecutionMode: mode, Err: err}
 	}
 	result := output.Result(request.RunID, mode, startedAt, endedAt)
 	if err := s.events.PublishRunCompleted(context.Background(), request.RunID, result); err != nil {

@@ -2,6 +2,7 @@ package contracts
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -30,6 +31,15 @@ type AgentRunRequest struct {
 	Context AgentContext `json:"context"` // 运行所需的完整上下文
 	Config  AgentConfig  `json:"config"`  // 运行配置
 }
+
+// AgentRunError 表示已经确定执行模式后发生的运行失败。
+type AgentRunError struct {
+	ExecutionMode ExecutionMode
+	Err           error
+}
+
+func (e *AgentRunError) Error() string { return fmt.Sprintf("%s: %v", e.ExecutionMode, e.Err) }
+func (e *AgentRunError) Unwrap() error { return e.Err }
 
 // AgentRunResult 表示已完成的 Agent 执行运行的结果。
 type AgentRunResult struct {
