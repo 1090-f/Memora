@@ -33,6 +33,12 @@ const (
 	EventRunFailed EventType = "agent.run.failed"
 	// EventRunCancelled 表示 Agent 运行已取消。
 	EventRunCancelled EventType = "agent.run.cancelled"
+	// EventReactRoundStarted 表示 ReAct 轮次开始。
+	EventReactRoundStarted EventType = "agent.react.round.started"
+	// EventReactRoundCompleted 表示 ReAct 轮次完成。
+	EventReactRoundCompleted EventType = "agent.react.round.completed"
+	// EventToolCallFailed 表示工具调用失败（区别于 EventToolCompleted 的完整生命周期）。
+	EventToolCallFailed EventType = "agent.tool.call.failed"
 )
 
 // AgentEvent 表示在 Agent 执行运行期间发出的事件。

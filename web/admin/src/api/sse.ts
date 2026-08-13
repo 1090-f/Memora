@@ -14,7 +14,14 @@ export interface SseOptions {
   onEvent: (event: SseEvent) => void;
 }
 
-const terminalEvents = new Set(['done', 'completed', 'error']);
+const terminalEvents = new Set([
+  'done',
+  'completed',
+  'error',
+  'agent.run.completed',
+  'agent.run.failed',
+  'agent.run.cancelled',
+]);
 
 const parseData = (source: string): unknown => {
   try {

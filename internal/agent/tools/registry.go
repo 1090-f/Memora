@@ -38,6 +38,43 @@ func (r *Registry) Register(value Tool) error {
 	return nil
 }
 
+// RegisterOrUpdate 注册或更新工具。如果工具已存在则更新，不存在则注册。
+// 用于动态刷新 MCP 工具列表时保证幂等性。
+func (r *Registry) RegisterOrUpdate(value Tool) error {
+	if value == nil {
+		return fmt.Errorf("tool is nil")
+	}
+	spec := value.Spec()
+	if spec.Name == "" {
+		return fmt.Errorf("tool name is empty")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tools[spec.Name] = value
+	return nil
+}
+
+// Unregister 移除指定名称的工具。用于清理已禁用的 MCP 工具。
+func (r *Registry) Unregister(name string) {
+	if name == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.tools, name)
+}
+
+// UnregisterByType 移除指定类型的所有工具。用于批量清理某一类工具（如所有 MCP 工具）。
+func (r *Registry) UnregisterByType(toolType contracts.ToolType) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for name, tool := range r.tools {
+		if tool.Spec().Type == toolType {
+			delete(r.tools, name)
+		}
+	}
+}
+
 // Has 检查工具是否已注册。
 func (r *Registry) Has(name string) bool { _, ok := r.find(name); return ok }
 

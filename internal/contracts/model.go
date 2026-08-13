@@ -28,10 +28,10 @@ type ChatResponse struct {
 
 // ChatStreamEvent 表示流式聊天响应中的单个事件。
 type ChatStreamEvent struct {
-	Delta    string      `json:"delta,omitempty"`     // 文本增量
-	ToolCall *ToolCall   `json:"tool_call,omitempty"` // 可选：工具调用
-	Usage    *TokenUsage `json:"usage,omitempty"`     // 可选：结束时 token 消耗
-	Done     bool        `json:"done"`                // 是否结束
+	Delta     string      `json:"delta,omitempty"`      // 文本增量
+	ToolCalls []ToolCall  `json:"tool_calls,omitempty"` // 可选：工具调用列表
+	Usage     *TokenUsage `json:"usage,omitempty"`      // 可选：结束时 token 消耗
+	Done      bool        `json:"done"`                 // 是否结束
 }
 
 // ChatModel 定义 AI 聊天模型生成文本响应的接口。

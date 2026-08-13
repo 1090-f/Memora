@@ -11,9 +11,18 @@ import (
 const maxToolArgumentBytes = 64 * 1024
 
 // ToolAvailabilityChecker 在工具真正执行前动态复核工具是否仍可用。
+// 这是双层校验机制的第二层：在工具实际调用时再次校验启用状态。
+//
+// 第一层校验：Agent 启动前，通过 MCPToolRefresher.RefreshForUser() 从数据库查询
+// 用户已启用的 MCP 工具，只把启用的工具注册到 Registry，供模型可见。
+//
+// 第二层校验：工具实际执行前，通过本接口再次向数据库查询工具的实时启用状态。
+// 这样可以捕捉到运行过程中用户在前端动态禁用工具的情况，避免执行已被禁用的工具。
+//
 // 内置工具的启用状态由注册时快照固化即可；MCP 工具的启用状态可在前端动态修改，
-// 因此需要在每次调用前向数据层复核 Server 与 Tool 的启用状态（第二层拦截）。
-// 该接口由上层（如 MCP 服务）注入实现，工具模块自身不依赖数据层。
+// 因此需要在每次调用前向数据层动态复核一次。
+//
+// 该接口由上层（如 MCP ImportService）实现，工具模块自身不依赖数据层。
 type ToolAvailabilityChecker interface {
 	CheckToolAvailable(ctx context.Context, userID contracts.ID, spec contracts.ToolSpec) (bool, error)
 }
@@ -27,7 +36,9 @@ type Executor struct {
 // NewExecutor 创建绑定指定注册表的执行器。
 func NewExecutor(registry *Registry) *Executor { return &Executor{registry: registry} }
 
-// SetAvailabilityChecker 注入调用前动态可用性检查器（如 MCP 工具的启用状态复核）。
+// SetAvailabilityChecker 注入调用前动态可用性检查器（双层校验的第二层）。
+// 第一层校验：Agent 启动前通过 MCPToolRefresher 刷新工具列表，只注册已启用的工具。
+// 第二层校验：工具实际调用前通过本检查器再次向数据库查询实时启用状态。
 // 内置工具可省略；注入后 Executor 会对带 SourceID 的工具（MCP）在真正执行前动态复检。
 func (e *Executor) SetAvailabilityChecker(checker ToolAvailabilityChecker) {
 	e.available = checker
@@ -55,9 +66,14 @@ func (e *Executor) Execute(ctx context.Context, toolContext contracts.ToolContex
 	if spec.NetworkRequired && !toolContext.NetworkEnabled {
 		return failure(call, contracts.ErrNetworkDisabled, "network tool is disabled")
 	}
-	// 第二层拦截：MCP 工具启用状态可在前端动态修改，注册时快照已不可信，
-	// 因此对带 SourceID 的 MCP 工具在真正执行前向数据层动态复核一次。
-	// 内置工具 SourceID 为空，跳过动态检查，仅依赖注册时的静态快照。
+
+	// ====== 双层校验机制的第二层：工具实际调用前的实时启用状态检查 ======
+	// 第一层（Agent 启动前）：通过 MCPToolRefresher.RefreshForUser() 查询数据库，
+	//   只把已启用的 MCP 工具注册到 Registry，模型只能看到已启用的工具。
+	// 第二层（工具调用前）：再次向数据库查询工具的实时启用状态，捕捉运行过程中
+	//   用户在前端动态禁用工具的情况。对于 MCP 工具，注册时的快照已不可信，
+	//   必须在每次调用前向数据层动态复核 Server 与 Tool 的启用状态。
+	// 内置工具的 SourceID 为空，跳过动态检查，仅依赖注册时的静态快照。
 	if e.available != nil && spec.SourceID != "" {
 		available, err := e.available.CheckToolAvailable(ctx, toolContext.UserID, spec)
 		if err != nil {

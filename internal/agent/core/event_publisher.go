@@ -18,6 +18,16 @@ type EventPublisher interface {
 	PublishRunFailed(ctx context.Context, runID contracts.ID, err error) error
 	PublishRunCancelled(ctx context.Context, runID contracts.ID) error
 	PublishRouterSelected(ctx context.Context, runID contracts.ID, decision contracts.RouterDecision) error
+	// PublishReactRoundStarted 发布 ReAct 轮次开始事件。
+	PublishReactRoundStarted(ctx context.Context, runID contracts.ID, round int) error
+	// PublishReactRoundCompleted 发布 ReAct 轮次完成事件。
+	PublishReactRoundCompleted(ctx context.Context, runID contracts.ID, round int, toolCallCount int) error
+	// PublishToolCallStarted 发布工具调用开始事件。
+	PublishToolCallStarted(ctx context.Context, runID contracts.ID, toolName string, callID contracts.ID) error
+	// PublishToolCallCompleted 发布工具调用完成事件。
+	PublishToolCallCompleted(ctx context.Context, runID contracts.ID, callID contracts.ID, toolName string, success bool, summary string) error
+	// PublishAnswerDelta 发布流式回答增量事件。
+	PublishAnswerDelta(ctx context.Context, runID contracts.ID, delta string) error
 }
 
 // NoopEventPublisher 用于未接入事件存储时保持执行链路可运行。
@@ -35,6 +45,19 @@ func (NoopEventPublisher) PublishRunCancelled(context.Context, contracts.ID) err
 func (NoopEventPublisher) PublishRouterSelected(context.Context, contracts.ID, contracts.RouterDecision) error {
 	return nil
 }
+func (NoopEventPublisher) PublishReactRoundStarted(context.Context, contracts.ID, int) error {
+	return nil
+}
+func (NoopEventPublisher) PublishReactRoundCompleted(context.Context, contracts.ID, int, int) error {
+	return nil
+}
+func (NoopEventPublisher) PublishToolCallStarted(context.Context, contracts.ID, string, contracts.ID) error {
+	return nil
+}
+func (NoopEventPublisher) PublishToolCallCompleted(context.Context, contracts.ID, contracts.ID, string, bool, string) error {
+	return nil
+}
+func (NoopEventPublisher) PublishAnswerDelta(context.Context, contracts.ID, string) error { return nil }
 
 // SequencedEventPublisher 为每个 Run 分配单调递增的事件序号。
 type SequencedEventPublisher struct {
@@ -88,4 +111,33 @@ func (p *SequencedEventPublisher) PublishRunCancelled(ctx context.Context, id co
 }
 func (p *SequencedEventPublisher) PublishRouterSelected(ctx context.Context, id contracts.ID, decision contracts.RouterDecision) error {
 	return p.publish(ctx, id, contracts.EventRouterCompleted, decision)
+}
+
+func (p *SequencedEventPublisher) PublishReactRoundStarted(ctx context.Context, id contracts.ID, round int) error {
+	return p.publish(ctx, id, contracts.EventReactRoundStarted, map[string]any{"round": round})
+}
+
+func (p *SequencedEventPublisher) PublishReactRoundCompleted(ctx context.Context, id contracts.ID, round int, toolCallCount int) error {
+	return p.publish(ctx, id, contracts.EventReactRoundCompleted, map[string]any{"round": round, "tool_call_count": toolCallCount})
+}
+
+func (p *SequencedEventPublisher) PublishToolCallStarted(ctx context.Context, id contracts.ID, toolName string, callID contracts.ID) error {
+	return p.publish(ctx, id, contracts.EventToolStarted, map[string]any{"tool_name": toolName, "call_id": callID})
+}
+
+func (p *SequencedEventPublisher) PublishToolCallCompleted(ctx context.Context, id contracts.ID, callID contracts.ID, toolName string, success bool, summary string) error {
+	eventType := contracts.EventToolCompleted
+	if !success {
+		eventType = contracts.EventToolCallFailed
+	}
+	return p.publish(ctx, id, eventType, map[string]any{
+		"tool_name": toolName,
+		"call_id":   callID,
+		"success":   success,
+		"summary":   summary,
+	})
+}
+
+func (p *SequencedEventPublisher) PublishAnswerDelta(ctx context.Context, id contracts.ID, delta string) error {
+	return p.publish(ctx, id, contracts.EventAnswerDelta, map[string]any{"delta": delta})
 }

@@ -8,7 +8,19 @@ export const streamAgentEvents = (
   signal: options.signal,
   afterSequence: options.afterSequence,
   onEvent: (event) => {
-    const body = event.data as Omit<AgentEvent, 'type'>;
-    options.onEvent({ ...body, type: event.event as AgentEventType });
+    const body = event.data as {
+      run_id: string;
+      sequence: number;
+      timestamp: string;
+      event_type: AgentEventType;
+      data: Record<string, unknown>;
+    };
+    options.onEvent({
+      run_id: body.run_id,
+      sequence: body.sequence,
+      timestamp: body.timestamp,
+      type: body.event_type,
+      payload: body.data || {},
+    });
   },
 });

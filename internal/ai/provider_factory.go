@@ -61,12 +61,18 @@ func NewProviderFactory() ProviderFactory {
 
 // CreateChatModel 根据配置创建 ChatModel 客户端。
 func (f *einoProviderFactory) CreateChatModel(ctx context.Context, config ChatModelConfig) (contracts.ChatModel, error) {
+	// 类型转换
+	maxTokens := config.MaxTokens
+	temp := float32(config.Temperature)
+
 	// 使用 Eino OpenAI 组件创建 ChatModel
 	chatModel, err := einomodel.NewChatModel(ctx, &einomodel.ChatModelConfig{
-		Model:   config.Model,
-		APIKey:  config.APIKey,
-		BaseURL: config.BaseURL,
-		Timeout: time.Duration(config.TimeoutSeconds) * time.Second,
+		Model:       config.Model,
+		APIKey:      config.APIKey,
+		BaseURL:     config.BaseURL,
+		Timeout:     time.Duration(config.TimeoutSeconds) * time.Second,
+		MaxTokens:   &maxTokens,
+		Temperature: &temp,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create eino chat model: %w", err)

@@ -26,6 +26,8 @@ type Config struct {
 	Preview          PreviewConfig          `mapstructure:"preview"`
 	AI               AIConfig               `mapstructure:"ai"`
 	Agent            AgentConfig            `mapstructure:"agent"`
+	AgentWorker      AgentWorkerConfig      `mapstructure:"agent_worker"`
+	AgentEvents      AgentEventsConfig      `mapstructure:"agent_events"`
 }
 
 // AppConfig 定义应用程序基础配置，包括名称、版本、运行模式和超时设置
@@ -228,6 +230,20 @@ type AgentConfig struct {
 	MaxToolCalls       int `mapstructure:"max_tool_calls"`        // 单次运行最大工具调用次数
 	MaxToolResultBytes int `mapstructure:"max_tool_result_bytes"` // 工具结果最大字节数
 	MaxRunSeconds      int `mapstructure:"max_run_seconds"`       // 单次运行最大时长（秒）
+}
+
+// AgentWorkerConfig 定义 Agent 异步 Worker 的执行参数。
+type AgentWorkerConfig struct {
+	Enabled    bool          `mapstructure:"enabled"`      // 是否启用异步 Worker
+	PollPeriod time.Duration `mapstructure:"poll_period"`  // 数据库轮询间隔
+	BatchSize  int           `mapstructure:"batch_size"`   // 每次轮询领取的最大运行数
+	MaxRunTime time.Duration `mapstructure:"max_run_time"` // 单次运行最大执行时间
+}
+
+// AgentEventsConfig 定义 Agent 事件系统的配置。
+type AgentEventsConfig struct {
+	Channel       string `mapstructure:"channel"`         // Redis Pub/Sub 频道名称
+	SubBufferSize int    `mapstructure:"sub_buffer_size"` // 订阅通道缓冲区大小
 }
 
 // Validate 校验所有配置项，收集所有错误后返回合并的错误信息

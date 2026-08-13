@@ -2,76 +2,109 @@ import { Alert } from '@mui/material';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useReducer, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { capabilities, type CapabilityStatus } from '@/app/capabilities';
-import { queryKeys } from '@/api/queryKeys';
+import { capabilities } from '@/app/capabilities';
 import { AgentRunPanel } from '@/features/agent-run/components/AgentRunPanel';
-import { initialAgentRunState, reduceAgentEvent } from '@/features/agent-run/eventReducer';
-import { cancelAgentRun } from '@/features/agent-run/api';
+import { initialAgentRunState, reduceAgentEvent, type ResetAction } from '@/features/agent-run/eventReducer';
+import { cancelAgentRun, createAgentRun, getAgentRun } from '@/features/agent-run/api';
+import { queryKeys } from '@/api/queryKeys';
 import { ChatWorkspace } from '@/layouts/ChatWorkspace';
-import { createConversation, listConversations, listMessages, submitQuestion } from '../api';
+import { createConversation, getConversation, listConversations } from '../api';
 import { streamAgentEvents } from '../events';
 import { ChatComposer } from '../components/ChatComposer';
 import { ConversationSidebar } from '../components/ConversationSidebar';
 import { MessageList } from '../components/MessageList';
+import type { Message } from '../types';
 
-export function ChatPageContent({ status, kbId, conversationId }: {
-  status: CapabilityStatus;
-  kbId: string;
-  conversationId?: string;
-}) {
-  const enabled = status === 'available';
+const conversationStorageKey = (kbId: string) => `memora:conversation:${kbId}`;
+
+export function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationId?: string }) {
+  const enabled = capabilities.conversation === 'available';
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [runState, dispatchRun] = useReducer(reduceAgentEvent, initialAgentRunState);
-  const createPromise = useRef<Promise<string> | null>(null);
+  const runStateRef = useRef(runState);
+  runStateRef.current = runState;
+  const [activeConversationId, setActiveConversationId] = useState(conversationId);
   const abortRef = useRef<AbortController | null>(null);
   const currentRunId = useRef<string | null>(null);
 
+  // 查询会话列表
   const conversationsQuery = useQuery({
     queryKey: queryKeys.conversations(kbId),
-    queryFn: () => listConversations(kbId, { page: 1, page_size: 50 }),
-    enabled,
-  });
-  const messagesQuery = useQuery({
-    queryKey: ['conversations', conversationId, 'messages'],
-    queryFn: () => listMessages(conversationId as string, { page: 1, page_size: 50 }),
-    enabled: enabled && Boolean(conversationId),
+    queryFn: () => listConversations(kbId, { page: 1, page_size: 100 }),
+    enabled: enabled,
   });
 
-  const ensureConversation = async () => {
-    if (conversationId) return conversationId;
-    if (!createPromise.current) {
-      createPromise.current = createConversation(kbId, draft.slice(0, 40) || '新会话')
-        .then((conversation) => {
-          navigate(`/chat/${kbId}/${conversation.id}`, { replace: true });
-          void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
-          return conversation.id;
-        })
-        .finally(() => { createPromise.current = null; });
+  // 通过 Agent 运行详情刷新最终回答，避免只依赖 SSE 连接是否正常结束。
+  const activeRunQuery = useQuery({
+    queryKey: ['agent-run', currentRunId.current],
+    queryFn: () => {
+      const runId = currentRunId.current;
+      if (!runId) throw new Error('No active agent run');
+      return getAgentRun(runId);
+    },
+    enabled: false,
+  });
+
+  const getConversationId = async () => {
+    if (activeConversationId) return activeConversationId;
+    const stored = sessionStorage.getItem(conversationStorageKey(kbId));
+    if (stored) {
+      try {
+        await getConversation(stored);
+        setActiveConversationId(stored);
+        navigate(`/chat/${kbId}/${stored}`, { replace: true });
+        return stored;
+      } catch {
+        sessionStorage.removeItem(conversationStorageKey(kbId));
+      }
     }
-    return createPromise.current;
+    const conversation = await createConversation(kbId, '新会话');
+    sessionStorage.setItem(conversationStorageKey(kbId), conversation.id);
+    setActiveConversationId(conversation.id);
+    navigate(`/chat/${kbId}/${conversation.id}`, { replace: true });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
+    return conversation.id;
   };
 
   const send = async () => {
     if (!enabled || !draft.trim() || submitting) return;
     const query = draft.trim();
     setSubmitting(true);
+
     try {
-      const id = await ensureConversation();
-      const response = await submitQuestion(id, query);
+      setErrorMessage(null);
+      const id = await getConversationId();
       setDraft('');
+      setMessages((current) => [...current, {
+        id: crypto.randomUUID(), role: 'user', content: query, agent_run_id: null, created_at: new Date().toISOString(),
+      }]);
+      const response = await createAgentRun({ knowledge_base_id: kbId, conversation_id: id, query });
       currentRunId.current = response.run_id;
+      // 重置 reducer 状态，清除上一轮运行的数据（highest_sequence、answer 等）
+      dispatchRun({ type: 'RESET_AGENT_RUN_STATE' } as ResetAction);
       const controller = new AbortController();
       abortRef.current = controller;
-      await streamAgentEvents(response.events_url, {
+      await streamAgentEvents(`${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${response.run_id}/events`, {
         signal: controller.signal,
-        afterSequence: runState.highest_sequence || undefined,
         onEvent: dispatchRun,
       });
-      await queryClient.invalidateQueries({ queryKey: ['conversations', id, 'messages'] });
+      const completedRun = await activeRunQuery.refetch();
+      const answer = completedRun.data?.final_result || runStateRef.current.answer;
+      if (answer) {
+        setMessages((current) => [...current, {
+          id: crypto.randomUUID(), role: 'assistant', content: answer, agent_run_id: response.run_id,
+          status: completedRun.data?.status || 'completed', created_at: new Date().toISOString(),
+        }]);
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '智能问答请求失败');
     } finally {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
       setSubmitting(false);
       abortRef.current = null;
     }
@@ -84,17 +117,18 @@ export function ChatPageContent({ status, kbId, conversationId }: {
 
   const sidebar = (
     <ConversationSidebar
-      conversations={conversationsQuery.data?.items ?? []}
-      selectedId={conversationId}
+      conversations={conversationsQuery.data?.items || []}
+      selectedId={activeConversationId}
       disabled={!enabled || submitting}
       onSelect={(id) => navigate(`/chat/${kbId}/${id}`)}
       onCreate={() => navigate(`/chat/${kbId}`)}
     />
   );
-  const messages = (
+  const messageArea = (
     <>
-      {!enabled && <Alert severity="info" sx={{ m: 2, mb: 0 }}>会话后端待接入；工作区不会发起请求或开启事件流。</Alert>}
-      <MessageList messages={messagesQuery.data?.items ?? []} streamingAnswer={runState.answer} onSuggestion={setDraft} />
+      {!enabled && <Alert severity="info" sx={{ m: 2, mb: 0 }}>智能问答后端未启用，请检查服务配置。</Alert>}
+      {errorMessage && <Alert severity="error" sx={{ m: 2, mb: 0 }}>{errorMessage}</Alert>}
+      <MessageList messages={messages} streamingAnswer={submitting ? runState.answer : ''} onSuggestion={setDraft} />
     </>
   );
   const composer = (
@@ -108,10 +142,10 @@ export function ChatPageContent({ status, kbId, conversationId }: {
     />
   );
 
-  return <ChatWorkspace sidebar={sidebar} messages={messages} composer={composer} agentPanel={<AgentRunPanel state={runState} />} />;
+  return <ChatWorkspace sidebar={sidebar} messages={messageArea} composer={composer} agentPanel={<AgentRunPanel state={runState} />} />;
 }
 
 export function ChatPage() {
   const { kbId = '', conversationId } = useParams();
-  return <ChatPageContent status={capabilities.conversation} kbId={kbId} conversationId={conversationId} />;
+  return <ChatPageContent kbId={kbId} conversationId={conversationId} />;
 }

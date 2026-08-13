@@ -1,10 +1,10 @@
 export type AgentRunStatus = 'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type AgentEventType =
-  | 'run.started' | 'run.completed' | 'run.failed' | 'run.cancelled'
-  | 'router.selected' | 'memory.retrieved' | 'plan.created' | 'plan.replanned'
-  | 'step.started' | 'step.completed' | 'step.failed' | 'agent.round.started'
-  | 'tool.call.started' | 'tool.call.completed' | 'tool.call.failed'
-  | 'answer.delta' | 'citation.created' | 'usage.updated' | 'memory.updated';
+  | 'agent.run.queued' | 'agent.run.started' | 'agent.run.completed' | 'agent.run.failed' | 'agent.run.cancelled'
+  | 'agent.router.completed' | 'agent.step.started' | 'agent.step.completed'
+  | 'agent.react.round.started' | 'agent.react.round.completed'
+  | 'agent.tool.started' | 'agent.tool.completed' | 'agent.tool.call.failed'
+  | 'agent.answer.delta' | 'citation.created' | 'usage.updated' | 'memory.updated';
 
 export interface AgentEvent {
   run_id: string;
@@ -16,18 +16,36 @@ export interface AgentEvent {
 
 export interface AgentRun {
   id: string;
-  knowledge_base_id: string;
-  conversation_id: string;
+  user_id?: string;
+  knowledge_base_id?: string;
+  conversation_id?: string;
+  agent_config_id?: string;
+  retry_of_run_id?: string;
   query: string;
-  execution_mode: 'react' | 'plan_execute';
-  knowledge_status: 'sufficient' | 'insufficient' | 'ambiguous';
+  execution_mode?: 'react' | 'plan_execute' | null;
+  knowledge_status?: 'sufficient' | 'insufficient' | 'ambiguous' | null;
   status: Exclude<AgentRunStatus, 'idle'>;
-  router_reason_summary: string | null;
-  final_result: string | null;
-  error_code: string | null;
-  error_message: string | null;
-  started_at: string | null;
-  ended_at: string | null;
+  router_reason?: string;
+  router_reason_summary?: string | null;
+  reviewer_result?: string | null;
+  final_result?: string | null;
+  error_code?: string | null;
+  error_message?: string | null;
+  replan_count?: number;
+  memory_used_count?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  duration_ms?: number | null;
+  started_at?: string | null;
+  ended_at?: string | null;
+  created_at?: string;
+}
+
+export interface CreateAgentRunResponse {
+  run_id: string;
+  conversation_id: string;
+  status: 'queued';
 }
 
 export interface AgentRunViewState {
