@@ -28,6 +28,8 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
   runStateRef.current = runState;
   const abortRef = useRef<AbortController | null>(null);
   const currentRunId = useRef<string | null>(null);
+  const visitedConversations = useRef<Set<string>>(new Set());
+  const [shouldScrollToBottom, setShouldScrollToBottom] = useState(false);
 
   // 会话列表
   const conversationsQuery = useQuery({
@@ -46,12 +48,25 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
   useEffect(() => {
     if (!conversationId || !enabled) {
       setMessages([]);
+      setShouldScrollToBottom(false);
       return;
     }
+    
+    // 检查是否为首次访问该会话
+    const isFirstVisit = !visitedConversations.current.has(conversationId);
+    
     listMessages(conversationId, { page: 1, page_size: 100 }).then((result) => {
       setMessages(result.items || []);
+      // 仅在首次访问时滚动到底部
+      if (isFirstVisit && result.items && result.items.length > 0) {
+        visitedConversations.current.add(conversationId);
+        setShouldScrollToBottom(true);
+        // 重置滚动标志，避免后续消息更新时误触发
+        setTimeout(() => setShouldScrollToBottom(false), 100);
+      }
     }).catch(() => {
       setMessages([]);
+      setShouldScrollToBottom(false);
     });
   }, [conversationId, kbId, enabled]);
 
@@ -182,7 +197,7 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
     <>
       {!enabled && <Alert severity="info" sx={{ m: 2, mb: 0 }}>智能问答后端未启用，请检查服务配置。</Alert>}
       {errorMessage && <Alert severity="error" sx={{ m: 2, mb: 0 }}>{errorMessage}</Alert>}
-      <MessageList messages={messages} streamingAnswer={submitting ? runState.answer : ''} onSuggestion={setDraft} />
+      <MessageList messages={messages} streamingAnswer={submitting ? runState.answer : ''} onSuggestion={setDraft} scrollToBottom={shouldScrollToBottom} />
     </>
   );
 

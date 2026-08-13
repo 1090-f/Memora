@@ -1,13 +1,23 @@
 import { Box, Button, Paper, Stack, Typography } from '@mui/material';
+import { useEffect, useRef } from 'react';
 import type { Message } from '../types';
 
 const suggestions = ['总结当前知识库', '列出关键概念', '生成学习路径'];
 
-export function MessageList({ messages, streamingAnswer, onSuggestion }: {
+export function MessageList({ messages, streamingAnswer, onSuggestion, scrollToBottom }: {
   messages: Message[];
   streamingAnswer: string;
   onSuggestion: (suggestion: string) => void;
+  scrollToBottom?: boolean;
 }) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  // 当 scrollToBottom 为 true 或有新消息时，自动滚动到底部
+  useEffect(() => {
+    if (scrollToBottom && bottomRef.current) {
+      bottomRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [scrollToBottom, messages.length, streamingAnswer]);
   if (messages.length === 0 && !streamingAnswer) {
     return (
       <Stack alignItems="center" justifyContent="center" spacing={2} sx={{ flex: 1, p: 4 }}>
@@ -40,6 +50,8 @@ export function MessageList({ messages, streamingAnswer, onSuggestion }: {
         );
       })}
       {streamingAnswer && <Paper variant="outlined" sx={{ p: 2 }}><Typography sx={{ whiteSpace: 'pre-wrap' }}>{streamingAnswer}</Typography></Paper>}
+      {/* 滚动锚点：用于自动滚动到消息列表底部 */}
+      <div ref={bottomRef} />
     </Stack>
   );
 }
