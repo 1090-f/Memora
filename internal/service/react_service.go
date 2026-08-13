@@ -203,6 +203,13 @@ func (s *ReactService) RunReActLoop(
 			}
 		}
 
+		// 过滤和去重工具调用：流式响应可能产生增量 chunks，其中某些 chunk 的
+		// ToolCalls 可能缺少 CallID 或 ToolName（增量中间态），这些空调用会导致：
+		// 1. RESOURCE_NOT_FOUND — 找不到名称为空的工具
+		// 2. 400 Bad Request — tool_calls 缺少 id 字段
+		// 处理策略：按 CallID 去重（保留最后一个，含最完整参数），过滤掉 CallID 或 ToolName 为空的条目
+		roundToolCalls = deduplicateToolCalls(roundToolCalls)
+
 		content := fullContent.String()
 
 		// 累加 Token 用量
@@ -211,10 +218,14 @@ func (s *ReactService) RunReActLoop(
 		accumulatedUsage.TotalTokens += roundUsage.TotalTokens
 
 		// 添加模型回复到消息列表
-		messages = append(messages, contracts.ChatMessage{
+		assistantMsg := contracts.ChatMessage{
 			Role:    "assistant",
 			Content: content,
-		})
+		}
+		if len(roundToolCalls) > 0 {
+			assistantMsg.ToolCalls = roundToolCalls
+		}
+		messages = append(messages, assistantMsg)
 
 		// 检查是否有工具调用
 		if len(roundToolCalls) == 0 {
@@ -286,11 +297,12 @@ func (s *ReactService) RunReActLoop(
 				allCitations = append(allCitations, toolResult.Citations...)
 			}
 
-			// 构建工具结果消息
+			// 构建工具结果消息（必须携带 ToolCallID 以关联对应的工具调用）
 			resultContent := s.formatToolResult(toolResult, execErr)
 			messages = append(messages, contracts.ChatMessage{
-				Role:    "tool",
-				Content: resultContent,
+				Role:       "tool",
+				Content:    resultContent,
+				ToolCallID: string(call.CallID),
 			})
 
 			// 发布工具调用完成事件
@@ -394,7 +406,7 @@ func (s *ReactService) buildSystemPrompt(agentCtx contracts.AgentContext, cfg co
 可用工具:
 %s
 
-请逐步思考并解决问题。如果需要工具，使用 tool_calls 调用。
+请逐步思考并解决问题。如果需要信息，直接调用对应的工具函数。
 如果已经获得足够信息，直接给出最终答案。`, toolsText)
 	}
 
@@ -412,7 +424,7 @@ func (s *ReactService) buildSystemPrompt(agentCtx contracts.AgentContext, cfg co
 可用工具:
 %s
 
-请逐步思考并解决问题。如果需要工具，使用 tool_calls 调用。
+请逐步思考并解决问题。如果需要信息，直接调用对应的工具函数。
 如果已经获得足够信息，直接给出最终答案。`, toolsText)
 	}
 
@@ -432,9 +444,17 @@ func (s *ReactService) buildToolDefinitions(ctx context.Context, allowedTools []
 	// 否则直接从 Specs 构建
 	specs := s.registry.Specs()
 
+	// 日志：记录注册表中有多少工具
+	logger.Debug("buildToolDefinitions: 工具注册表状态",
+		zap.Int("total_specs", len(specs)),
+	)
+
 	var filtered []contracts.ToolSpec
 	for _, spec := range specs {
 		if !spec.Enabled {
+			logger.Debug("buildToolDefinitions: 跳过未启用的工具",
+				zap.String("tool_name", spec.Name),
+			)
 			continue
 		}
 		// 检查是否在白名单中
@@ -447,6 +467,10 @@ func (s *ReactService) buildToolDefinitions(ctx context.Context, allowedTools []
 				}
 			}
 			if !inAllowed {
+				logger.Debug("buildToolDefinitions: 工具不在白名单中",
+					zap.String("tool_name", spec.Name),
+					zap.Any("allowed_tools", allowedTools),
+				)
 				continue
 			}
 		}
@@ -454,8 +478,18 @@ func (s *ReactService) buildToolDefinitions(ctx context.Context, allowedTools []
 	}
 
 	if len(filtered) == 0 {
+		logger.Warn("buildToolDefinitions: 没有可用的工具，将不会传递工具定义给模型",
+			zap.Int("total_specs", len(specs)),
+			zap.Any("allowed_tools", allowedTools),
+		)
 		return nil, nil
 	}
+
+	logger.Debug("buildToolDefinitions: 工具筛选完成",
+		zap.Int("total_specs", len(specs)),
+		zap.Int("filtered_count", len(filtered)),
+		zap.Strings("tool_names", extractToolNames(filtered)),
+	)
 
 	data, err := json.Marshal(filtered)
 	if err != nil {
@@ -463,6 +497,15 @@ func (s *ReactService) buildToolDefinitions(ctx context.Context, allowedTools []
 	}
 
 	return data, nil
+}
+
+// extractToolNames 从 ToolSpec 切片中提取工具名称列表。
+func extractToolNames(specs []contracts.ToolSpec) []string {
+	names := make([]string, len(specs))
+	for i, spec := range specs {
+		names[i] = spec.Name
+	}
+	return names
 }
 
 // formatToolResult 格式化工具执行结果为模型可读的消息内容。
@@ -512,4 +555,28 @@ func (s *ReactService) buildToolCallSummary(result contracts.ToolResult, execErr
 		summary += fmt.Sprintf("，结果长度 %d 字符", textLen)
 	}
 	return summary
+}
+
+// deduplicateToolCalls 对工具调用列表进行去重和过滤。
+// 流式响应中同一工具调用可能以多个 chunk 形式返回（增量式），
+// 按 CallID 去重保留最后一个（含最完整参数），并过滤掉 CallID 或 ToolName 为空的无效条目。
+func deduplicateToolCalls(calls []contracts.ToolCall) []contracts.ToolCall {
+	seen := make(map[contracts.ID]int) // CallID → index in result
+	var result []contracts.ToolCall
+
+	for _, call := range calls {
+		// 过滤无效条目（流式增量 chunk 可能缺失 ID 或名称）
+		if call.CallID == "" || call.ToolName == "" {
+			continue
+		}
+		// 按 CallID 去重：如果已存在，替换为最新版本（含更完整的参数）
+		if idx, ok := seen[call.CallID]; ok {
+			result[idx] = call
+		} else {
+			seen[call.CallID] = len(result)
+			result = append(result, call)
+		}
+	}
+
+	return result
 }

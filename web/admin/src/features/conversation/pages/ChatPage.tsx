@@ -92,10 +92,19 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
       dispatchRun({ type: 'RESET_AGENT_RUN_STATE' } as ResetAction);
       const controller = new AbortController();
       abortRef.current = controller;
-      await streamAgentEvents(`${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${response.run_id}/events`, {
-        signal: controller.signal,
-        onEvent: dispatchRun,
-      });
+
+      // SSE 流式推送：添加超时保护，即使 SSE 异常结束也不阻塞后续答案获取
+      try {
+        await streamAgentEvents(`${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${response.run_id}/events`, {
+          signal: controller.signal,
+          onEvent: dispatchRun,
+          timeout: 120_000, // 2 分钟超时保护
+        });
+      } catch (e) {
+        console.warn('SSE 流异常结束，将通过 API 获取最终结果', e);
+      }
+
+      // SSE 结束后（无论是否成功），总是尝试从 API 获取答案
       const completedRun = await activeRunQuery.refetch();
       const answer = completedRun.data?.final_result || runStateRef.current.answer;
       if (answer) {

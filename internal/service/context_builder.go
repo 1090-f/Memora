@@ -8,6 +8,8 @@ import (
 	"github.com/1090-f/Memora/internal/agent/tools"
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/repository"
+	"github.com/1090-f/Memora/pkg/logger"
+	"go.uber.org/zap"
 )
 
 // contextBuilder 是 contracts.ContextBuilder 接口的实现。
@@ -18,6 +20,7 @@ type contextBuilder struct {
 	memoryRetriever  contracts.MemoryRetriever
 	retrievalSvc     contracts.RetrievalService
 	mcpToolRefresher *tools.MCPToolRefresher // 可选：MCP 工具刷新器（第一层校验）
+	toolRegistry     contracts.ToolRegistry  // 可选：工具注册表，用于检测已注册的 MCP 工具
 }
 
 // NewContextBuilder 创建新的上下文构建器实例。
@@ -26,12 +29,14 @@ func NewContextBuilder(
 	convCtxService contracts.ConversationContextService,
 	memoryRetriever contracts.MemoryRetriever,
 	retrievalSvc contracts.RetrievalService,
+	toolRegistry contracts.ToolRegistry,
 ) contracts.ContextBuilder {
 	return &contextBuilder{
 		agentConfigRepo: agentConfigRepo,
 		convCtxService:  convCtxService,
 		memoryRetriever: memoryRetriever,
 		retrievalSvc:    retrievalSvc,
+		toolRegistry:    toolRegistry,
 	}
 }
 
@@ -53,7 +58,10 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 		refreshErr := b.mcpToolRefresher.RefreshForUserWithTimeout(ctx, string(req.UserID), 3*time.Second)
 		if refreshErr != nil {
 			// 刷新失败不阻断核心流程，降级处理：Agent 将只使用内置工具
-			fmt.Printf("警告: MCP 工具列表刷新失败（用户 %s），降级处理: %v\n", req.UserID, refreshErr)
+			logger.Warn("MCP 工具列表刷新失败，降级处理",
+				zap.String("user_id", string(req.UserID)),
+				zap.Error(refreshErr),
+			)
 		}
 	}
 
@@ -177,6 +185,30 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 		agentCtx.KnowledgeStatus = ""
 	} else {
 		agentCtx.KnowledgeStatus = retrievalRes.knowledgeStatus
+	}
+
+	// 自动启用网络：当注册表中存在 MCP 类型工具时，自动将 NetworkEnabled 设为 true。
+	// 因为 MCP 工具（如 baidu_search）必然需要网络访问，且用户已在 MCP 管理页面显式启用了这些工具。
+	if !agentCtx.NetworkEnabled && b.toolRegistry != nil {
+		for _, spec := range b.toolRegistry.Specs() {
+			if spec.Type == contracts.ToolTypeMCP && spec.Enabled {
+				agentCtx.NetworkEnabled = true
+				logger.Debug("自动启用网络：检测到已注册的 MCP 工具",
+					zap.String("tool_name", spec.Name),
+					zap.String("source_id", spec.SourceID),
+				)
+				break
+			}
+		}
+	}
+
+	// 日志：记录当前注册的工具数量（用于诊断工具注册问题）
+	if b.mcpToolRefresher != nil {
+		logger.Debug("AgentContext 构建完成，注册表工具状态",
+			zap.Any("allowed_tools", agentCtx.AllowedTools),
+			zap.Bool("network_enabled", agentCtx.NetworkEnabled),
+			zap.String("chat_model_id", agentCtx.ChatModelID),
+		)
 	}
 
 	return agentCtx, nil

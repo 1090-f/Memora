@@ -12,6 +12,8 @@ export interface SseOptions {
   signal: AbortSignal;
   afterSequence?: number;
   onEvent: (event: SseEvent) => void;
+  /** SSE 流最大等待时间（毫秒），超时后静默关闭流。默认 0 = 不超时。 */
+  timeout?: number;
 }
 
 const terminalEvents = new Set([
@@ -84,11 +86,24 @@ export async function readSseStream(
   const headers: Record<string, string> = { Accept: 'text/event-stream' };
   if (session) headers.Authorization = `Bearer ${session.access_token}`;
 
+  // 超时保护：创建组合 AbortSignal（用户取消 + 超时）
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let combinedSignal = options.signal;
+  if (options.timeout && options.timeout > 0) {
+    const timeoutController = new AbortController();
+    timeoutId = setTimeout(() => timeoutController.abort(), options.timeout);
+    try {
+      combinedSignal = AbortSignal.any([options.signal, timeoutController.signal]);
+    } catch {
+      combinedSignal = options.signal;
+    }
+  }
+
   try {
     const response = await fetch(buildRequestUrl(url, options.afterSequence), {
       method: 'GET',
       headers,
-      signal: options.signal,
+      signal: combinedSignal,
     });
 
     if (!response.ok || !response.body) {
@@ -143,5 +158,7 @@ export async function readSseStream(
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') return;
     throw error;
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
   }
 }

@@ -213,21 +213,23 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	conversationRepo := repository.NewConversationRepository(a.db)
 	conversationService := service.NewConversationService(conversationRepo)
 
-	contextBuilder := service.NewContextBuilder(agentConfigs, convCtxService, memoryRetriever, retrievalService)
-
-	// 初始化 RouterService（Phase 4）
-	// 使用用户配置的 ChatModelID 做路由判断
-	llmRouter := service.NewLLMRouter(modelFactory)
-	routerService := service.NewRouterService(llmRouter)
-
-	// 初始化工具注册表和执行器
+	// 初始化工具注册表和执行器（Phase 3.5）
 	// 注册内置只读工具：知识检索 + 文档阅读
+	// 必须在 ContextBuilder 之前创建，因为 ContextBuilder 需要访问工具注册表
 	toolRegistry, err := tools.NewBuiltinRegistry(retrievalService, documentReader)
 	if err != nil {
 		_ = a.Close()
 		return fmt.Errorf("初始化工具注册表失败: %w", err)
 	}
 	toolExecutor := tools.NewExecutor(toolRegistry)
+
+	// 初始化 ContextBuilder（Phase 3）
+	contextBuilder := service.NewContextBuilder(agentConfigs, convCtxService, memoryRetriever, retrievalService, toolRegistry)
+
+	// 初始化 RouterService（Phase 4）
+	// 使用用户配置的 ChatModelID 做路由判断
+	llmRouter := service.NewLLMRouter(modelFactory)
+	routerService := service.NewRouterService(llmRouter)
 
 	// 初始化 MCP ImportService（用于 MCP Server 和工具管理）
 	// 使用前面已创建的 mcpServers 和 mcpTools 仓库
