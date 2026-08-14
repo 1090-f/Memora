@@ -9,10 +9,22 @@ import type { AgentRunViewState } from '../types';
 export function AgentRunPanel({ state }: { state: AgentRunViewState }) {
   return (
     <Stack spacing={2} p={2} sx={{ overflow: 'auto', height: 'calc(100% - 48px)' }}>
-      {/* 顶部标题与状态 */}
-      <Stack direction="row" alignItems="center" justifyContent="space-between">
-        <Typography variant="h6" fontWeight={700}>Agent 运行</Typography>
-        <Chip size="small" label={state.status} color={statusColor(state.status)} />
+      {/* 顶部标题与状态：标题在左侧，状态靠右并为折叠按钮预留空间 */}
+      <Stack
+        direction="row"
+        alignItems="center"
+        justifyContent="space-between"
+        sx={{ minHeight: 32, pr: 4, gap: 1 }}
+      >
+        <Typography variant="h6" fontWeight={700} sx={{ flexShrink: 0 }}>
+          Agent 运行
+        </Typography>
+        <Chip
+          size="small"
+          label={state.status}
+          color={statusColor(state.status)}
+          sx={{ flexShrink: 0 }}
+        />
       </Stack>
 
       {/* Router 决策摘要 */}

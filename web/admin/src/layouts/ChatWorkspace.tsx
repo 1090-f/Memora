@@ -1,7 +1,7 @@
-import { Box, Paper } from '@mui/material';
-import type { ReactNode } from 'react';
-import { useAppDispatch, useAppSelector } from '@/store';
-import { persistChatLayout, setAgentPanelWidth } from '@/store/layoutSlice';
+import { ChevronLeft, ChevronRight } from '@mui/icons-material';
+import { Box, IconButton, Paper, Tooltip } from '@mui/material';
+import { useState, type ReactNode } from 'react';
+import { useAppSelector } from '@/store';
 
 export function ChatWorkspace({ sidebar, messages, composer, agentPanel }: {
   sidebar: ReactNode;
@@ -9,31 +9,41 @@ export function ChatWorkspace({ sidebar, messages, composer, agentPanel }: {
   composer: ReactNode;
   agentPanel: ReactNode;
 }) {
-  const dispatch = useAppDispatch();
   const layout = useAppSelector((state) => state.layout);
-  const updateWidth = (raw: number) => {
-    const agent_panel_width = Math.min(480, Math.max(320, raw));
-    const next = { ...layout, agent_panel_width };
-    dispatch(setAgentPanelWidth(agent_panel_width));
-    persistChatLayout(next);
-  };
+  // 折叠状态：true 表示已折叠（只显示窄条 + 展开按钮）
+  const [collapsed, setCollapsed] = useState(false);
+
+  // 折叠后的窄栏宽度（仅放展开按钮），展开时使用配置的宽度
+  const COLLAPSED_WIDTH = 36;
+  const panelWidth = collapsed ? COLLAPSED_WIDTH : layout.agent_panel_width;
+
   return (
-    <Box sx={{ display: 'grid', gridTemplateColumns: `280px minmax(420px, 1fr) ${layout.agent_panel_width}px`, gap: 1.5, height: 'calc(100vh - 128px)', minHeight: 620 }}>
+    <Box sx={{ display: 'grid', gridTemplateColumns: `280px minmax(420px, 1fr) ${panelWidth}px`, gap: 1.5, height: 'calc(100vh - 128px)', minHeight: 620, transition: 'grid-template-columns 0.25s ease' }}>
       <Paper component="aside" aria-label="会话列表" variant="outlined" sx={{ overflow: 'hidden' }}>{sidebar}</Paper>
       <Paper component="main" aria-label="消息区" variant="outlined" sx={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {messages}{composer}
       </Paper>
-      <Paper component="aside" aria-label="Agent 运行面板" variant="outlined" sx={{ overflow: 'hidden', position: 'relative' }}>
-        <input
-          aria-label="Agent 面板宽度"
-          type="range"
-          min="320"
-          max="480"
-          value={layout.agent_panel_width}
-          onChange={(event) => updateWidth(Number(event.target.value))}
-          style={{ width: 'calc(100% - 32px)', margin: '12px 16px 0' }}
-        />
-        {agentPanel}
+      <Paper component="aside" aria-label="Agent 运行面板" variant="outlined" sx={{ overflow: 'hidden', position: 'relative', display: 'flex', flexDirection: 'column' }}>
+        {/* 折叠/展开按钮 — 始终显示在右上角 */}
+        <Tooltip title={collapsed ? '展开' : '折叠'} placement="left">
+          <IconButton
+            size="small"
+            onClick={() => setCollapsed((prev) => !prev)}
+            sx={{ position: 'absolute', top: 6, right: 4, zIndex: 1, width: 28, height: 28 }}
+          >
+            {collapsed ? <ChevronLeft sx={{ fontSize: '1.1rem' }} /> : <ChevronRight sx={{ fontSize: '1.1rem' }} />}
+          </IconButton>
+        </Tooltip>
+
+        {collapsed ? (
+          /* 折叠态：仅显示窄条和展开按钮 */
+          <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+            {/* 留白 */}
+          </Box>
+        ) : (
+          /* 展开态：正常显示 Agent 面板内容 */
+          agentPanel
+        )}
       </Paper>
     </Box>
   );
