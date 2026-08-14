@@ -121,7 +121,25 @@ export function ChatPageContent({
           .catch(error => {
             if (!cancelled) console.warn('恢复 Agent 运行流失败', error);
           })
-          .finally(() => {
+          .finally(async () => {
+            if (cancelled || runConversationRef.current !== conversationId)
+              return;
+
+            const result = await listMessages(conversationId, {
+              page: 1,
+              page_size: 100,
+            }).catch(() => null);
+            if (!cancelled && result?.items) {
+              const sortedMessages = [...result.items].sort(
+                (a, b) =>
+                  new Date(a.created_at).getTime() -
+                  new Date(b.created_at).getTime(),
+              );
+              setMessages(groupConsecutiveAssistantMessages(sortedMessages));
+              setShouldScrollToBottom(true);
+              setTimeout(() => setShouldScrollToBottom(false), 100);
+            }
+
             if (!cancelled && runConversationRef.current === conversationId) {
               setSubmitting(false);
               runConversationRef.current = null;
