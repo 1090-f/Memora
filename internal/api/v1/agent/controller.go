@@ -474,12 +474,13 @@ func toRunResponse(run *entity.AgentRun) *respdto.AgentRunResponse {
 // toRunListItem 将 AgentRun 实体转换为列表项 DTO。
 func toRunListItem(run *entity.AgentRun) *respdto.AgentRunListItem {
 	item := &respdto.AgentRunListItem{
-		ID:          run.ID.String(),
-		Query:       run.Query,
-		Status:      run.Status,
-		TotalTokens: run.TotalTokens,
-		DurationMs:  run.DurationMs,
-		CreatedAt:   run.CreatedAt,
+		ID:             run.ID.String(),
+		ConversationID: run.ConversationID.String(),
+		Query:          run.Query,
+		Status:         run.Status,
+		TotalTokens:    run.TotalTokens,
+		DurationMs:     run.DurationMs,
+		CreatedAt:      run.CreatedAt,
 	}
 	if run.ExecutionMode != nil {
 		mode := *run.ExecutionMode
