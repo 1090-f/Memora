@@ -51,4 +51,7 @@ type AgentRunRepository interface {
 
 	// CreateRetry 基于已有运行创建新的排队运行（retry_of_run_id 指向原运行），返回新运行 ID。
 	CreateRetry(ctx context.Context, originalRunID, userID uuid.UUID) (uuid.UUID, error)
+
+	// DeleteByConversationID 删除指定会话的所有 Agent 运行记录。
+	DeleteByConversationID(ctx context.Context, conversationID uuid.UUID) error
 }

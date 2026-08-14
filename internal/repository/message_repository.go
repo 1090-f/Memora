@@ -57,3 +57,10 @@ func (r *messageRepository) CountByConversation(ctx context.Context, conversatio
 	}
 	return count, nil
 }
+
+// DeleteByConversationID 删除指定会话的所有消息。
+func (r *messageRepository) DeleteByConversationID(ctx context.Context, conversationID string) error {
+	return r.db.WithContext(ctx).
+		Where("conversation_id = ?", conversationID).
+		Delete(&entity.Message{}).Error
+}

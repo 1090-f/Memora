@@ -239,5 +239,12 @@ func (r *agentRunRepository) CreateRetry(ctx context.Context, originalRunID, use
 	return newID, nil
 }
 
+// DeleteByConversationID 删除指定会话的所有 Agent 运行记录。
+func (r *agentRunRepository) DeleteByConversationID(ctx context.Context, conversationID uuid.UUID) error {
+	return r.db.WithContext(ctx).
+		Where("conversation_id = ?", conversationID).
+		Delete(&entity.AgentRun{}).Error
+}
+
 // 编译时确保实现接口
 var _ AgentRunRepository = (*agentRunRepository)(nil)
