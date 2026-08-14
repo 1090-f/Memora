@@ -36,8 +36,9 @@ type AgentRunRepository interface {
 	// MarkCompleted 更新运行状态为 completed，记录最终结果、Token 用量、耗时、执行模式、知识状态和结束时间。
 	MarkCompleted(ctx context.Context, runID uuid.UUID, finalResult string, inputTokens, outputTokens, totalTokens int, durationMs int64, executionMode, knowledgeStatus string) error
 
-	// MarkFailed 更新运行状态为 failed，记录错误码、错误信息、执行模式、耗时和结束时间。
-	MarkFailed(ctx context.Context, runID uuid.UUID, errorCode, errorMessage, executionMode string, durationMs int64) error
+	// MarkFailed 更新运行状态为 failed，记录错误码、错误信息、执行模式、Token 用量、耗时和结束时间。
+	// inputTokens/outputTokens/totalTokens 用于记录失败前已消耗的 Token。
+	MarkFailed(ctx context.Context, runID uuid.UUID, errorCode, errorMessage, executionMode string, durationMs int64, inputTokens, outputTokens, totalTokens int) error
 
 	// MarkCancelled 更新运行状态为 cancelled（需同时验证用户 ID 确保所有者可取消）。
 	MarkCancelled(ctx context.Context, userID, runID uuid.UUID) error

@@ -143,13 +143,16 @@ func (r *agentRunRepository) MarkCompleted(ctx context.Context, runID uuid.UUID,
 		Updates(updates).Error
 }
 
-// MarkFailed 更新运行状态为 failed，记录错误码、错误信息、执行模式、耗时和结束时间。
-func (r *agentRunRepository) MarkFailed(ctx context.Context, runID uuid.UUID, errorCode, errorMessage, executionMode string, durationMs int64) error {
+// MarkFailed 更新运行状态为 failed，记录错误码、错误信息、执行模式、Token 用量、耗时和结束时间。
+func (r *agentRunRepository) MarkFailed(ctx context.Context, runID uuid.UUID, errorCode, errorMessage, executionMode string, durationMs int64, inputTokens, outputTokens, totalTokens int) error {
 	now := time.Now().UTC()
 	updates := map[string]interface{}{
 		"status":        "failed",
 		"error_code":    errorCode,
 		"error_message": errorMessage,
+		"input_tokens":  inputTokens,
+		"output_tokens": outputTokens,
+		"total_tokens":  totalTokens,
 		"duration_ms":   durationMs,
 		"ended_at":      now,
 	}

@@ -85,15 +85,16 @@ func (s *Service) Run(ctx context.Context, request contracts.AgentRunRequest) (c
 
 	output, err := runner.Run(runCtx, request.Context, cfg)
 	endedAt := now()
+	// 无论是否出错都构建结果，以保留部分 Token 用量、耗时等信息
+	result := output.Result(request.RunID, mode, startedAt, endedAt)
 	if err != nil {
 		if runCtx.Err() != nil || ctx.Err() != nil {
 			_ = s.events.PublishRunCancelled(context.Background(), request.RunID)
 		} else {
 			_ = s.events.PublishRunFailed(context.Background(), request.RunID, mode, err)
 		}
-		return contracts.AgentRunResult{}, &contracts.AgentRunError{ExecutionMode: mode, Err: err}
+		return result, &contracts.AgentRunError{ExecutionMode: mode, Err: err}
 	}
-	result := output.Result(request.RunID, mode, startedAt, endedAt)
 	if err := s.events.PublishRunCompleted(context.Background(), request.RunID, result); err != nil {
 		return contracts.AgentRunResult{}, err
 	}

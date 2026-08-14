@@ -26,6 +26,12 @@ type ReviewerService struct {
 	modelFactory contracts.ModelFactory
 	promptConfig ReviewerPromptConfig
 	stateStore   PlanStateStore
+	onUsage      PlanUsageCallback // 可选：token 消耗回调
+}
+
+// SetUsageCallback 设置 token 消耗回调。
+func (s *ReviewerService) SetUsageCallback(cb PlanUsageCallback) {
+	s.onUsage = cb
 }
 
 // NewReviewerService 创建 ReviewerService 实例。
@@ -88,6 +94,11 @@ func (s *ReviewerService) Review(ctx context.Context, agentContext contracts.Age
 	})
 	if err != nil {
 		return contracts.ReviewerResult{}, fmt.Errorf("chat with model: %w", err)
+	}
+
+	// 记录 token 消耗
+	if s.onUsage != nil {
+		s.onUsage(response.Usage.InputTokens, response.Usage.OutputTokens, response.Usage.TotalTokens)
 	}
 
 	// 解析响应
