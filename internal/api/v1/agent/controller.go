@@ -277,7 +277,7 @@ func (ctrl *Controller) CancelRun(c *gin.Context) {
 	response.Success(c, http.StatusOK, gin.H{"cancelled": true})
 }
 
-// RetryRun 处理 POST /api/v1/agent/runs/:id/retry，基于失败运行创建新的排队运行。
+// RetryRun 处理 POST /api/v1/agent/runs/:id/retry，基于已有运行创建新的排队运行。
 func (ctrl *Controller) RetryRun(c *gin.Context) {
 	user, ok := middleware.GetUser(c)
 	if !ok {

@@ -48,6 +48,6 @@ type AgentRunRepository interface {
 	// MarkCancelledAdmin 直接按 runID 取消运行（用于 Worker 超时或内部取消）。
 	MarkCancelledAdmin(ctx context.Context, runID uuid.UUID) error
 
-	// CreateRetry 基于失败运行创建新的排队运行（retry_of_run_id 指向原运行），返回新运行 ID。
+	// CreateRetry 基于已有运行创建新的排队运行（retry_of_run_id 指向原运行），返回新运行 ID。
 	CreateRetry(ctx context.Context, originalRunID, userID uuid.UUID) (uuid.UUID, error)
 }

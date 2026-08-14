@@ -13,6 +13,7 @@ import { streamAgentEvents } from '../events';
 import { ChatComposer } from '../components/ChatComposer';
 import { ConversationSidebar } from '../components/ConversationSidebar';
 import { MessageList } from '../components/MessageList';
+import { groupConsecutiveAssistantMessages } from '../utils/groupMessages';
 import type { Message } from '../types';
 
 export function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationId?: string }) {
@@ -56,9 +57,16 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
     const isFirstVisit = !visitedConversations.current.has(conversationId);
     
     listMessages(conversationId, { page: 1, page_size: 100 }).then((result) => {
-      setMessages(result.items || []);
+      // 按时间排序后端消息（升序），然后分组合并连续助手消息为版本历史
+      const rawMessages = result.items || [];
+      const sortedMessages = [...rawMessages].sort((a, b) => 
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      );
+      const groupedMessages = groupConsecutiveAssistantMessages(sortedMessages);
+      setMessages(groupedMessages);
+      
       // 仅在首次访问时滚动到底部
-      if (isFirstVisit && result.items && result.items.length > 0) {
+      if (isFirstVisit && groupedMessages.length > 0) {
         visitedConversations.current.add(conversationId);
         setShouldScrollToBottom(true);
         // 重置滚动标志，避免后续消息更新时误触发
@@ -140,21 +148,37 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
     }
   };
 
-  // 重试：基于已存在的 agent_run_id 创建新的运行并重新流式输出。
-  // 调用后端 retry API 创建新运行，随后通过 SSE 实时接收事件，最终获取结果并追加助手消息。
-  const handleRetry = async (agentRunId: string, query: string) => {
+  /**
+   * handleRetry 重试指定 agent_run 的消息。
+   * 方案：调用 retry API 创建新运行 → SSE 流式接收 → 结束后从后端重新加载消息列表。
+   * 因为后端会持久化所有消息记录，重新加载时分组函数 groupConsecutiveAssistantMessages
+   * 会自动将连续的助手消息合并为版本历史，无需前端临时维护 versions。
+   */
+  const handleRetry = async (agentRunId: string, _query: string) => {
     if (!enabled || submitting || !conversationId) return;
     setSubmitting(true);
+
+    // 保存目标消息索引用于失败时恢复
+    const targetIndex = messages.findIndex(m => m.agent_run_id === agentRunId);
+
     try {
       setErrorMessage(null);
+
       // 1. 调用 retry API 获取新的运行 ID
       const { new_run_id } = await retryAgentRun(agentRunId);
       currentRunId.current = new_run_id;
-      // 2. 重置 Agent 运行状态，准备接收新运行的事件
+
+      // 2. 立即将目标消息标记为"正在重新生成"
+      if (targetIndex >= 0) {
+        setMessages((current) => current.map((m, i) => i === targetIndex ? { ...m, status: 'running' as const } : m));
+      }
+
+      // 3. 重置 Agent 运行状态，准备接收新运行的事件
       dispatchRun({ type: 'RESET_AGENT_RUN_STATE' } as ResetAction);
       const controller = new AbortController();
       abortRef.current = controller;
-      // 3. SSE 流式订阅新运行的生命周期事件
+
+      // 4. SSE 流式订阅新运行的生命周期事件
       try {
         await streamAgentEvents(`${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${new_run_id}/events`, {
           signal: controller.signal,
@@ -164,25 +188,43 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
       } catch (e) {
         console.warn('重试 SSE 流异常结束，将通过 API 获取最终结果', e);
       }
-      // 4. SSE 结束后从 API 获取最终结果
-      const completedRun = await activeRunQuery.refetch();
-      const run = completedRun.data;
-      const answer = run?.final_result
-        || runStateRef.current.answer
-        || (run?.status === 'failed' ? run.error_message : '');
-      if (answer) {
-        setMessages((current) => [...current, {
-          id: crypto.randomUUID(), role: 'assistant', content: answer, agent_run_id: new_run_id,
-          status: run?.status || 'completed', created_at: new Date().toISOString(),
-        }]);
-      }
+
+      // 5. SSE 结束后从后端重新加载完整消息列表，分组函数自动合并版本历史
+      const result = await listMessages(conversationId, { page: 1, page_size: 100 });
+      const rawMessages = result.items || [];
+      const sortedMessages = [...rawMessages].sort((a, b) =>
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      );
+      const groupedMessages = groupConsecutiveAssistantMessages(sortedMessages);
+      setMessages(groupedMessages);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '重试运行失败');
+      // 重新加载消息列表以恢复到一致状态
+      if (conversationId) {
+        const result = await listMessages(conversationId, { page: 1, page_size: 100 }).catch(() => null);
+        if (result?.items) {
+          const sortedMessages = [...result.items].sort((a, b) =>
+            new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+          );
+          setMessages(groupConsecutiveAssistantMessages(sortedMessages));
+        }
+      }
     } finally {
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
       setSubmitting(false);
       abortRef.current = null;
     }
+  };
+
+  /**
+   * handleSwitchVersion 切换消息的版本显示。
+   * current_version_index >= 0 时显示对应历史版本内容；
+   * -1 时显示 content（最新版本）。
+   */
+  const handleSwitchVersion = (messageId: string, newIndex: number) => {
+    setMessages((current) => current.map(m =>
+      m.id === messageId ? { ...m, current_version_index: newIndex } : m
+    ));
   };
 
   const stop = () => {
@@ -242,7 +284,7 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
     <>
       {!enabled && <Alert severity="info" sx={{ m: 2, mb: 0 }}>智能问答后端未启用，请检查服务配置。</Alert>}
       {errorMessage && <Alert severity="error" sx={{ m: 2, mb: 0 }}>{errorMessage}</Alert>}
-      <MessageList messages={messages} streamingAnswer={submitting ? runState.answer : ''} onSuggestion={setDraft} scrollToBottom={shouldScrollToBottom} onRetry={handleRetry} />
+      <MessageList messages={messages} streamingAnswer={submitting ? runState.answer : ''} onSuggestion={setDraft} scrollToBottom={shouldScrollToBottom} onRetry={handleRetry} onSwitchVersion={handleSwitchVersion} />
     </>
   );
 

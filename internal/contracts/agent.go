@@ -59,6 +59,6 @@ type AgentRunService interface {
 	Run(ctx context.Context, request AgentRunRequest) (AgentRunResult, error)
 	// Cancel 停止一个正在运行的 Agent 执行。
 	Cancel(ctx context.Context, runID, userID ID) error
-	// Retry 重新启动一个失败的 Agent 执行并返回新的运行 ID。
+	// Retry 重新启动已有的 Agent 执行并返回新的运行 ID。
 	Retry(ctx context.Context, runID, userID ID) (ID, error)
 }
