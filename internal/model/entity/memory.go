@@ -19,7 +19,6 @@ type Memory struct {
 	SourceConversationID *string    `gorm:"type:uuid" json:"source_conversation_id"`
 	SourceMessageID      *string    `gorm:"type:uuid" json:"source_message_id"`
 	SourceAgentRunID     *string    `gorm:"type:uuid" json:"source_agent_run_id"`
-	FTSTokens            string     `gorm:"column:fts_tokens;type:text;not null;default:''" json:"fts_tokens"`
 	Status               string     `gorm:"type:varchar(20);not null;default:active" json:"status"`
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`

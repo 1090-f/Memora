@@ -1,4 +1,3 @@
-// Package retrieval 提供基于 PostgreSQL 的关键词/向量检索 Retriever。
 package retrieval
 
 import (
@@ -6,29 +5,29 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service/rag/einoadapter"
-	"github.com/1090-f/Memora/internal/service/rag/tokenizer"
+	queryutil "github.com/1090-f/Memora/internal/service/rag/query"
 	"github.com/cloudwego/eino/callbacks"
 	"github.com/cloudwego/eino/components"
 	"github.com/cloudwego/eino/components/retriever"
 	"github.com/cloudwego/eino/schema"
 )
 
-// KeywordRetrieverOptions 是 PostgresKeywordRetriever 的自定义选项。
-// 身份类选项只能由 Service 注入，禁止来自用户请求。
+const (
+	keywordCandidateMultiple = 4
+	keywordWeakResultLimit   = 3
+)
+
+// KeywordRetrieverOptions contains trusted retrieval scope injected by the service.
 type KeywordRetrieverOptions struct {
-	// UserID 租户用户 ID。
-	UserID string
-	// KnowledgeBaseID 知识库 ID。
+	UserID          string
 	KnowledgeBaseID string
-	// DocumentIDs 可选：限定检索的文档范围。
-	DocumentIDs []string
-	// IndexVersion 可选：限定索引版本。
-	IndexVersion *int
+	DocumentIDs     []string
+	IndexVersion    *int
 }
 
-// WithKeywordScope 注入租户过滤选项（仅 Service 使用）。
 func WithKeywordScope(scope KeywordRetrieverOptions) retriever.Option {
 	return retriever.WrapImplSpecificOptFn(func(o *KeywordRetrieverOptions) {
 		o.UserID = scope.UserID
@@ -38,28 +37,31 @@ func WithKeywordScope(scope KeywordRetrieverOptions) retriever.Option {
 	})
 }
 
-// PostgresKeywordRetriever 是 Eino retriever.Retriever 的实现：
-// 只负责 Eino options/metadata 与 Repository 查询参数/结果的适配，不拼 SQL。
-type PostgresKeywordRetriever struct {
-	search    repository.KeywordSearchRepository
-	tokenizer tokenizer.Tokenizer
+// ParadeDBKeywordRetriever implements Exact -> Strong -> Weak retrieval.
+// Tokenization and AND/OR matching are delegated exclusively to pg_search.
+type ParadeDBKeywordRetriever struct {
+	search repository.KeywordSearchRepository
 }
 
-// NewPostgresKeywordRetriever 构造关键词检索器。
-func NewPostgresKeywordRetriever(search repository.KeywordSearchRepository, tok tokenizer.Tokenizer) (*PostgresKeywordRetriever, error) {
+type keywordMatch struct {
+	hit           *repository.KeywordHit
+	level         contracts.KeywordMatchLevel
+	matchedTerms  []string
+	coverage      *float64
+	recallStage   string
+	lowConfidence bool
+}
+
+func NewParadeDBKeywordRetriever(search repository.KeywordSearchRepository) (*ParadeDBKeywordRetriever, error) {
 	if search == nil {
 		return nil, fmt.Errorf("关键词检索仓储不能为空")
 	}
-	if tok == nil {
-		tok = tokenizer.NewNgramTokenizer(tokenizer.DefaultNgramConfig())
-	}
-	return &PostgresKeywordRetriever{search: search, tokenizer: tok}, nil
+	return &ParadeDBKeywordRetriever{search: search}, nil
 }
 
-// Retrieve 实现 Eino retriever.Retriever。
-func (r *PostgresKeywordRetriever) Retrieve(ctx context.Context, query string, opts ...retriever.Option) ([]*schema.Document, error) {
+func (r *ParadeDBKeywordRetriever) Retrieve(ctx context.Context, rawQuery string, opts ...retriever.Option) ([]*schema.Document, error) {
 	ctx = callbacks.EnsureRunInfo(ctx, r.GetType(), components.ComponentOfRetriever)
-	ctx = callbacks.OnStart(ctx, &retriever.CallbackInput{Query: query})
+	ctx = callbacks.OnStart(ctx, &retriever.CallbackInput{Query: rawQuery})
 	var err error
 	defer func() {
 		if err != nil {
@@ -69,8 +71,6 @@ func (r *PostgresKeywordRetriever) Retrieve(ctx context.Context, query string, o
 
 	common := retriever.GetCommonOptions(&retriever.Options{}, opts...)
 	impl := retriever.GetImplSpecificOptions(&KeywordRetrieverOptions{}, opts...)
-
-	// TopK 默认 10，仅接受正向覆盖，避免默认值不可控。
 	topK := 10
 	if common.TopK != nil && *common.TopK > 0 {
 		topK = *common.TopK
@@ -84,69 +84,140 @@ func (r *PostgresKeywordRetriever) Retrieve(ctx context.Context, query string, o
 	if impl.UserID == "" || impl.KnowledgeBaseID == "" {
 		return nil, fmt.Errorf("关键词检索缺少 UserID/KnowledgeBaseID 租户选项")
 	}
+
+	query := queryutil.Normalize(rawQuery)
 	if query == "" {
 		return nil, fmt.Errorf("检索查询不能为空")
 	}
-
-	// 本地分词得到查询 Token，仓储基于 Token 做 FTS 检索，避免原始查询直拼 SQL。
-	tokens := r.tokenizer.Tokenize(query)
-	if len(tokens) == 0 {
-		return nil, fmt.Errorf("查询分词后无有效 Token")
-	}
-
-	hits, err := r.search.Search(ctx, repository.KeywordSearchParams{
-		UserID:          impl.UserID,
-		KnowledgeBaseID: impl.KnowledgeBaseID,
-		DocumentIDs:     impl.DocumentIDs,
-		QueryTokens:     tokens,
-		TopK:            topK,
-		IndexVersion:    impl.IndexVersion,
-	})
+	matches, err := r.retrieveLayered(ctx, impl, query, topK, common.ScoreThreshold)
 	if err != nil {
 		return nil, err
 	}
 
-	docs := make([]*schema.Document, 0, len(hits))
-	for _, hit := range hits {
-		// 低于阈值的命中直接丢弃；rank 按过滤后的连续序号重排，保证无空洞。
-		if common.ScoreThreshold != nil && hit.Score < *common.ScoreThreshold {
-			continue
-		}
+	docs := make([]*schema.Document, 0, len(matches))
+	for _, match := range matches {
+		hit := match.hit
 		rank := len(docs) + 1
 		location := make(map[string]any)
 		_ = json.Unmarshal(hit.SourceLocation, &location)
 		meta := map[string]any{
-			einoadapter.MetaUserID:         impl.UserID,
-			einoadapter.MetaKnowledgeBase:  impl.KnowledgeBaseID,
-			einoadapter.MetaDocumentID:     hit.DocumentID,
-			einoadapter.MetaChunkID:        hit.ChunkID,
-			einoadapter.MetaIndexVersion:   hit.IndexVersion,
-			einoadapter.MetaKeywordRank:    rank,
-			einoadapter.MetaKeywordScore:   hit.Score,
-			einoadapter.MetaDocumentUpdAt:  hit.UpdatedAt,
-			einoadapter.MetaDocumentTitle:  hit.DocumentTitle,
-			einoadapter.MetaSourceLocation: location,
+			einoadapter.MetaUserID:               impl.UserID,
+			einoadapter.MetaKnowledgeBase:        impl.KnowledgeBaseID,
+			einoadapter.MetaDocumentID:           hit.DocumentID,
+			einoadapter.MetaChunkID:              hit.ChunkID,
+			einoadapter.MetaIndexVersion:         hit.IndexVersion,
+			einoadapter.MetaKeywordRank:          rank,
+			einoadapter.MetaKeywordScore:         hit.Score,
+			einoadapter.MetaKeywordMatchLevel:    string(match.level),
+			einoadapter.MetaKeywordMatchedTerms:  append([]string(nil), match.matchedTerms...),
+			einoadapter.MetaKeywordRecallStage:   match.recallStage,
+			einoadapter.MetaKeywordLowConfidence: match.lowConfidence,
+			einoadapter.MetaDocumentUpdAt:        hit.UpdatedAt,
+			einoadapter.MetaDocumentTitle:        hit.DocumentTitle,
+			einoadapter.MetaSourceLocation:       location,
 		}
 		if hit.DirectoryID != nil {
 			meta[einoadapter.MetaDirectoryID] = *hit.DirectoryID
 		}
-		doc := &schema.Document{
-			ID:       hit.ChunkID,
-			Content:  hit.Content,
-			MetaData: meta,
+		if match.coverage != nil {
+			meta[einoadapter.MetaKeywordCoverage] = *match.coverage
 		}
-		doc = doc.WithScore(hit.Score)
+		doc := (&schema.Document{ID: hit.ChunkID, Content: hit.Content, MetaData: meta}).WithScore(hit.Score)
 		docs = append(docs, doc)
 	}
 	_ = callbacks.OnEnd(ctx, &retriever.CallbackOutput{
-		Docs:  docs,
-		Extra: map[string]any{"top_k": topK, "tokens": len(tokens)},
+		Docs: docs,
+		Extra: map[string]any{
+			"top_k": topK, "query": query, "tokenizer": "paradedb_ngram_2_2",
+		},
 	})
 	return docs, nil
 }
 
-// GetType 返回组件类型名。
-func (r *PostgresKeywordRetriever) GetType() string { return "PostgresKeywordRetriever" }
+func (r *ParadeDBKeywordRetriever) retrieveLayered(ctx context.Context, scope *KeywordRetrieverOptions, query string, topK int, scoreThreshold *float64) ([]keywordMatch, error) {
+	candidateTopK := topK * keywordCandidateMultiple
+	if candidateTopK < topK {
+		candidateTopK = topK
+	}
+	if candidateTopK > MaxKeywordTopK {
+		candidateTopK = MaxKeywordTopK
+	}
 
-// IsCallbacksEnabled 启用 Eino Callbacks。
-func (r *PostgresKeywordRetriever) IsCallbacksEnabled() bool { return true }
+	// ### uses the fixed-position ngram index for exact substring matching.
+	hits, searchErr := r.searchLayer(ctx, scope, query, repository.KeywordSearchExact, candidateTopK)
+	if searchErr != nil {
+		return nil, searchErr
+	}
+	exact := acceptParadeDBMatches(hits, contracts.KeywordMatchExact, query, scoreThreshold)
+	if len(exact) > 0 {
+		return limitKeywordMatches(exact, topK), nil
+	}
+
+	// &&& requires every token produced by the ParadeDB index tokenizer to match.
+	hits, searchErr = r.searchLayer(ctx, scope, query, repository.KeywordSearchAll, candidateTopK)
+	if searchErr != nil {
+		return nil, searchErr
+	}
+	strong := acceptParadeDBMatches(hits, contracts.KeywordMatchStrong, query, scoreThreshold)
+	if len(strong) > 0 {
+		return limitKeywordMatches(strong, topK), nil
+	}
+
+	// ||| is only reached when conjunction recall is empty.
+	hits, searchErr = r.searchLayer(ctx, scope, query, repository.KeywordSearchAny, candidateTopK)
+	if searchErr != nil {
+		return nil, searchErr
+	}
+	weak := acceptParadeDBMatches(hits, contracts.KeywordMatchWeak, query, scoreThreshold)
+	limit := topK
+	if limit > keywordWeakResultLimit {
+		limit = keywordWeakResultLimit
+	}
+	return limitKeywordMatches(weak, limit), nil
+}
+
+func (r *ParadeDBKeywordRetriever) searchLayer(ctx context.Context, scope *KeywordRetrieverOptions, query string, mode repository.KeywordSearchMode, topK int) ([]*repository.KeywordHit, error) {
+	return r.search.Search(ctx, repository.KeywordSearchParams{
+		UserID: scope.UserID, KnowledgeBaseID: scope.KnowledgeBaseID, DocumentIDs: scope.DocumentIDs,
+		Query: query, Mode: mode, TopK: topK, IndexVersion: scope.IndexVersion,
+	})
+}
+
+func acceptParadeDBMatches(hits []*repository.KeywordHit, level contracts.KeywordMatchLevel, query string, scoreThreshold *float64) []keywordMatch {
+	accepted := make([]keywordMatch, 0, len(hits))
+	for _, hit := range hits {
+		if hit == nil || (scoreThreshold != nil && hit.Score < *scoreThreshold) {
+			continue
+		}
+		match := keywordMatch{hit: hit, level: level, recallStage: "strong"}
+		switch level {
+		case contracts.KeywordMatchExact:
+			coverage := 1.0
+			match.coverage = &coverage
+			match.matchedTerms = []string{query}
+			match.recallStage = "exact"
+		case contracts.KeywordMatchStrong:
+			coverage := 1.0
+			match.coverage = &coverage
+		case contracts.KeywordMatchWeak:
+			match.recallStage = "weak_fallback"
+			match.lowConfidence = true
+		}
+		accepted = append(accepted, match)
+	}
+	return accepted
+}
+
+func limitKeywordMatches(matches []keywordMatch, limit int) []keywordMatch {
+	if limit < 0 {
+		limit = 0
+	}
+	if len(matches) > limit {
+		return matches[:limit]
+	}
+	return matches
+}
+
+func (r *ParadeDBKeywordRetriever) GetType() string { return "ParadeDBKeywordRetriever" }
+
+func (r *ParadeDBKeywordRetriever) IsCallbacksEnabled() bool { return true }

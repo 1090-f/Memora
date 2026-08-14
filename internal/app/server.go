@@ -26,7 +26,6 @@ import (
 	"github.com/1090-f/Memora/internal/service/rag/parser"
 	ragpipeline "github.com/1090-f/Memora/internal/service/rag/pipeline"
 	ragretrieval "github.com/1090-f/Memora/internal/service/rag/retrieval"
-	"github.com/1090-f/Memora/internal/service/rag/tokenizer"
 	"github.com/1090-f/Memora/internal/worker"
 	"github.com/1090-f/Memora/pkg/audit"
 	"github.com/1090-f/Memora/pkg/config"
@@ -169,7 +168,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		_ = a.Close()
 		return fmt.Errorf("初始化文档读取服务失败: %w", err)
 	}
-	keywordRetriever, err := ragretrieval.NewPostgresKeywordRetriever(repository.NewKeywordSearchRepository(a.db), tokenizer.NewNgramTokenizer(tokenizer.DefaultNgramConfig()))
+	keywordRetriever, err := ragretrieval.NewParadeDBKeywordRetriever(repository.NewKeywordSearchRepository(a.db))
 	if err != nil {
 		_ = a.Close()
 		return err

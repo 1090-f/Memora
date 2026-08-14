@@ -37,3 +37,39 @@ jobs:
         run: go test -race ./...
       - name: Build entrypoints
         run: go build ./cmd/...
+
+  paradedb-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      paradedb:
+        image: paradedb/paradedb:0.24.3-pg17
+        env:
+          POSTGRES_USER: memora
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: memora
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U memora -d memora"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.25.0
+          cache: true
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Run all database migrations on ParadeDB
+        env:
+          MEMORA_DATABASE_URL: postgres://memora:password@127.0.0.1:5432/memora?sslmode=disable
+        run: go run ./cmd/migrate up
+      - name: Run ParadeDB keyword smoke tests
+        env:
+          PGPASSWORD: password
+        run: |
+          createdb -h 127.0.0.1 -U memora memora_smoke
+          psql -h 127.0.0.1 -U memora -d memora_smoke -f scripts/paradedb_smoke.sql

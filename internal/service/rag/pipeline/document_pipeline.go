@@ -28,7 +28,6 @@ import (
 	"github.com/1090-f/Memora/internal/service/rag/loader"
 	"github.com/1090-f/Memora/internal/service/rag/normalizer"
 	"github.com/1090-f/Memora/internal/service/rag/parser"
-	"github.com/1090-f/Memora/internal/service/rag/tokenizer"
 	"github.com/1090-f/Memora/internal/service/rag/transformer"
 	"github.com/cloudwego/eino/components/document"
 	"github.com/cloudwego/eino/components/embedding"
@@ -160,7 +159,6 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 	}
 	chunker := chunking.NewStructureAwareChunker(cfg.Tokenizer, cfg.ChunkOptions.StrategyVersion)
 	chunkCleaner := transformer.NewChunkCleaner()
-	ftsTokenizer := tokenizer.NewNgramTokenizer(tokenizer.DefaultNgramConfig())
 
 	chunkConfigHash := computeChunkConfigHash(cfg)
 
@@ -415,7 +413,7 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		}
 		entities := make([]*entity.DocumentChunk, 0, len(state.chunks))
 		for i, chunk := range state.chunks {
-			entityChunk, err := chunkToEntity(chunk, i, state.input.DocMeta, chunkConfigHash, ftsTokenizer)
+			entityChunk, err := chunkToEntity(chunk, i, state.input.DocMeta, chunkConfigHash)
 			if err != nil {
 				return nil, err
 			}
@@ -610,7 +608,7 @@ func (p *unavailableParser) Parse(context.Context, parser.ParseInput) (*parser.P
 }
 
 // chunkToEntity 将 ParsedChunk 转换为 document_chunks 实体。
-func chunkToEntity(chunk chunking.ParsedChunk, chunkNo int, meta transformer.DocMeta, chunkConfigHash string, fts *tokenizer.NgramTokenizer) (*entity.DocumentChunk, error) {
+func chunkToEntity(chunk chunking.ParsedChunk, chunkNo int, meta transformer.DocMeta, chunkConfigHash string) (*entity.DocumentChunk, error) {
 	headingPath, err := json.Marshal(chunk.HeadingPath)
 	if err != nil {
 		return nil, fmt.Errorf("序列化 heading_path 失败: %w", err)
@@ -624,10 +622,6 @@ func chunkToEntity(chunk chunking.ParsedChunk, chunkNo int, meta transformer.Doc
 		contextTitle = chunk.HeadingPath[len(chunk.HeadingPath)-1]
 	} else if meta.DocumentTitle != "" {
 		contextTitle = meta.DocumentTitle
-	}
-	ftsTokens := strings.Join(fts.Tokenize(chunk.Content), " ")
-	if ftsTokens == "" {
-		return nil, fmt.Errorf("Chunk %d 未产生 fts_tokens", chunkNo)
 	}
 	return &entity.DocumentChunk{
 		UserID:          meta.UserID,
@@ -644,7 +638,6 @@ func chunkToEntity(chunk chunking.ParsedChunk, chunkNo int, meta transformer.Doc
 		ChunkVersion:    meta.ChunkVersion,
 		IndexVersion:    meta.IndexVersion,
 		ChunkConfigHash: chunkConfigHash,
-		FTSTokens:       ftsTokens,
 	}, nil
 }
 

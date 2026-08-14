@@ -2,7 +2,7 @@ name: memora
 
 services:
   postgres:
-    image: pgvector/pgvector:pg17
+    image: paradedb/paradedb:0.24.3-pg17
     environment:
       POSTGRES_DB: memora
       POSTGRES_USER: memora
