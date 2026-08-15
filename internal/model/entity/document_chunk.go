@@ -3,7 +3,6 @@ package entity
 import "time"
 
 // DocumentChunk 表示文档分块实体，映射到 document_chunks 数据库表。
-// fts_tokens 由任务包 05 的中文分词器生成，本包暂写入空字符串占位。
 type DocumentChunk struct {
 	ID              string    `gorm:"column:id;type:uuid;primaryKey;default:gen_random_uuid()" json:"id"` // ID 主键（UUID）
 	UserID          string    `gorm:"column:user_id" json:"user_id"`                                      // UserID 所属用户 ID
@@ -20,7 +19,6 @@ type DocumentChunk struct {
 	ChunkVersion    int       `gorm:"column:chunk_version" json:"chunk_version"`                          // ChunkVersion 分块版本号，与文档对齐
 	IndexVersion    int       `gorm:"column:index_version" json:"index_version"`                          // IndexVersion 索引版本号，用于区分多套索引
 	ChunkConfigHash string    `gorm:"column:chunk_config_hash" json:"chunk_config_hash"`                  // ChunkConfigHash 生成该分块的分块配置哈希
-	FTSTokens       string    `gorm:"column:fts_tokens" json:"fts_tokens"`                                // FTSTokens 全文检索分词 token 串，由中文分词器生成
 	CreatedAt       time.Time `gorm:"column:created_at" json:"created_at"`                                // CreatedAt 创建时间
 }
 

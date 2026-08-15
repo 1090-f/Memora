@@ -11,7 +11,7 @@ import (
 
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/repository"
-	"github.com/1090-f/Memora/internal/service/rag/tokenizer"
+	queryutil "github.com/1090-f/Memora/internal/service/rag/query"
 	"github.com/1090-f/Memora/pkg/logger"
 	"go.uber.org/zap"
 )
@@ -61,7 +61,6 @@ func DefaultRetrieverConfig() *RetrieverConfig {
 type memoryRetriever struct {
 	memoryRepo   repository.MemoryRepository
 	embeddingSvc contracts.EmbeddingService
-	tokenizer    tokenizer.Tokenizer
 	config       *RetrieverConfig
 }
 
@@ -73,7 +72,6 @@ func NewMemoryRetriever(
 	return &memoryRetriever{
 		memoryRepo:   memoryRepo,
 		embeddingSvc: embeddingSvc,
-		tokenizer:    tokenizer.NewNgramTokenizer(tokenizer.DefaultNgramConfig()),
 		config:       DefaultRetrieverConfig(),
 	}
 }
@@ -126,15 +124,15 @@ func (r *memoryRetriever) Retrieve(
 
 	// goroutine 2: 关键词检索
 	go func() {
-		tokens := r.tokenizer.Tokenize(query.Query)
-		if len(tokens) == 0 {
+		normalized := queryutil.Normalize(query.Query)
+		if normalized == "" {
 			keywordCh <- keywordResult{results: nil, err: nil}
 			return
 		}
 		searchReq := repository.KeywordMemorySearchRequest{
 			UserID:          userID,
 			KnowledgeBaseID: kbID,
-			QueryTokens:     tokens,
+			Query:           normalized,
 			TopK:            r.config.KeywordTopK,
 		}
 		results, err := r.memoryRepo.SearchByKeyword(ctx, searchReq)

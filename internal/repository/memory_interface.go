@@ -22,7 +22,7 @@ type MemoryRepository interface {
 	ListByUser(ctx context.Context, userID string, opts ListMemoryOpts) (*ListMemoryResult, error)
 	// SearchByVector 使用向量相似度搜索记忆。
 	SearchByVector(ctx context.Context, req VectorSearchRequest) ([]VectorSearchResult, error)
-	// SearchByKeyword 使用 PostgreSQL 全文检索搜索记忆。
+	// SearchByKeyword 使用 ParadeDB BM25 搜索记忆。
 	SearchByKeyword(ctx context.Context, req KeywordMemorySearchRequest) ([]KeywordMemorySearchResult, error)
 	// FindByContentHash 根据内容哈希查找记忆，用于去重。
 	FindByContentHash(ctx context.Context, userID, contentHash, scopeType string, scopeID *string) (*entity.Memory, error)
@@ -58,7 +58,7 @@ type VectorSearchRequest struct {
 
 // VectorSearchResult 表示向量搜索结果。
 type VectorSearchResult struct {
-	Memory     entity.Memory
+	Memory     entity.Memory `gorm:"embedded"`
 	Similarity float64
 }
 
@@ -66,12 +66,12 @@ type VectorSearchResult struct {
 type KeywordMemorySearchRequest struct {
 	UserID          string
 	KnowledgeBaseID *string
-	QueryTokens     []string
+	Query           string
 	TopK            int
 }
 
 // KeywordMemorySearchResult 表示记忆关键词检索结果。
 type KeywordMemorySearchResult struct {
-	Memory entity.Memory
+	Memory entity.Memory `gorm:"embedded"`
 	Score  float64
 }

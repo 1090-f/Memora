@@ -1,52 +1,38 @@
-import {
-  Alert,
-  Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogContentText,
-  DialogTitle,
-} from '@mui/material';
+import KeyboardArrowDownOutlined from '@mui/icons-material/KeyboardArrowDownOutlined';
+import SmartToyOutlined from '@mui/icons-material/SmartToyOutlined';
+import { Alert, Box, Chip, Stack, Typography } from '@mui/material';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useEffect, useReducer, useRef, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { capabilities } from '@/app/capabilities';
 import { AgentRunPanel } from '@/features/agent-run/components/AgentRunPanel';
-import {
-  initialAgentRunState,
-  reduceAgentEvent,
-  type ResetAction,
-} from '@/features/agent-run/eventReducer';
-import {
-  cancelAgentRun,
-  createAgentRun,
-  getAgentRun,
-  listAgentRuns,
-  retryAgentRun,
-} from '@/features/agent-run/api';
+import { initialAgentRunState, reduceAgentEvent, type ResetAction } from '@/features/agent-run/eventReducer';
+import { cancelAgentRun, createAgentRun, getAgentRun } from '@/features/agent-run/api';
 import { queryKeys } from '@/api/queryKeys';
+import { getKnowledgeBase } from '@/features/knowledge-base/api';
 import { ChatWorkspace } from '@/layouts/ChatWorkspace';
-import {
-  createConversation,
-  deleteConversation,
-  listConversations,
-  listMessages,
-  updateConversation,
-} from '../api';
+import { createConversation, getConversation, listConversations, listMessages } from '../api';
 import { streamAgentEvents } from '../events';
 import { ChatComposer } from '../components/ChatComposer';
 import { ConversationSidebar } from '../components/ConversationSidebar';
 import { MessageList } from '../components/MessageList';
-import { groupConsecutiveAssistantMessages } from '../utils/groupMessages';
-import type { Message } from '../types';
+import type { Citation, Message } from '../types';
 
-export function ChatPageContent({
-  kbId,
-  conversationId,
-}: {
-  kbId: string;
-  conversationId?: string;
-}) {
+const conversationStorageKey = (kbId: string) => `memora:conversation:${kbId}`;
+
+function normalizeCitations(values: Array<Record<string, unknown>>): Citation[] {
+  return values.map((value) => ({
+    source_type: value.source_type === 'network' ? 'network' : 'knowledge_base',
+    document_id: typeof value.document_id === 'string' ? value.document_id : undefined,
+    document_title: typeof value.document_title === 'string' ? value.document_title : undefined,
+    quoted_text: typeof value.quoted_text === 'string' ? value.quoted_text : undefined,
+    title: typeof value.title === 'string' ? value.title : undefined,
+    url: typeof value.url === 'string' ? value.url : undefined,
+    site_name: typeof value.site_name === 'string' ? value.site_name : undefined,
+  }));
+}
+
+export function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationId?: string }) {
   const enabled = capabilities.conversation === 'available';
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -54,142 +40,46 @@ export function ChatPageContent({
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [runState, dispatchRun] = useReducer(
-    reduceAgentEvent,
-    initialAgentRunState,
-  );
+  const [runState, dispatchRun] = useReducer(reduceAgentEvent, initialAgentRunState);
   const runStateRef = useRef(runState);
   runStateRef.current = runState;
+  const [activeConversationId, setActiveConversationId] = useState(conversationId);
   const abortRef = useRef<AbortController | null>(null);
   const currentRunId = useRef<string | null>(null);
-  const runConversationRef = useRef<string | null>(null);
-  const visitedConversations = useRef<Set<string>>(new Set());
-  const [shouldScrollToBottom, setShouldScrollToBottom] = useState(false);
 
-  // 会话列表
+  useEffect(() => {
+    setActiveConversationId(conversationId);
+    setMessages([]);
+    currentRunId.current = null;
+    dispatchRun({ type: 'RESET_AGENT_RUN_STATE' } as ResetAction);
+  }, [conversationId]);
+
+  const knowledgeBaseQuery = useQuery({
+    queryKey: queryKeys.knowledgeBase(kbId),
+    queryFn: () => getKnowledgeBase(kbId),
+    enabled: enabled && Boolean(kbId),
+  });
+
+  // 查询会话列表
   const conversationsQuery = useQuery({
     queryKey: queryKeys.conversations(kbId),
     queryFn: () => listConversations(kbId, { page: 1, page_size: 100 }),
-    enabled,
+    enabled: enabled,
   });
 
-  // 当前会话信息
-  const currentConversation = useMemo(
-    () => conversationsQuery.data?.items?.find(c => c.id === conversationId),
-    [conversationsQuery.data, conversationId],
-  );
+  const messagesQuery = useQuery({
+    queryKey: ['conversations', activeConversationId, 'messages'],
+    queryFn: () => listMessages(activeConversationId as string, { page: 1, page_size: 100 }),
+    enabled: enabled && Boolean(activeConversationId) && !submitting,
+  });
 
-  // 切换会话时加载历史消息
   useEffect(() => {
-    if (!conversationId || !enabled) {
-      setMessages([]);
-      setSubmitting(false);
-      setShouldScrollToBottom(false);
-      return;
+    if (messagesQuery.data) {
+      setMessages([...messagesQuery.data.items].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()));
     }
+  }, [messagesQuery.data]);
 
-    abortRef.current?.abort();
-    setSubmitting(false);
-    dispatchRun({ type: 'RESET_AGENT_RUN_STATE' } as ResetAction);
-    currentRunId.current = null;
-    runConversationRef.current = null;
-    abortRef.current = null;
-
-    let cancelled = false;
-    listAgentRuns({ knowledge_base_id: kbId, page: 1, page_size: 100 })
-      .then(result => {
-        if (cancelled || result.items.length === 0) return;
-        const activeRun = result.items.find(
-          run =>
-            run.conversation_id === conversationId &&
-            (run.status === 'queued' || run.status === 'running'),
-        );
-        if (!activeRun || cancelled) return;
-        currentRunId.current = activeRun.id;
-        runConversationRef.current = conversationId;
-        setSubmitting(true);
-        const controller = new AbortController();
-        abortRef.current = controller;
-        void streamAgentEvents(
-          `${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${activeRun.id}/events`,
-          {
-            signal: controller.signal,
-            onEvent: dispatchRun,
-            timeout: 120_000,
-          },
-        )
-          .catch(error => {
-            if (!cancelled) console.warn('恢复 Agent 运行流失败', error);
-          })
-          .finally(async () => {
-            if (cancelled || runConversationRef.current !== conversationId)
-              return;
-
-            const result = await listMessages(conversationId, {
-              page: 1,
-              page_size: 100,
-            }).catch(() => null);
-            if (!cancelled && result?.items) {
-              const sortedMessages = [...result.items].sort(
-                (a, b) =>
-                  new Date(a.created_at).getTime() -
-                  new Date(b.created_at).getTime(),
-              );
-              setMessages(groupConsecutiveAssistantMessages(sortedMessages));
-              setShouldScrollToBottom(true);
-              setTimeout(() => setShouldScrollToBottom(false), 100);
-            }
-
-            if (!cancelled && runConversationRef.current === conversationId) {
-              setSubmitting(false);
-              runConversationRef.current = null;
-              abortRef.current = null;
-            }
-          });
-      })
-      .catch(() => {
-        // 查询运行状态失败时保持当前会话为空闲状态
-      });
-
-    // 检查是否为首次访问该会话
-    const isFirstVisit = !visitedConversations.current.has(conversationId);
-
-    listMessages(conversationId, { page: 1, page_size: 100 })
-      .then(result => {
-        // 按时间排序后端消息（升序），然后分组合并连续助手消息为版本历史
-        const rawMessages = result.items || [];
-        const sortedMessages = [...rawMessages].sort(
-          (a, b) =>
-            new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
-        );
-        const groupedMessages =
-          groupConsecutiveAssistantMessages(sortedMessages);
-        setMessages(groupedMessages);
-
-        // 仅在首次访问时滚动到底部
-        if (isFirstVisit && groupedMessages.length > 0) {
-          visitedConversations.current.add(conversationId);
-          setShouldScrollToBottom(true);
-          // 重置滚动标志，避免后续消息更新时误触发
-          setTimeout(() => setShouldScrollToBottom(false), 100);
-        }
-      })
-      .catch(() => {
-        setMessages([]);
-        setShouldScrollToBottom(false);
-      });
-
-    return () => {
-      cancelled = true;
-      if (runConversationRef.current === conversationId) {
-        abortRef.current?.abort();
-        abortRef.current = null;
-        runConversationRef.current = null;
-      }
-    };
-  }, [conversationId, kbId, enabled]);
-
-  // Agent 运行详情查询（用于 SSE 结束后获取最终结果）
+  // 通过 Agent 运行详情刷新最终回答，避免只依赖 SSE 连接是否正常结束。
   const activeRunQuery = useQuery({
     queryKey: ['agent-run', currentRunId.current],
     queryFn: () => {
@@ -200,194 +90,65 @@ export function ChatPageContent({
     enabled: false,
   });
 
-  const send = async () => {
-    if (!enabled || !draft.trim() || submitting || !conversationId) return;
-    const query = draft.trim();
-    setSubmitting(true);
-    runConversationRef.current = conversationId;
-    try {
-      setErrorMessage(null);
-      setDraft('');
-      setMessages(current => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          role: 'user',
-          content: query,
-          agent_run_id: null,
-          created_at: new Date().toISOString(),
-        },
-      ]);
-
-      // 如果当前会话还是默认标题 "新会话"，用第一个问题更新会话名
-      if (currentConversation?.title === '新会话') {
-        try {
-          await updateConversation(conversationId, query);
-          void queryClient.invalidateQueries({
-            queryKey: queryKeys.conversations(kbId),
-          });
-        } catch {
-          // 标题更新失败不影响问答流程
-        }
-      }
-
-      const response = await createAgentRun({
-        knowledge_base_id: kbId,
-        conversation_id: conversationId,
-        query,
-      });
-      currentRunId.current = response.run_id;
-      dispatchRun({ type: 'RESET_AGENT_RUN_STATE' } as ResetAction);
-      const controller = new AbortController();
-      abortRef.current = controller;
-
-      // SSE 流式推送：添加超时保护，即使 SSE 异常结束也不阻塞后续答案获取
+  const getConversationId = async () => {
+    if (activeConversationId) return activeConversationId;
+    const stored = sessionStorage.getItem(conversationStorageKey(kbId));
+    if (stored) {
       try {
-        await streamAgentEvents(
-          `${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${response.run_id}/events`,
-          {
-            signal: controller.signal,
-            onEvent: dispatchRun,
-            timeout: 120_000, // 2 分钟超时保护
-          },
-        );
-      } catch (e) {
-        console.warn('SSE 流异常结束，将通过 API 获取最终结果', e);
-      }
-
-      // SSE 结束后（无论是否成功），总是尝试从 API 获取答案
-      const completedRun = await activeRunQuery.refetch();
-      const run = completedRun.data;
-      const answer =
-        run?.final_result ||
-        runStateRef.current.answer ||
-        (run?.status === 'failed' ? run.error_message : '');
-      if (answer) {
-        setMessages(current => [
-          ...current,
-          {
-            id: crypto.randomUUID(),
-            role: 'assistant',
-            content: answer,
-            agent_run_id: response.run_id,
-            status: run?.status || 'completed',
-            created_at: new Date().toISOString(),
-          },
-        ]);
-      }
-    } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : '智能问答请求失败',
-      );
-    } finally {
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.conversations(kbId),
-      });
-      if (runConversationRef.current === conversationId) {
-        setSubmitting(false);
-        runConversationRef.current = null;
-        abortRef.current = null;
+        await getConversation(stored);
+        setActiveConversationId(stored);
+        navigate(`/chat/${kbId}/${stored}`, { replace: true });
+        return stored;
+      } catch {
+        sessionStorage.removeItem(conversationStorageKey(kbId));
       }
     }
+    const conversation = await createConversation(kbId, '新会话');
+    sessionStorage.setItem(conversationStorageKey(kbId), conversation.id);
+    setActiveConversationId(conversation.id);
+    navigate(`/chat/${kbId}/${conversation.id}`, { replace: true });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
+    return conversation.id;
   };
 
-  /**
-   * handleRetry 重试指定 agent_run 的消息。
-   * 方案：调用 retry API 创建新运行 → SSE 流式接收 → 结束后从后端重新加载消息列表。
-   * 因为后端会持久化所有消息记录，重新加载时分组函数 groupConsecutiveAssistantMessages
-   * 会自动将连续的助手消息合并为版本历史，无需前端临时维护 versions。
-   */
-  const handleRetry = async (agentRunId: string, _query: string) => {
-    if (!enabled || submitting || !conversationId) return;
+  const send = async () => {
+    if (!enabled || !draft.trim() || submitting) return;
+    const query = draft.trim();
     setSubmitting(true);
-
-    // 保存目标消息索引用于失败时恢复
-    const targetIndex = messages.findIndex(m => m.agent_run_id === agentRunId);
 
     try {
       setErrorMessage(null);
-
-      // 1. 调用 retry API 获取新的运行 ID
-      const { new_run_id } = await retryAgentRun(agentRunId);
-      currentRunId.current = new_run_id;
-
-      // 2. 立即将目标消息标记为"正在重新生成"
-      if (targetIndex >= 0) {
-        setMessages(current =>
-          current.map((m, i) =>
-            i === targetIndex ? { ...m, status: 'running' as const } : m,
-          ),
-        );
-      }
-
-      // 3. 重置 Agent 运行状态，准备接收新运行的事件
+      const id = await getConversationId();
+      setDraft('');
+      setMessages((current) => [...current, {
+        id: crypto.randomUUID(), role: 'user', content: query, agent_run_id: null, created_at: new Date().toISOString(),
+      }]);
+      const response = await createAgentRun({ knowledge_base_id: kbId, conversation_id: id, query });
+      currentRunId.current = response.run_id;
+      // 重置 reducer 状态，清除上一轮运行的数据（highest_sequence、answer 等）
       dispatchRun({ type: 'RESET_AGENT_RUN_STATE' } as ResetAction);
       const controller = new AbortController();
       abortRef.current = controller;
-
-      // 4. SSE 流式订阅新运行的生命周期事件
-      try {
-        await streamAgentEvents(
-          `${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${new_run_id}/events`,
-          {
-            signal: controller.signal,
-            onEvent: dispatchRun,
-            timeout: 120_000,
-          },
-        );
-      } catch (e) {
-        console.warn('重试 SSE 流异常结束，将通过 API 获取最终结果', e);
-      }
-
-      // 5. SSE 结束后从后端重新加载完整消息列表，分组函数自动合并版本历史
-      const result = await listMessages(conversationId, {
-        page: 1,
-        page_size: 100,
+      await streamAgentEvents(`${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${response.run_id}/events`, {
+        signal: controller.signal,
+        onEvent: dispatchRun,
       });
-      const rawMessages = result.items || [];
-      const sortedMessages = [...rawMessages].sort(
-        (a, b) =>
-          new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
-      );
-      const groupedMessages = groupConsecutiveAssistantMessages(sortedMessages);
-      setMessages(groupedMessages);
+      const completedRun = await activeRunQuery.refetch();
+      const answer = completedRun.data?.final_result || runStateRef.current.answer;
+      if (answer) {
+        setMessages((current) => [...current, {
+          id: crypto.randomUUID(), role: 'assistant', content: answer, agent_run_id: response.run_id,
+          status: completedRun.data?.status || 'completed', citations: normalizeCitations(runStateRef.current.citations), created_at: new Date().toISOString(),
+        }]);
+      }
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : '重试运行失败');
-      // 重新加载消息列表以恢复到一致状态
-      if (conversationId) {
-        const result = await listMessages(conversationId, {
-          page: 1,
-          page_size: 100,
-        }).catch(() => null);
-        if (result?.items) {
-          const sortedMessages = [...result.items].sort(
-            (a, b) =>
-              new Date(a.created_at).getTime() -
-              new Date(b.created_at).getTime(),
-          );
-          setMessages(groupConsecutiveAssistantMessages(sortedMessages));
-        }
-      }
+      setErrorMessage(error instanceof Error ? error.message : '智能问答请求失败');
     } finally {
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.conversations(kbId),
-      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
+      if (activeConversationId) void queryClient.invalidateQueries({ queryKey: ['conversations', activeConversationId, 'messages'] });
       setSubmitting(false);
       abortRef.current = null;
     }
-  };
-
-  /**
-   * handleSwitchVersion 切换消息的版本显示。
-   * current_version_index >= 0 时显示对应历史版本内容；
-   * -1 时显示 content（最新版本）。
-   */
-  const handleSwitchVersion = (messageId: string, newIndex: number) => {
-    setMessages(current =>
-      current.map(m =>
-        m.id === messageId ? { ...m, current_version_index: newIndex } : m,
-      ),
-    );
   };
 
   const stop = () => {
@@ -395,84 +156,44 @@ export function ChatPageContent({
     if (currentRunId.current) void cancelAgentRun(currentRunId.current);
   };
 
-  const handleSelectConversation = (id: string) => {
-    navigate(`/chat/${kbId}/${id}`);
-  };
-
-  const handleCreateConversation = async () => {
-    // 如果已存在标题为 "新会话" 的未使用会话，直接跳转不再新建
-    const existingNew = conversationsQuery.data?.items?.find(
-      c => c.title === '新会话',
-    );
-    if (existingNew) {
-      navigate(`/chat/${kbId}/${existingNew.id}`);
-      return;
-    }
+  const createNewConversation = async () => {
+    if (!enabled || submitting) return;
     try {
+      setErrorMessage(null);
       const conversation = await createConversation(kbId, '新会话');
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.conversations(kbId),
-      });
+      sessionStorage.setItem(conversationStorageKey(kbId), conversation.id);
+      setActiveConversationId(conversation.id);
       navigate(`/chat/${kbId}/${conversation.id}`);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '创建会话失败');
-    }
-  };
-
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-
-  const confirmDelete = async () => {
-    if (!deleteTarget) return;
-    try {
-      await deleteConversation(deleteTarget);
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.conversations(kbId),
-      });
-      if (deleteTarget === conversationId) {
-        navigate(`/chat/${kbId}`);
-      }
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : '删除会话失败');
-    } finally {
-      setDeleteTarget(null);
     }
   };
 
   const sidebar = (
     <ConversationSidebar
       conversations={conversationsQuery.data?.items || []}
-      selectedId={conversationId}
+      selectedId={activeConversationId}
       disabled={!enabled || submitting}
-      onSelect={handleSelectConversation}
-      onCreate={handleCreateConversation}
-      onDelete={id => setDeleteTarget(id)}
+      onSelect={(id) => navigate(`/chat/${kbId}/${id}`)}
+      onCreate={() => void createNewConversation()}
     />
   );
-
   const messageArea = (
-    <>
-      {!enabled && (
-        <Alert severity='info' sx={{ m: 2, mb: 0 }}>
-          智能问答后端未启用，请检查服务配置。
-        </Alert>
-      )}
-      {errorMessage && (
-        <Alert severity='error' sx={{ m: 2, mb: 0 }}>
-          {errorMessage}
-        </Alert>
-      )}
-      <MessageList
-        messages={messages}
-        streamingAnswer={submitting ? runState.answer : ''}
-        onSuggestion={setDraft}
-        scrollToBottom={shouldScrollToBottom}
-        onRetry={handleRetry}
-        onSwitchVersion={handleSwitchVersion}
-      />
-    </>
+    <Stack sx={{ flex: 1, minHeight: 0 }}>
+      <Stack direction="row" alignItems="center" spacing={1.2} sx={{ minHeight: 56, px: 2, borderBottom: '1px solid #e6e9ef', bgcolor: '#fff' }}>
+        <Box sx={{ width: 30, height: 30, borderRadius: 1.5, display: 'grid', placeItems: 'center', color: '#fff', background: 'linear-gradient(145deg,#6377f6,#6f4ee7)' }}><SmartToyOutlined sx={{ fontSize: 18 }} /></Box>
+        <Typography sx={{ color: '#26324d', fontSize: 14, fontWeight: 650 }}>{knowledgeBaseQuery.data?.name || '知识库'}</Typography>
+        <KeyboardArrowDownOutlined sx={{ color: '#77849b', fontSize: 18 }} />
+        <Chip size="small" label={knowledgeBaseQuery.data?.agent_enabled ? '●  Agent 已启用' : 'Agent 未启用'} sx={{ ml: 1, bgcolor: knowledgeBaseQuery.data?.agent_enabled ? '#e8f7ec' : '#f1f3f7', color: knowledgeBaseQuery.data?.agent_enabled ? '#24954c' : '#7d8799', fontWeight: 600 }} />
+      </Stack>
+      {!enabled && <Alert severity="info" sx={{ m: 2, mb: 0 }}>智能问答后端未启用，请检查服务配置。</Alert>}
+      {errorMessage && <Alert severity="error" sx={{ m: 2, mb: 0 }}>{errorMessage}</Alert>}
+      {messagesQuery.error && <Alert severity="warning" sx={{ m: 2, mb: 0 }}>历史消息加载失败，请稍后重试。</Alert>}
+      <MessageList messages={messages} streamingAnswer={submitting ? runState.answer : ''} onSuggestion={setDraft} />
+    </Stack>
   );
-
-  const composer = conversationId ? (
+  const composer = (
     <ChatComposer
       draft={draft}
       disabled={!enabled || submitting}
@@ -481,31 +202,21 @@ export function ChatPageContent({
       onSend={() => void send()}
       onStop={stop}
     />
-  ) : null;
+  );
 
   return (
-    <>
-      <ChatWorkspace
-        sidebar={sidebar}
-        messages={messageArea}
-        composer={composer}
-        agentPanel={<AgentRunPanel state={runState} />}
-      />
-      <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
-        <DialogTitle>确认删除</DialogTitle>
-        <DialogContent>
-          <DialogContentText>
-            确定要删除此会话吗？删除后不可恢复。
-          </DialogContentText>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDeleteTarget(null)}>取消</Button>
-          <Button onClick={confirmDelete} color='error' variant='contained'>
-            删除
-          </Button>
-        </DialogActions>
-      </Dialog>
-    </>
+    <Stack spacing={2} sx={{ width: '100%', maxWidth: 1500, mx: 'auto' }}>
+      <Stack spacing={0.7}>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Typography component={Link} to="/knowledge-bases" sx={{ color: '#748098', fontSize: 13, textDecoration: 'none' }}>知识库</Typography>
+          <Typography sx={{ color: '#a0a8b7', fontSize: 13 }}>/</Typography>
+          <Typography sx={{ color: '#526079', fontSize: 13 }}>{knowledgeBaseQuery.data?.name || '智能问答'}</Typography>
+        </Stack>
+        <Typography component="h2" sx={{ color: '#111c3a', fontSize: { xs: 25, md: 28 }, fontWeight: 700, lineHeight: 1.2 }}>智能问答工作台</Typography>
+        <Typography sx={{ color: '#66728c', fontSize: 14 }}>基于所选知识库进行问答、检索与 Agent 协作。</Typography>
+      </Stack>
+      <ChatWorkspace sidebar={sidebar} messages={messageArea} composer={composer} agentPanel={<AgentRunPanel state={runState} />} />
+    </Stack>
   );
 }
 

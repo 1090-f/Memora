@@ -27,11 +27,21 @@ type KeywordSearchParams struct {
 	UserID          string
 	KnowledgeBaseID string
 	DocumentIDs     []string
-	QueryTokens     []string
+	Query           string
+	Mode            KeywordSearchMode
 	TopK            int
 	// IndexVersion 为空时使用 documents.active_index_version。
 	IndexVersion *int
 }
+
+// KeywordSearchMode 映射 ParadeDB 的短语、合取和析取检索操作符。
+type KeywordSearchMode string
+
+const (
+	KeywordSearchExact KeywordSearchMode = "exact"
+	KeywordSearchAll   KeywordSearchMode = "all"
+	KeywordSearchAny   KeywordSearchMode = "any"
+)
 
 // KeywordSearchRepository 定义参数化全文检索接口。
 type KeywordSearchRepository interface {
@@ -39,7 +49,7 @@ type KeywordSearchRepository interface {
 	Search(ctx context.Context, params KeywordSearchParams) ([]*KeywordHit, error)
 }
 
-// keywordSearchRepository 是 KeywordSearchRepository 的 GORM 实现。
+// keywordSearchRepository 是基于 ParadeDB pg_search 的 GORM 实现。
 // SQL 过滤：user_id + knowledge_base_id + 可选 document_ids + 软删除 + active 索引版本。
 type keywordSearchRepository struct {
 	db *gorm.DB
@@ -52,17 +62,16 @@ func NewKeywordSearchRepository(db *gorm.DB) KeywordSearchRepository {
 
 // Search 执行关键词全文检索。
 func (r *keywordSearchRepository) Search(ctx context.Context, params KeywordSearchParams) ([]*KeywordHit, error) {
-	if len(params.QueryTokens) == 0 || params.TopK <= 0 {
+	query := strings.TrimSpace(params.Query)
+	if query == "" || params.TopK <= 0 {
 		return nil, nil
 	}
-	// 用 OR 连接 Token 构建 tsquery，提升召回。
-	query := strings.Join(params.QueryTokens, " | ")
-	args := []any{query}
+	operator := paradeDBKeywordOperator(params.Mode)
+	args := []any{params.UserID, params.KnowledgeBaseID, query}
 	// 归属过滤(user_id + knowledge_base_id) + 文档软删除过滤，防止跨库/跨用户泄漏已删内容。
 	where := `dc.user_id = ? AND dc.knowledge_base_id = ? AND d.deleted_at IS NULL AND d.processing_status = 'succeeded'`
-	// tsquery 命中 dc.fts_vector（'simple' 配置下分词后的全文索引列）。
-	where += ` AND to_tsquery('simple', ?) @@ dc.fts_vector`
-	args = append(args, params.UserID, params.KnowledgeBaseID, query)
+	// 左侧 content 使用迁移中配置的 ParadeDB bigram tokenizer；数据库统一完成分词。
+	where += fmt.Sprintf(` AND dc.content %s CAST(? AS text)`, operator)
 
 	if len(params.DocumentIDs) > 0 {
 		// 限定检索范围到指定文档集合，动态生成 IN 占位符并追加参数。
@@ -83,20 +92,31 @@ func (r *keywordSearchRepository) Search(ctx context.Context, params KeywordSear
 	sql := fmt.Sprintf(`
 		SELECT dc.id AS chunk_id, dc.document_id AS document_id, d.title AS document_title,
 		       d.directory_id, dc.content AS content, dc.source_location,
-		       ts_rank(dc.fts_vector, to_tsquery('simple', ?)) AS score,
+		       pdb.score(dc.id) AS score,
 		       dc.index_version AS index_version, d.updated_at AS updated_at
 		FROM document_chunks dc
 		JOIN documents d ON d.id = dc.document_id
 		WHERE %s
-		ORDER BY score DESC, dc.id ASC
+		ORDER BY pdb.score(dc.id) DESC, dc.id ASC
 		LIMIT ?`, where)
 
-	// ts_rank 计算相关度并按分数倒序实现"按相关性排序"，chunk_id 作为稳定排序键。
+	// BM25 分数倒序，chunk_id 作为稳定排序键。
 	var hits []*KeywordHit
 	if err := dbFromContext(ctx, r.db).WithContext(ctx).Raw(sql, args...).Scan(&hits).Error; err != nil {
 		return nil, fmt.Errorf("关键词检索失败: %w", err)
 	}
 	return hits, nil
+}
+
+func paradeDBKeywordOperator(mode KeywordSearchMode) string {
+	switch mode {
+	case KeywordSearchExact:
+		return "###"
+	case KeywordSearchAll:
+		return "&&&"
+	default:
+		return "|||"
+	}
 }
 
 // placeholders 生成 n 个 "?," 占位符用于构造动态 IN 子句。

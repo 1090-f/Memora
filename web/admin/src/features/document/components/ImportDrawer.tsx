@@ -13,8 +13,17 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import JSZip from 'jszip';
+import { useDropzone, type FileRejection } from 'react-dropzone';
+import CheckCircleOutlined from '@mui/icons-material/CheckCircleOutlined';
+import CloseOutlined from '@mui/icons-material/CloseOutlined';
+import CloudUploadOutlined from '@mui/icons-material/CloudUploadOutlined';
+import DeleteOutlineOutlined from '@mui/icons-material/DeleteOutlineOutlined';
+import ErrorOutlineOutlined from '@mui/icons-material/ErrorOutlineOutlined';
+import InsertDriveFileOutlined from '@mui/icons-material/InsertDriveFileOutlined';
+import ReplayOutlined from '@mui/icons-material/ReplayOutlined';
+import clsx from 'clsx';
 import { queryKeys } from '@/api/queryKeys';
 import { errorMessage } from '@/api/errors';
 import { importFiles, importURL, scanImportTask, startImportTask, uploadTaskAttachments } from '../api';
@@ -28,6 +37,22 @@ const primaryDocumentExtensions = ['.md', '.txt', '.pdf', '.docx', '.xlsx', '.pp
 const standaloneImageExtensions = imageExtensions.filter((extension) => extension !== '.svg');
 const importableDocumentExtensions = [...primaryDocumentExtensions, ...standaloneImageExtensions];
 const allowedExtensions = [...importableDocumentExtensions, '.zip'];
+
+const uploadAccept: Record<string, string[]> = {
+  'text/markdown': ['.md'],
+  'text/plain': ['.txt'],
+  'application/pdf': ['.pdf'],
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx'],
+  'application/zip': ['.zip'],
+  'image/jpeg': ['.jpg', '.jpeg'],
+  'image/png': ['.png'],
+  'image/bmp': ['.bmp'],
+  'image/tiff': ['.tiff', '.tif'],
+  'image/gif': ['.gif'],
+  'image/webp': ['.webp'],
+};
 
 // 浏览器目录选择（webkitdirectory 为非标准属性，在浏览器类型上扩展，与 HTMLInputElement 兼容）。
 interface DirectoryInputElement extends HTMLInputElement {
@@ -46,12 +71,41 @@ interface PendingTask {
   started: boolean;
 }
 
+// 待上传文件队列项：queued 等待上传；uploading 上传中；success/error 为结果状态。
+interface PendingFile {
+  key: string;
+  file: File;
+  status: 'queued' | 'uploading' | 'success' | 'error';
+  errorMessage?: string;
+  retryable?: boolean;
+  previewUrl?: string;
+}
+
 const statusMeta: Record<ImageRefStatus, { label: string; color: 'success' | 'default' | 'warning' }> = {
   inline: { label: '内联', color: 'success' },
   network: { label: '网络', color: 'success' },
   matched: { label: '已匹配', color: 'success' },
   pending: { label: '待补传', color: 'warning' },
 };
+
+const iconButtonClass =
+  'rounded-lg p-1.5 text-zinc-400 transition-colors duration-200 motion-reduce:transition-none ' +
+  'hover:bg-zinc-100 hover:text-zinc-900 active:scale-95 ' +
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30';
+
+const retryButtonClass =
+  'flex items-center gap-1 rounded-lg text-sm font-medium transition-colors duration-200 motion-reduce:transition-none ' +
+  'bg-zinc-100 text-zinc-700 hover:bg-zinc-200 active:scale-95 px-2 py-1.5 ' +
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30';
+
+const createPendingFile = (file: File, errorMessage?: string, retryable = false): PendingFile => ({
+  key: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2)}`,
+  file,
+  status: errorMessage ? 'error' : 'queued',
+  errorMessage,
+  retryable,
+  previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
+});
 
 export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
   open: boolean;
@@ -61,11 +115,12 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
   directories: DirectoryNode[];
 }) {
   const queryClient = useQueryClient();
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<DirectoryInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const uploadControllerRef = useRef<AbortController | null>(null);
+  const filesStateRef = useRef<{ files: PendingFile[] }>({ files: [] });
   const [sourceMode, setSourceMode] = useState<'file' | 'url'>('file');
-  const [files, setFiles] = useState<File[]>([]);
+  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [fileImportMode, setFileImportMode] = useState<'files' | 'folder_archive'>('files');
   const [packing, setPacking] = useState(false);
   const [sourceURL, setSourceURL] = useState('');
@@ -73,9 +128,23 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
   const [duplicatePolicy, setDuplicatePolicy] = useState<'create_new' | 'skip'>('skip');
   const [notice, setNotice] = useState('');
   const [validationError, setValidationError] = useState('');
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [cancelled, setCancelled] = useState(false);
   const [pendingTasks, setPendingTasks] = useState<PendingTask[]>([]);
   const [attachmentFor, setAttachmentFor] = useState<string | null>(null);
   const [pendingImages, setPendingImages] = useState<File[]>([]);
+  filesStateRef.current.files = pendingFiles;
+
+  useEffect(() => {
+    const state = filesStateRef.current;
+    return () => {
+      state.files.forEach((item) => {
+        if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+      });
+    };
+  }, []);
+
+  const queuedFiles = pendingFiles.filter((item) => item.status === 'queued');
 
   const uploadMutation = useMutation({
     mutationFn: async (): Promise<ImportUploadResponse> => {
@@ -93,23 +162,41 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
         };
       }
       const formData = new FormData();
-      files.forEach((file) => formData.append('files', file));
+      queuedFiles.forEach((item) => formData.append('files', item.file));
       if (directoryId) formData.append('directory_id', directoryId);
       formData.append('duplicate_policy', duplicatePolicy);
       if (fileImportMode === 'folder_archive') formData.append('import_mode', 'folder_archive');
-      return importFiles(kbId, formData);
+      const controller = new AbortController();
+      uploadControllerRef.current = controller;
+      setCancelled(false);
+      setUploadProgress(0);
+      setPendingFiles((prev) => prev.map((item) =>
+        item.status === 'queued' ? { ...item, status: 'uploading' } : item));
+      return importFiles(kbId, formData, {
+        onUploadProgress: setUploadProgress,
+        signal: controller.signal,
+      });
     },
     onSuccess: (result) => {
-      setFiles([]);
+      uploadControllerRef.current = null;
+      setCancelled(false);
+      setUploadProgress(100);
       setFileImportMode('files');
       setSourceURL('');
-      if (fileInputRef.current) fileInputRef.current.value = '';
       if (folderInputRef.current) folderInputRef.current.value = '';
       void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
       if (sourceMode === 'url') {
+        setPendingFiles([]);
         setNotice(`已创建抓取任务：${result.tasks.map((task) => task.file_name).join('、')}`);
         return;
       }
+      const rejectedByPath = new Map(result.rejected.map((item) => [item.source_path, item.message]));
+      setPendingFiles((prev) => prev.map((item) => {
+        if (item.status !== 'uploading') return item;
+        const message = rejectedByPath.get(item.file.name);
+        if (message) return { ...item, status: 'error', errorMessage: message, retryable: true };
+        return { ...item, status: 'success' };
+      }));
       // 只有后端明确标记 requires_confirmation 的 Markdown/传统 ZIP 任务才进入补图确认。
       const pending: PendingTask[] = result.tasks.filter((task) => task.requires_confirmation).map((task) => ({
         taskId: task.task_id,
@@ -127,6 +214,15 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
       if (result.rejected.length > 0) {
         setValidationError(result.rejected.map((item) => `${item.source_path}：${item.message}`).join('；'));
       }
+    },
+    onError: () => {
+      uploadControllerRef.current = null;
+      setUploadProgress(0);
+      if (cancelled) return;
+      setPendingFiles((prev) => prev.map((item) =>
+        item.status === 'uploading'
+          ? { ...item, status: 'error', errorMessage: '上传失败，请重试', retryable: true }
+          : item));
     },
   });
 
@@ -194,28 +290,68 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
 
   const options = flattenDirectories(directories);
 
-  function selectFiles(selected: File[]) {
-    if (selected.length > MAX_FILES) {
-      setFiles([]);
-      setValidationError(`单次最多选择 ${MAX_FILES} 个文件`);
-      return;
-    }
-    const invalidType = selected.find((file) => !allowedExtensions.some((extension) => file.name.toLowerCase().endsWith(extension)));
-    if (invalidType) {
-      setFiles([]);
-      setValidationError(`不支持 ${invalidType.name}，请选择 Markdown、TXT、PDF 或 DOCX`);
-      return;
-    }
-    const invalidSize = selected.find((file) => file.size <= 0 || file.size > MAX_FILE_SIZE);
-    if (invalidSize) {
-      setFiles([]);
-      setValidationError(`${invalidSize.name} 为空或超过 50 MB`);
-      return;
-    }
+  const addSelectedFiles = useCallback((selected: File[], rejected: Array<{ file: File; message: string }> = []) => {
+    setPendingFiles((prev) => {
+      const hasActive = prev.some((item) => item.status === 'queued' || item.status === 'uploading');
+      if (!hasActive) {
+        prev.forEach((item) => {
+          if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+        });
+      }
+      const base = hasActive ? prev : [];
+      const room = Math.max(0, MAX_FILES - base.length);
+      const accepted = selected.slice(0, room).map((file) => {
+        const invalidType = !allowedExtensions.some((extension) => file.name.toLowerCase().endsWith(extension));
+        if (invalidType) return createPendingFile(file, `不支持 ${file.name}，请选择 Markdown、TXT、PDF 或 DOCX`);
+        const invalidSize = file.size <= 0 || file.size > MAX_FILE_SIZE;
+        if (invalidSize) return createPendingFile(file, `${file.name} 为空或超过 50 MB`);
+        return createPendingFile(file);
+      });
+      const overLimit = selected.slice(room).map((file) => createPendingFile(file, `超出单次 ${MAX_FILES} 个文件上限`));
+      const invalid = rejected.map(({ file, message }) => createPendingFile(file, message));
+      return [...base, ...accepted, ...invalid, ...overLimit];
+    });
+    setFileImportMode('files');
     setValidationError('');
     setNotice('');
-    setFileImportMode('files');
-    setFiles(selected);
+  }, []);
+
+  const onDropFiles = useCallback((acceptedFiles: File[], fileRejections: FileRejection[]) => {
+    const rejected = fileRejections.map((rejection) => {
+      const oversized = rejection.errors.some((error) => error.code === 'file-too-large' || error.code === 'file-too-small');
+      return {
+        file: rejection.file,
+        message: oversized
+          ? `${rejection.file.name} 为空或超过 50 MB`
+          : `不支持 ${rejection.file.name}，请选择 Markdown、TXT、PDF 或 DOCX`,
+      };
+    });
+    addSelectedFiles(acceptedFiles, rejected);
+  }, [addSelectedFiles]);
+
+  const removePendingFile = useCallback((key: string) => {
+    const item = filesStateRef.current.files.find((entry) => entry.key === key);
+    if (item?.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    setPendingFiles((prev) => prev.filter((entry) => entry.key !== key));
+  }, []);
+
+  const retryPendingFile = useCallback((key: string) => {
+    setPendingFiles((prev) => prev.map((item) =>
+      item.key === key
+        ? { ...item, status: 'queued', errorMessage: undefined, retryable: false }
+        : item));
+  }, []);
+
+  function cancelUpload() {
+    setCancelled(true);
+    uploadControllerRef.current?.abort();
+    uploadControllerRef.current = null;
+    setUploadProgress(0);
+    setNotice('');
+    filesStateRef.current.files.forEach((item) => {
+      if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    });
+    setPendingFiles([]);
   }
 
   // 选择文件夹：浏览器允许读取目录内全部文件，前端打包为 zip 上传，
@@ -246,11 +382,15 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
       const folderName = (selected[0].webkitRelativePath || 'import').split('/')[0] || 'import';
       const zipFile = new File([blob], `${folderName}.zip`, { type: 'application/zip' });
       if (zipFile.size > MAX_FILE_SIZE) {
-        setFiles([]);
         setValidationError('文件夹压缩后超过 50 MB，请拆分文件夹后导入');
         return;
       }
-      setFiles([zipFile]);
+      setPendingFiles((prev) => {
+        prev.forEach((item) => {
+          if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+        });
+        return [createPendingFile(zipFile)];
+      });
       setFileImportMode('folder_archive');
       setValidationError('');
       setNotice(`已打包 ${documents.length} 个可识别文件和 ${selected.length - documents.length} 个资源/待校验文件为 ${zipFile.name}`);
@@ -263,7 +403,19 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
 
   const pendingCount = pendingTasks.filter((task) => !task.started).length;
   const busy = uploadMutation.isPending || startMutation.isPending || attachmentMutation.isPending || packing;
-  const canUpload = sourceMode === 'file' ? files.length > 0 : /^https?:\/\//i.test(sourceURL.trim());
+  const selectionLocked = disabled || busy || pendingCount > 0;
+  const canUpload = sourceMode === 'file' ? queuedFiles.length > 0 : /^https?:\/\//i.test(sourceURL.trim());
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop: onDropFiles,
+    accept: uploadAccept,
+    maxSize: MAX_FILE_SIZE,
+    minSize: 1,
+    multiple: true,
+    disabled: selectionLocked,
+    noClick: false,
+    noKeyboard: false,
+  });
 
   return (
     <Drawer anchor="right" open={open} onClose={onClose}>
@@ -281,28 +433,50 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
         </ToggleButtonGroup>
         {notice && <Alert severity="success" onClose={() => setNotice('')}>{notice}</Alert>}
         {validationError && <Alert severity="warning" onClose={() => setValidationError('')}>{validationError}</Alert>}
-        {uploadMutation.error && <Alert severity="error">{errorMessage(uploadMutation.error)}</Alert>}
+        {uploadMutation.error && !cancelled && <Alert severity="error">{errorMessage(uploadMutation.error)}</Alert>}
         {startMutation.error && <Alert severity="error">开始导入失败：{errorMessage(startMutation.error)}</Alert>}
         {attachmentMutation.error && <Alert severity="error">图片补传失败：{errorMessage(attachmentMutation.error)}</Alert>}
-        {busy && <LinearProgress />}
+        {(startMutation.isPending || attachmentMutation.isPending || packing) && <LinearProgress />}
 
         {sourceMode === 'file' ? (
           <>
-            <Typography color="text.secondary">支持 Markdown、TXT、PDF、DOCX、XLSX、PPTX、图片（JPG/PNG/BMP/TIFF）、ZIP；Markdown 上传后自动扫描图片引用，可随时补传本机图片。</Typography>
+            <div
+              {...getRootProps()}
+              role="button"
+              tabIndex={0}
+              aria-label="拖放文件上传"
+              className={clsx(
+                'flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 px-4 py-8 text-center',
+                'transition-colors duration-200 motion-reduce:transition-none',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30',
+                isDragActive
+                  ? 'border-solid border-blue-500 bg-blue-500/10'
+                  : 'border-dashed border-zinc-200 bg-zinc-50 hover:border-blue-500/60',
+                selectionLocked && 'pointer-events-none opacity-60',
+              )}
+            >
+              <input {...getInputProps()} />
+              <CloudUploadOutlined className={clsx('h-10 w-10', isDragActive ? 'text-blue-500' : 'text-zinc-400')} />
+              <p className="text-sm font-medium text-zinc-900">
+                {isDragActive ? '松开文件即可上传' : '拖放文件到此處'}
+              </p>
+              <span className="rounded-lg text-sm font-medium transition-colors duration-200 bg-zinc-100 text-zinc-700 hover:bg-zinc-200 px-3 py-1.5">
+                或点击选择文件
+              </span>
+              <p className="text-xs text-zinc-400">
+                支持 Markdown、TXT、PDF、DOCX、XLSX、PPTX、图片（JPG/PNG/BMP/TIFF）、ZIP；单次最多 {MAX_FILES} 个文件，单个最大 50 MB
+              </p>
+            </div>
             <Stack direction="row" spacing={1}>
-              <Button variant="outlined" disabled={disabled || packing || pendingCount > 0} onClick={() => fileInputRef.current?.click()}>选择文件</Button>
-              <Button variant="outlined" disabled={disabled || packing || pendingCount > 0} onClick={() => folderInputRef.current?.click()}>
+              <button
+                type="button"
+                disabled={selectionLocked || packing}
+                onClick={() => folderInputRef.current?.click()}
+                className="rounded-lg text-sm font-medium transition-colors duration-200 motion-reduce:transition-none bg-zinc-100 text-zinc-700 hover:bg-zinc-200 active:scale-95 disabled:opacity-50 px-3 py-1.5"
+              >
                 {packing ? '正在打包…' : '选择文件夹'}
-              </Button>
+              </button>
             </Stack>
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              hidden
-              accept=".md,.txt,.pdf,.docx,.xlsx,.pptx,.zip,.jpg,.jpeg,.png,.bmp,.tiff,.tif,.gif,.webp,text/markdown,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/zip,image/jpeg,image/png,image/bmp,image/tiff,image/gif,image/webp"
-              onChange={(event) => selectFiles(Array.from(event.target.files ?? []))}
-            />
             <input
               ref={folderInputRef}
               type="file"
@@ -311,12 +485,70 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
               {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
               onChange={(event) => void selectFolder(Array.from(event.target.files ?? []))}
             />
-            {files.length > 0 && (
-              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                {files.map((file) => (
-                  <Chip key={`${file.name}-${file.size}`} size="small" label={`${file.name} (${(file.size / 1024).toFixed(1)} KB)`} onDelete={() => setFiles((prev) => prev.filter((item) => item !== file))} />
+            {pendingFiles.length > 0 && (
+              <ul className="rounded-xl border border-zinc-200 bg-white shadow-sm">
+                {pendingFiles.map((item) => (
+                  <li key={item.key} className="flex items-center gap-3 border-b border-zinc-200 px-4 py-3 last:border-b-0">
+                    {item.previewUrl ? (
+                      <img
+                        src={item.previewUrl}
+                        alt=""
+                        className="h-10 w-10 shrink-0 rounded-lg border border-zinc-200 object-cover"
+                      />
+                    ) : (
+                      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-zinc-100 text-zinc-400">
+                        <InsertDriveFileOutlined className="h-5 w-5" />
+                      </span>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <p className="truncate text-sm font-medium text-zinc-900">{item.file.name}</p>
+                        {item.status === 'success' && <CheckCircleOutlined className="h-4 w-4 shrink-0 text-emerald-500" />}
+                        {item.status === 'error' && <ErrorOutlineOutlined className="h-4 w-4 shrink-0 text-red-500" />}
+                      </div>
+                      {item.status === 'uploading' ? (
+                        <div className="mt-1.5 flex items-center gap-3">
+                          <div className="h-1.5 flex-1 overflow-hidden rounded-lg bg-zinc-100">
+                            <div
+                              className="h-full rounded-lg bg-blue-500 transition-[width] duration-200 motion-reduce:transition-none"
+                              style={{ width: `${uploadProgress}%` }}
+                            />
+                          </div>
+                          <span className="shrink-0 text-xs text-zinc-400">{uploadProgress}%</span>
+                        </div>
+                      ) : (
+                        <p className={clsx('mt-1 text-xs', item.errorMessage ? 'text-red-500' : 'text-zinc-400')}>
+                          {item.errorMessage ?? `${(item.file.size / 1024).toFixed(1)} KB`}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      {item.status === 'uploading' && (
+                        <button type="button" title="取消上传" aria-label="取消上传" onClick={cancelUpload} className={iconButtonClass}>
+                          <CloseOutlined className="h-4 w-4" />
+                        </button>
+                      )}
+                      {item.status === 'error' && item.retryable && (
+                        <button type="button" onClick={() => retryPendingFile(item.key)} className={retryButtonClass}>
+                          <ReplayOutlined className="h-4 w-4" />
+                          重试
+                        </button>
+                      )}
+                      {item.status !== 'uploading' && (
+                        <button
+                          type="button"
+                          title="删除"
+                          aria-label={`删除 ${item.file.name}`}
+                          onClick={() => removePendingFile(item.key)}
+                          className={iconButtonClass}
+                        >
+                          <DeleteOutlineOutlined className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
+                  </li>
                 ))}
-              </Stack>
+              </ul>
             )}
             {pendingTasks.length > 0 && (
               <Stack spacing={1.5}>

@@ -37,9 +37,9 @@ internal/service/preview/renderer/ LibreOffice PDF 与 XLSX OpenXML 渲染器
 internal/repository/               数据访问接口与实现
 internal/service/rag/              Eino RAG 内核（einoadapter、pipeline、loader、transformer、indexing、retrieval、observability）
 internal/service/rag/einoadapter   contracts/Entity ↔ Eino schema.Document 的单一转换边界与 metadata 常量
-internal/service/rag/tokenizer     可替换的中文/英文 N-gram 分词内核（普通 Go 接口）
+internal/service/rag/query         查询 NFKC、大小写与空白规范化（不负责分词）
 internal/service/rag/indexing      PostgresIndexer 等 Eino Indexer 实现（向量写入 pgvector）
-internal/service/rag/retrieval     PostgresKeywordRetriever/PgVectorRetriever 等 Eino Retriever 实现
+internal/service/rag/retrieval     ParadeDBKeywordRetriever/PgVectorRetriever 等 Eino Retriever 实现
 internal/service/rag/loader        SafeWebLoader（URL 导入 SSRF 防护、重定向/大小/超时限制）
 internal/service/rag/mock          仅用于联调的确定性 RetrievalService Mock
 internal/worker/document/          文档处理任务 Source 与 Handler（后续任务包落位）

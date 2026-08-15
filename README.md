@@ -24,7 +24,7 @@ React/Vite 管理端
         │ /api/v1
         ▼
 Gin API（memora-server）
-├─ Service / Repository ─────────── PostgreSQL 17 + pgvector
+├─ Service / Repository ─────────── ParadeDB PG17 + pg_search + pgvector
 ├─ Outbox + Redis Stream 消费者 ─── Redis 7
 ├─ 原文件与解析 Artifact ────────── MinIO
 └─ 托管 Python 子进程 ───────────── Docling / OCR
@@ -57,7 +57,7 @@ Gin API（memora-server）
 - Go 1.25、Gin 1.12、GORM、Eino
 - React 19、TypeScript 5.9、Vite 6、MUI、TanStack Query、Redux Toolkit
 - Python 3.11、FastAPI、Docling、RapidOCR、ONNX Runtime
-- PostgreSQL 17、pgvector、Redis 7、MinIO
+- ParadeDB PostgreSQL 17、pg_search、pgvector、Redis 7、MinIO
 - Viper、Zap、JWT v5、Argon2id、golang-migrate
 - Docker Compose、uv、pnpm 10.12.1
 
@@ -84,7 +84,7 @@ API 容器默认限制为 4 GB 内存。
 
 - 管理端：`http://localhost:3000`
 - API：`http://localhost:8080`
-- MinIO Console：`http://localhost:9001`
+- MinIO Console：`http://localhost:19001`
 - Liveness：`GET http://localhost:8080/health/live`
 - Readiness：`GET http://localhost:8080/health/ready`
 - 后台消费者状态：`GET http://localhost:8080/health/workers`
@@ -108,7 +108,7 @@ docker compose --env-file .env -f deploy/docker-compose.yml down
 - Go 1.25
 - Node.js 24、Corepack、pnpm 10.12.1
 - Python 3.11 和 [uv](https://docs.astral.sh/uv/)
-- PostgreSQL 17 + pgvector、Redis 7、MinIO
+- ParadeDB PostgreSQL 17（pg_search + pgvector）、Redis 7、MinIO
 
 复制并修改配置：
 

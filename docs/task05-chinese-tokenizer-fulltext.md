@@ -1,5 +1,7 @@
 # 任务包 05 交付记录 · 中文关键词字段与全文索引
 
+> **历史方案说明**：本文记录的应用层 N-gram + PostgreSQL `tsvector` 已被迁移 000020 取代。当前实现由 ParadeDB `pg_search` 直接索引原文，Go 侧 N-gram 已删除；本文仅用于追溯早期决策。
+
 > 日期：2026-08-05
 > 范围：成员一任务包 05。中文 fts_tokens 生成 + PostgreSQL 全文检索 + PostgresKeywordRetriever。
 > 依赖：eino v0.9.13、eino-ext splitter（任务包 04 已锁定）

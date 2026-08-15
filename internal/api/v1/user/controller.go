@@ -1,6 +1,7 @@
 package user
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/1090-f/Memora/internal/api/response"
@@ -52,6 +53,61 @@ func (ctrl *Controller) UpdateMe(c *gin.Context) {
 	}
 	audit.Record("user.profile.update", user.ID, "user:"+user.ID, middleware.GetRequestID(c), middleware.GetTraceID(c), "succeeded")
 	response.Success(c, http.StatusOK, result)
+}
+
+// UploadAvatar 上传当前已认证用户的头像图片。
+func (ctrl *Controller) UploadAvatar(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, service.MaxAvatarFileSize+1024*1024)
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			response.Failure(c, apperrors.ErrPayloadTooLarge)
+			return
+		}
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+	if fileHeader.Size > service.MaxAvatarFileSize {
+		response.Failure(c, apperrors.ErrPayloadTooLarge)
+		return
+	}
+	file, err := fileHeader.Open()
+	if err != nil {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+	defer file.Close()
+
+	result, err := ctrl.users.UploadAvatar(c.Request.Context(), user.ID, service.AvatarUploadInput{
+		Reader: file, Size: fileHeader.Size, FileName: fileHeader.Filename,
+	})
+	if err != nil {
+		response.Failure(c, err)
+		return
+	}
+	audit.Record("user.avatar.update", user.ID, "user:"+user.ID, middleware.GetRequestID(c), middleware.GetTraceID(c), "succeeded")
+	response.Success(c, http.StatusOK, result)
+}
+
+// Avatar 流式返回指定用户的头像，供浏览器图片标签直接加载。
+func (ctrl *Controller) Avatar(c *gin.Context) {
+	file, err := ctrl.users.OpenAvatar(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		response.Failure(c, err)
+		return
+	}
+	defer file.Reader.Close()
+	c.DataFromReader(http.StatusOK, file.Size, file.ContentType, file.Reader, map[string]string{
+		"Cache-Control":          "public, max-age=86400",
+		"Content-Disposition":    "inline",
+		"X-Content-Type-Options": "nosniff",
+	})
 }
 
 // ChangePassword 修改当前已认证用户的密码。

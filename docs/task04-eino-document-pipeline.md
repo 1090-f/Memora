@@ -58,7 +58,7 @@ Input(ProcessInput{ObjectKey, DocMeta})
 2. **Loader 以 Lambda 入图**：Eino Graph 节点类型流需要类型一致，用 Lambda 适配 `ProcessInput → []*schema.Document`，Loader 仍为 Eino Loader 组件（在 Lambda 内被调用）；Cleaner/Splitter/Enricher 为真实 `AddDocumentTransformerNode`。
 3. **加工状态粒度**：Graph 内不可干预状态，仅 parsing（开始）与 succeeded/failed（结束）两态，未细分 cleaning/chunking（计划 §8 步骤 7 允许的妥协，记为待优化）。
 4. **TXT 无标题**：heading_path 为空，context_title 回退到文档标题。
-5. **fts_tokens 占位空串**：中文分词属任务包 05，本包 chunk 落库时 fts_tokens 为空（列 NOT NULL）。
+5. **关键词索引**：该历史实现曾写入 `fts_tokens`；现已由迁移 000020 改为 ParadeDB 直接索引 Chunk 原文。
 6. **server 进程 processor=nil**：HTTP 服务不执行加工（Worker 专属），任务包 03 行为保留。
 7. **手工文档（source_type=manual）**：正文在 DB 不在 MinIO，本包不加工（停留 pending），后续任务包处理。
 
