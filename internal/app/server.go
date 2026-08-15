@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/1090-f/Memora/internal/agent/adkcore"
 	"github.com/1090-f/Memora/internal/agent/core"
 	"github.com/1090-f/Memora/internal/agent/tools"
 	"github.com/1090-f/Memora/internal/ai"
@@ -34,6 +35,9 @@ import (
 	jwtmanager "github.com/1090-f/Memora/pkg/jwt"
 	"github.com/1090-f/Memora/pkg/logger"
 	"github.com/1090-f/Memora/pkg/objectstore"
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/schema"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -272,13 +276,6 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 
 	replanService := service.NewReplanService(plannerService, planStateStore, cfg.Agent.MaxReplans)
 
-	// 初始化 ReAct Agent 服务（Phase 6）
-	reactService, err := service.NewReactService(modelFactory, toolExecutor, toolRegistry, "internal/ai/prompts/react.yaml")
-	if err != nil {
-		_ = a.Close()
-		return fmt.Errorf("初始化 ReactService 失败: %w", err)
-	}
-
 	// 初始化事件发布器与订阅器（Phase 7）：使用 Redis Pub/Sub 实现实时事件推送。
 	// eventPub 将 AgentEvent 序列化为 JSON 后发布到 Redis 频道；
 	// eventSub 从同一频道过滤出指定 runID 的事件供 SSE 端点使用。
@@ -287,22 +284,43 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	// 用带序列号的发布器包装底层 Redis 发布器，确保事件序号单调递增。
 	sequencedEvents := core.NewSequencedEventPublisher(eventPub)
 
-	// 初始化 ReactRunner（ReAct 模式执行器）
-	reactRunner := core.NewReactRunner(reactService, sequencedEvents)
-
-	// 初始化 PlanRunner（Plan-Execute 模式执行器），注入 sequencedEvents 用于实时推送计划与步骤事件。
+	// 初始化 PlanRunner（Plan-Execute 模式执行器），保留现有计划模式接入。
 	planRunner := core.NewPlanRunner(plannerService, planExecutorService, reviewerService, replanService, planStateStore, sequencedEvents)
+	_ = planRunner
 
 	// 初始化 Agent 运行和工具调用 Repository
 	agentRunRepo := repository.NewAgentRunRepository(a.db)
 	toolCallRepo := repository.NewToolCallRepository(a.db)
 
-	// 创建 Repository 适配器，使 repository.AgentRunRepository 适配 core.RunRepository 接口
-	runRepoAdapter := &agentRunRepoAdapter{repo: agentRunRepo}
+	// 将现有工具适配为 Eino ADK 工具。
+	adkTools := make([]tool.BaseTool, 0)
+	for _, registeredTool := range toolRegistry.Tools() {
+		adkTools = append(adkTools, adkcore.NewToolAdapter(registeredTool, toolExecutor))
+	}
+	adkToolSet := adkcore.BuildToolSet(adkTools, toolExecutor)
 
-	// 初始化 Agent Core Service，作为 contracts.AgentRunService 的实现
-	agentCoreService := core.NewService(reactRunner, routerService, runRepoAdapter, sequencedEvents)
-	agentCoreService.SetPlanRunner(planRunner)
+	// 使用统一模型工厂获取原生 Eino ChatModel，供 ADK ChatModelAgent 使用。
+	adkModelFactory := func(ctx context.Context, modelConfigID contracts.ID) (model.BaseModel[*schema.Message], error) {
+		return ai.GetEinoChatModel(ctx, modelFactory, modelConfigID)
+	}
+	adkRunner := adkcore.NewADKReactRunner(
+		adkToolSet,
+		adkModelFactory,
+		func(_ context.Context, request contracts.AgentRunRequest) (string, error) {
+			return request.Context.ToPromptWithTags(), nil
+		},
+		contracts.AgentConfig{
+			MaxReactRounds:     contracts.DefaultAgentConfig().MaxReactRounds,
+			MaxPlanSteps:       cfg.Agent.MaxPlanSteps,
+			MaxReplans:         cfg.Agent.MaxReplans,
+			ReviewerRuns:       cfg.Agent.ReviewerRuns,
+			MaxToolCalls:       cfg.Agent.MaxToolCalls,
+			MaxToolResultBytes: cfg.Agent.MaxToolResultBytes,
+			MaxRunSeconds:      cfg.Agent.MaxRunSeconds,
+		},
+	)
+	adkService := adkcore.NewService(adkRunner, sequencedEvents, core.NewCitationCollector(), &agentRunRepoAdapter{repo: agentRunRepo})
+	var agentCoreService contracts.AgentRunService = adkService
 
 	// 初始化 Agent 运行管理的 HTTP 控制器，注入事件订阅器以支持 SSE 流式事件推送
 	agentController := agent.NewController(

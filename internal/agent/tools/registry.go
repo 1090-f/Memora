@@ -103,6 +103,20 @@ func (r *Registry) Specs() []contracts.ToolSpec {
 }
 
 // EinoTools 返回白名单工具的模型可见信息。
+// Tools 返回当前注册表中的全部工具快照。
+func (r *Registry) Tools() []Tool {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := make([]Tool, 0, len(r.tools))
+	for _, value := range r.tools {
+		result = append(result, value)
+	}
+	return result
+}
+
 func (r *Registry) EinoTools(ctx context.Context, allowed []string) ([]schema.ToolInfo, error) {
 	result := make([]schema.ToolInfo, 0, len(allowed))
 	for _, name := range allowed {

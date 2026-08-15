@@ -1,0 +1,196 @@
+package adkcore
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/schema"
+
+	"github.com/1090-f/Memora/internal/agent/core"
+	"github.com/1090-f/Memora/internal/contracts"
+)
+
+// AgentMiddleware 是 ADK ChatModelAgent 的自定义中间件，实现 adk.ChatModelAgentMiddleware 接口。
+// 用于收集引用、发布运行时事件、控制预算。
+type AgentMiddleware struct {
+	// 嵌入实现（提供所有方法的空操作默认行为）
+	adk.BaseChatModelAgentMiddleware
+
+	// EventPublisher 发布 Agent 运行时事件。
+	EventPublisher core.EventPublisher
+	// CitationCollector 收集工具调用返回的引用。
+	CitationCollector core.CitationCollector
+	// RunID 当前运行的 ID。
+	RunID contracts.ID
+	// ToolContext 传递给工具的执行上下文。
+	ToolContext contracts.ToolContext
+	// Config 运行配置（预算控制）。
+	Config contracts.AgentConfig
+	// StartedAt 记录运行开始时间。
+	StartedAt time.Time
+}
+
+// Ensure AgentMiddleware implements the interface.
+var _ adk.ChatModelAgentMiddleware = (*AgentMiddleware)(nil)
+
+// BeforeAgent 在 Agent 开始执行前调用。
+func (m *AgentMiddleware) BeforeAgent(ctx context.Context, runCtx *adk.ChatModelAgentContext) (context.Context, *adk.ChatModelAgentContext, error) {
+	if m.EventPublisher == nil {
+		return ctx, runCtx, nil
+	}
+	_ = m.EventPublisher.PublishRunStarted(ctx, m.RunID, contracts.ExecutionReact)
+	return ctx, runCtx, nil
+}
+
+// AfterAgent 在 Agent 执行完成后调用。
+func (m *AgentMiddleware) AfterAgent(ctx context.Context, state *adk.ChatModelAgentState) (context.Context, error) {
+	if m.EventPublisher == nil {
+		return ctx, nil
+	}
+	var finalResult string
+	if len(state.Messages) > 0 {
+		last := state.Messages[len(state.Messages)-1]
+		if last != nil {
+			finalResult = last.Content
+		}
+	}
+	result := contracts.AgentRunResult{
+		RunID:         m.RunID,
+		ExecutionMode: contracts.ExecutionReact,
+		FinalResult:   finalResult,
+		Citations:     m.CitationCollector.Get(),
+		Usage:         extractUsage(state.Messages),
+		StartedAt:     m.StartedAt,
+		EndedAt:       time.Now().UTC(),
+	}
+	_ = m.EventPublisher.PublishRunCompleted(ctx, m.RunID, result)
+	return ctx, nil
+}
+
+// BeforeModelRewriteState 在每次模型调用前触发，用于预算控制。
+func (m *AgentMiddleware) BeforeModelRewriteState(ctx context.Context, state *adk.ChatModelAgentState, mc *adk.ModelContext) (context.Context, *adk.ChatModelAgentState, error) {
+	if m.Config.MaxRunSeconds > 0 {
+		if time.Since(m.StartedAt) > time.Duration(m.Config.MaxRunSeconds)*time.Second {
+			return ctx, state, fmt.Errorf("adk agent: max run time exceeded (%d seconds)", m.Config.MaxRunSeconds)
+		}
+	}
+	return ctx, state, nil
+}
+
+// AfterModelRewriteState 在每次模型调用后触发，发布流式结果事件。
+func (m *AgentMiddleware) AfterModelRewriteState(ctx context.Context, state *adk.ChatModelAgentState, mc *adk.ModelContext) (context.Context, *adk.ChatModelAgentState, error) {
+	if m.EventPublisher == nil || len(state.Messages) == 0 {
+		return ctx, state, nil
+	}
+	last := state.Messages[len(state.Messages)-1]
+	if last != nil && last.Content != "" {
+		_ = m.EventPublisher.PublishAnswerDelta(ctx, m.RunID, last.Content)
+	}
+	return ctx, state, nil
+}
+
+// WrapInvokableToolCall 包装不可流式工具调用，用于收集引用和发布事件。
+func (m *AgentMiddleware) WrapInvokableToolCall(ctx context.Context, endpoint adk.InvokableToolCallEndpoint, tc *adk.ToolContext) (adk.InvokableToolCallEndpoint, error) {
+	if tc == nil {
+		return endpoint, nil
+	}
+
+	wrapped := func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
+		toolName := tc.Name
+		callID := tc.CallID
+
+		if m.EventPublisher != nil {
+			_ = m.EventPublisher.PublishToolCallStarted(ctx, m.RunID, toolName, contracts.ID(callID))
+		}
+
+		result, err := endpoint(ctx, argumentsInJSON, opts...)
+		success := err == nil
+
+		if m.CitationCollector != nil {
+			citations := extractCitationsFromContext(ctx)
+			m.CitationCollector.Add(citations)
+		}
+
+		if m.EventPublisher != nil {
+			summary := ""
+			if err != nil {
+				summary = err.Error()
+			}
+			_ = m.EventPublisher.PublishToolCallCompleted(ctx, m.RunID, contracts.ID(callID), toolName, success, summary)
+		}
+
+		return result, err
+	}
+
+	return wrapped, nil
+}
+
+// WrapStreamableToolCall 包装流式工具调用。
+func (m *AgentMiddleware) WrapStreamableToolCall(ctx context.Context, endpoint adk.StreamableToolCallEndpoint, tc *adk.ToolContext) (adk.StreamableToolCallEndpoint, error) {
+	if tc == nil {
+		return endpoint, nil
+	}
+
+	wrapped := func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
+		toolName := tc.Name
+		callID := tc.CallID
+
+		if m.EventPublisher != nil {
+			_ = m.EventPublisher.PublishToolCallStarted(ctx, m.RunID, toolName, contracts.ID(callID))
+		}
+
+		result, err := endpoint(ctx, argumentsInJSON, opts...)
+		success := err == nil
+
+		if m.CitationCollector != nil {
+			citations := extractCitationsFromContext(ctx)
+			m.CitationCollector.Add(citations)
+		}
+
+		if m.EventPublisher != nil {
+			summary := ""
+			if err != nil {
+				summary = err.Error()
+			}
+			_ = m.EventPublisher.PublishToolCallCompleted(ctx, m.RunID, contracts.ID(callID), toolName, success, summary)
+		}
+
+		return result, err
+	}
+
+	return wrapped, nil
+}
+
+// --- 辅助函数 ---
+
+// extractUsage 从消息列表中提取 token 用量。
+func extractUsage(messages []*schema.Message) contracts.TokenUsage {
+	var usage contracts.TokenUsage
+	for _, msg := range messages {
+		if msg != nil && msg.ResponseMeta != nil && msg.ResponseMeta.Usage != nil {
+			usage.InputTokens += msg.ResponseMeta.Usage.PromptTokens
+			usage.OutputTokens += msg.ResponseMeta.Usage.CompletionTokens
+			usage.TotalTokens += msg.ResponseMeta.Usage.TotalTokens
+		}
+	}
+	return usage
+}
+
+// citationsContextKey 用于在 context 中传递引用。
+type citationsContextKey struct{}
+
+// WithCitations 将引用列表存入 context。
+func WithCitations(ctx context.Context, citations []contracts.Citation) context.Context {
+	return context.WithValue(ctx, citationsContextKey{}, citations)
+}
+
+// extractCitationsFromContext 从 context 中提取引用列表。
+func extractCitationsFromContext(ctx context.Context) []contracts.Citation {
+	if v, ok := ctx.Value(citationsContextKey{}).([]contracts.Citation); ok {
+		return v
+	}
+	return nil
+}

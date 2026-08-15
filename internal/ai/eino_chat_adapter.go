@@ -20,6 +20,19 @@ type einoChatModelAdapter struct {
 	model model.ToolCallingChatModel
 }
 
+// GetEinoChatModel 从统一模型工厂获取 ADK 所需的原生 Eino ChatModel。
+func GetEinoChatModel(ctx context.Context, factory contracts.ModelFactory, modelConfigID contracts.ID) (model.BaseChatModel, error) {
+	chatModel, err := factory.GetChatModel(ctx, modelConfigID)
+	if err != nil {
+		return nil, err
+	}
+	adapter, ok := chatModel.(*einoChatModelAdapter)
+	if !ok {
+		return nil, fmt.Errorf("chat model does not expose an Eino base model")
+	}
+	return adapter.model, nil
+}
+
 // Generate 实现 contracts.ChatModel.Generate。
 func (a *einoChatModelAdapter) Generate(ctx context.Context, request contracts.ChatRequest) (contracts.ChatResponse, error) {
 	// 转换消息格式（包含 ToolCallID 和 ToolCalls 映射）
