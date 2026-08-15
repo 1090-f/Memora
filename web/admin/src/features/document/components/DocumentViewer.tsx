@@ -82,7 +82,15 @@ export function DocumentViewer({ document, processing }: { document: Document; p
       ) : descriptorQuery.error ? (
         <Alert severity="warning">预览信息读取失败：{errorMessage(descriptorQuery.error)}</Alert>
       ) : descriptorQuery.data ? (
-        <PreviewHost descriptor={descriptorQuery.data} title={document.title} onRetry={() => retryPreview.mutate()} retrying={retryPreview.isPending} />
+        <PreviewHost
+          descriptor={descriptorQuery.data}
+          title={document.title}
+          fileName={document.source_type === 'file' ? document.original_file_name || document.title : undefined}
+          mediaType={document.source_type === 'file' ? document.mime_type : undefined}
+          fileSize={document.source_type === 'file' ? document.file_size : undefined}
+          onRetry={() => retryPreview.mutate()}
+          retrying={retryPreview.isPending}
+        />
       ) : null}
       <DocumentProcessingDrawer open={processingOpen} onClose={() => setProcessingOpen(false)} document={document} processing={processing} />
     </Paper>

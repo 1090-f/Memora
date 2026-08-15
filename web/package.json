@@ -15,6 +15,6 @@
   "license": "ISC",
   "packageManager": "pnpm@10.12.1",
   "dependencies": {
-    "pdfjs-dist": "^5.7.284"
+    "pdfjs-dist": "^6.2.108"
   }
 }

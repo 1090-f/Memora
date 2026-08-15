@@ -67,7 +67,8 @@ preview:
     claim_idle: 15m
     max_attempts: 3
   office:
-    enabled: true
+    # 可选的 LibreOffice 转 PDF 后备；DOCX/PPTX/XLSX 默认在浏览器中直接预览。
+    enabled: false
     max_concurrency: 1
     timeout: 5m
   xlsx:
