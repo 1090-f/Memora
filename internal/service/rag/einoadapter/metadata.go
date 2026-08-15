@@ -15,33 +15,37 @@ import (
 // MetaData 键常量。Eino schema.Document.MetaData 使用 open map[string]any，
 // 集中定义可保证 Loader/Transformer/Indexer/Retriever 各阶段一致读写。
 const (
-	MetaUserID           = "user_id"
-	MetaKnowledgeBase    = "knowledge_base_id"
-	MetaDocumentID       = "document_id"
-	MetaDirectoryID      = "directory_id"
-	MetaChunkID          = "chunk_id"
-	MetaChunkNo          = "chunk_no"
-	MetaIndexVersion     = "index_version"
-	MetaHeadingPath      = "heading_path"
-	MetaSourceLocation   = "source_location"
-	MetaKeywordRank      = "keyword_rank"
-	MetaKeywordScore     = "keyword_score"
-	MetaVectorRank       = "vector_rank"
-	MetaVectorScore      = "vector_score"
-	MetaRRFScore         = "rrf_score"
-	MetaRRFRank          = "rrf_rank"
-	MetaRerankerScore    = "reranker_score"
-	MetaDocumentTitle    = "document_title"
-	MetaDocumentUpdAt    = "document_updated_at"
-	MetaChunkConfigHash  = "chunk_config_hash"
-	MetaContentVersion   = "content_version"
-	MetaChunkVersion     = "chunk_version"
-	MetaQuery            = "query"
-	MetaFTSTokens        = "fts_tokens"
-	MetaCharCount        = "char_count"
-	MetaTokenCount       = "token_count"
-	MetaContextTitle     = "context_title"
-	MetaEmbeddingModelID = "embedding_model_id"
+	MetaUserID               = "user_id"
+	MetaKnowledgeBase        = "knowledge_base_id"
+	MetaDocumentID           = "document_id"
+	MetaDirectoryID          = "directory_id"
+	MetaChunkID              = "chunk_id"
+	MetaChunkNo              = "chunk_no"
+	MetaIndexVersion         = "index_version"
+	MetaHeadingPath          = "heading_path"
+	MetaSourceLocation       = "source_location"
+	MetaKeywordRank          = "keyword_rank"
+	MetaKeywordScore         = "keyword_score"
+	MetaKeywordMatchLevel    = "keyword_match_level"
+	MetaKeywordMatchedTerms  = "keyword_matched_terms"
+	MetaKeywordCoverage      = "keyword_coverage"
+	MetaKeywordRecallStage   = "keyword_recall_stage"
+	MetaKeywordLowConfidence = "keyword_low_confidence"
+	MetaVectorRank           = "vector_rank"
+	MetaVectorScore          = "vector_score"
+	MetaRRFScore             = "rrf_score"
+	MetaRRFRank              = "rrf_rank"
+	MetaRerankerScore        = "reranker_score"
+	MetaDocumentTitle        = "document_title"
+	MetaDocumentUpdAt        = "document_updated_at"
+	MetaChunkConfigHash      = "chunk_config_hash"
+	MetaContentVersion       = "content_version"
+	MetaChunkVersion         = "chunk_version"
+	MetaQuery                = "query"
+	MetaCharCount            = "char_count"
+	MetaTokenCount           = "token_count"
+	MetaContextTitle         = "context_title"
+	MetaEmbeddingModelID     = "embedding_model_id"
 )
 
 // GetMetaString 读取 MetaData 中的字符串值并做类型校验；缺失或类型不符时返回零值。
@@ -90,6 +94,21 @@ func GetMetaTime(meta map[string]any, key string) time.Time {
 // GetMetaAny 读取 MetaData 中的任意值，缺失时返回 nil。
 func GetMetaAny(meta map[string]any, key string) any {
 	return meta[key]
+}
+
+// GetMetaStrings reads a string slice without exposing unsafe metadata assertions.
+func GetMetaStrings(meta map[string]any, key string) []string {
+	value, ok := meta[key].([]string)
+	if !ok {
+		return nil
+	}
+	return value
+}
+
+// GetMetaBool reads a bool metadata value and returns false when absent.
+func GetMetaBool(meta map[string]any, key string) bool {
+	value, ok := meta[key].(bool)
+	return ok && value
 }
 
 // SetMetaString 以安全方式写入 MetaData 字符串值，保证 map 非空。

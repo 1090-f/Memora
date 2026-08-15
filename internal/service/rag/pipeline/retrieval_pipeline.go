@@ -187,7 +187,7 @@ func NewRetrievalPipeline(keyword, vector retriever.Retriever, citations citatio
 			minimum = 1
 		}
 		state.status = "insufficient"
-		if len(state.finalDocs) >= minimum {
+		if effectiveResultCount(state.finalDocs, state.input.Request.Mode) >= minimum {
 			state.status = "sufficient"
 		}
 		return state, nil
@@ -214,6 +214,11 @@ func NewRetrievalPipeline(keyword, vector retriever.Retriever, citations citatio
 			item.VectorRank = intPtr(einoadapter.GetMetaInt(meta, einoadapter.MetaVectorRank))
 			item.RRFRank = intPtr(einoadapter.GetMetaInt(meta, einoadapter.MetaRRFRank))
 			item.KeywordScore = floatPtr(meta, einoadapter.MetaKeywordScore)
+			item.KeywordMatchLevel = contracts.KeywordMatchLevel(einoadapter.GetMetaString(meta, einoadapter.MetaKeywordMatchLevel))
+			item.KeywordMatchedTerms = append([]string(nil), einoadapter.GetMetaStrings(meta, einoadapter.MetaKeywordMatchedTerms)...)
+			item.KeywordCoverage = floatPtr(meta, einoadapter.MetaKeywordCoverage)
+			item.KeywordRecallStage = einoadapter.GetMetaString(meta, einoadapter.MetaKeywordRecallStage)
+			item.LowConfidence = einoadapter.GetMetaBool(meta, einoadapter.MetaKeywordLowConfidence)
 			item.VectorScore = floatPtr(meta, einoadapter.MetaVectorScore)
 			item.RerankerScore = floatPtr(meta, einoadapter.MetaRerankerScore)
 			finalRank := i + 1
@@ -272,7 +277,15 @@ func reciprocalRankFusion(keywordDocs, vectorDocs []*schema.Document, k int) []*
 		k = 60
 	}
 	merged := make(map[string]*schema.Document, len(keywordDocs)+len(vectorDocs))
-	for _, docs := range [][]*schema.Document{keywordDocs, vectorDocs} {
+	sources := []struct {
+		docs    []*schema.Document
+		keyword bool
+	}{
+		{docs: keywordDocs, keyword: true},
+		{docs: vectorDocs},
+	}
+	for _, input := range sources {
+		docs := input.docs
 		for rank, source := range docs {
 			id := source.ID
 			if id == "" {
@@ -287,7 +300,11 @@ func reciprocalRankFusion(keywordDocs, vectorDocs []*schema.Document, k int) []*
 					doc.MetaData[key] = value
 				}
 			}
-			score := einoadapter.GetMetaFloat(doc.MetaData, einoadapter.MetaRRFScore) + 1/float64(k+rank+1)
+			weight := 1.0
+			if input.keyword {
+				weight = keywordRRFWeight(source.MetaData)
+			}
+			score := einoadapter.GetMetaFloat(doc.MetaData, einoadapter.MetaRRFScore) + weight/float64(k+rank+1)
 			einoadapter.SetMetaFloat(doc, einoadapter.MetaRRFScore, score)
 		}
 	}
@@ -311,6 +328,31 @@ func reciprocalRankFusion(keywordDocs, vectorDocs []*schema.Document, k int) []*
 		einoadapter.SetMetaInt(doc, einoadapter.MetaRRFRank, i+1)
 	}
 	return result
+}
+
+func keywordRRFWeight(meta map[string]any) float64 {
+	switch contracts.KeywordMatchLevel(einoadapter.GetMetaString(meta, einoadapter.MetaKeywordMatchLevel)) {
+	case contracts.KeywordMatchExact:
+		return 2
+	case contracts.KeywordMatchWeak:
+		return 0.35
+	default:
+		return 1
+	}
+}
+
+func effectiveResultCount(docs []*schema.Document, mode contracts.RetrievalMode) int {
+	if mode != contracts.RetrievalKeyword {
+		return len(docs)
+	}
+	count := 0
+	for _, doc := range docs {
+		level := contracts.KeywordMatchLevel(einoadapter.GetMetaString(doc.MetaData, einoadapter.MetaKeywordMatchLevel))
+		if level == "" || level == contracts.KeywordMatchExact || level == contracts.KeywordMatchStrong {
+			count++
+		}
+	}
+	return count
 }
 
 func cloneMeta(input map[string]any) map[string]any {

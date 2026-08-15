@@ -11,6 +11,11 @@ export interface SearchResult {
   source_location?: Record<string, unknown>;
   score?: number;
   keyword_score?: number;
+  match_level?: 'exact' | 'strong' | 'weak';
+  matched_terms?: string[];
+  coverage?: number;
+  recall_stage?: 'exact' | 'strong' | 'weak_fallback';
+  low_confidence?: boolean;
   vector_score?: number;
   keyword_rank?: number;
   vector_rank?: number;

@@ -9,6 +9,9 @@ import (
 // ObjectKeyPrefix 定义文档对象的统一前缀。
 const ObjectKeyPrefix = "documents"
 
+// AvatarObjectKeyPrefix 定义用户头像对象的统一前缀。
+const AvatarObjectKeyPrefix = "avatars"
+
 // BuildObjectKey 生成统一的 MinIO 对象 key：
 // documents/{YYYYMMDD}/{user_id}/{kb_id}/{task_id}/{safe_file_name}。
 // 日期前缀（UTC）便于在 MinIO 控制台按天浏览导入记录；
@@ -16,6 +19,12 @@ const ObjectKeyPrefix = "documents"
 func BuildObjectKey(userID, kbID, taskID, fileName string) string {
 	date := time.Now().UTC().Format("20060102")
 	return path.Join(ObjectKeyPrefix, date, userID, kbID, taskID, sanitizeFileName(fileName))
+}
+
+// BuildAvatarObjectKey 为每个用户生成稳定的头像对象 key。
+// 新头像会覆盖旧对象，避免重复上传产生无主文件。
+func BuildAvatarObjectKey(userID string) string {
+	return path.Join(AvatarObjectKeyPrefix, userID, "avatar")
 }
 
 // sanitizeFileName 净化文件名：仅保留字母数字、中文与常见文件字符，替换路径分隔符与危险字符。

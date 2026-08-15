@@ -195,9 +195,6 @@ func TestPipelineChunkEntityFields(t *testing.T) {
 	if chunk.UserID != "u1" || chunk.DocumentID != "d1" || chunk.IndexVersion != 1 {
 		t.Errorf("实体归属字段错误: %+v", chunk)
 	}
-	if chunk.FTSTokens == "" {
-		t.Error("fts_tokens 为空")
-	}
 	if chunk.TokenCount <= 0 || chunk.CharCount <= 0 {
 		t.Errorf("计数异常: token=%d char=%d", chunk.TokenCount, chunk.CharCount)
 	}

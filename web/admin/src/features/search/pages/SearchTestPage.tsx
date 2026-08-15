@@ -38,6 +38,12 @@ function score(value?: number) {
   return value === undefined ? '—' : value.toFixed(4);
 }
 
+const matchLevelLabel: Record<NonNullable<SearchResult['match_level']>, string> = {
+  exact: '精确短语',
+  strong: '强词召回',
+  weak: '弱词兜底',
+};
+
 function ResultTable({ items }: { items: SearchResult[] }) {
   if (items.length === 0) {
     return <Typography color="text.secondary" py={3} textAlign="center">没有匹配的知识片段</Typography>;
@@ -75,6 +81,23 @@ function ResultTable({ items }: { items: SearchResult[] }) {
               </TableCell>
               <TableCell>
                 <Stack spacing={0.25}>
+                  {item.match_level && (
+                    <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                      <Chip
+                        size="small"
+                        color={item.low_confidence ? 'warning' : item.match_level === 'exact' ? 'success' : 'primary'}
+                        label={matchLevelLabel[item.match_level]}
+                      />
+                      {item.low_confidence && <Chip size="small" color="warning" variant="outlined" label="低置信度" />}
+                    </Stack>
+                  )}
+                  {item.matched_terms && item.matched_terms.length > 0 && (
+                    <Typography variant="caption">命中词：{item.matched_terms.join(' / ')}</Typography>
+                  )}
+                  {item.coverage !== undefined && (
+                    <Typography variant="caption">覆盖率：{Math.round(item.coverage * 100)}%</Typography>
+                  )}
+                  {item.recall_stage && <Typography variant="caption">召回阶段：{item.recall_stage}</Typography>}
                   <Typography variant="caption">关键词：{score(item.keyword_score)}</Typography>
                   <Typography variant="caption">向量：{score(item.vector_score)}</Typography>
                   <Typography variant="caption">RRF 排名：{item.rrf_rank ?? '—'}</Typography>

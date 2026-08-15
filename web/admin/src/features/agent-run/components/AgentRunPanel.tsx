@@ -1,217 +1,76 @@
-import { Alert, Chip, CircularProgress, Divider, Stack, Typography } from '@mui/material';
-import Box from '@mui/material/Box';
+import CheckCircleOutlined from '@mui/icons-material/CheckCircleOutlined';
+import DescriptionOutlined from '@mui/icons-material/DescriptionOutlined';
+import SmartToyOutlined from '@mui/icons-material/SmartToyOutlined';
+import SyncOutlined from '@mui/icons-material/SyncOutlined';
+import BuildOutlined from '@mui/icons-material/BuildOutlined';
+import { Alert, Box, Button, Chip, Divider, Paper, Stack, Typography } from '@mui/material';
 import type { AgentRunViewState } from '../types';
 
-/**
- * AgentRunPanel 右侧 Agent 运行面板，展示运行状态、计划步骤列表和工具调用。
- * 计划步骤采用 Trae 风格：待执行用序号圆圈、执行中用高亮序号+旋转加载、完成用绿色对勾。
- */
+const statusLabel = {
+  idle: '等待中',
+  queued: '排队中',
+  running: '运行中',
+  completed: '已完成',
+  failed: '失败',
+  cancelled: '已取消',
+} as const;
+
+function citationTitle(citation: Record<string, unknown>, index: number) {
+  const value = citation.document_title || citation.title || citation.url;
+  return typeof value === 'string' && value ? value : `引用文档 ${index + 1}`;
+}
+
 export function AgentRunPanel({ state }: { state: AgentRunViewState }) {
+  const steps = state.plan?.steps ?? state.rounds.map((round) => ({ step_no: round.round_no, title: round.action_summary || `执行轮次 ${round.round_no}`, status: round.status }));
   return (
-    <Stack spacing={2} p={2} sx={{ overflow: 'auto', height: 'calc(100% - 48px)' }}>
-      {/* 顶部标题与状态：标题在左侧，状态靠右并为折叠按钮预留空间 */}
-      <Stack
-        direction="row"
-        alignItems="center"
-        justifyContent="space-between"
-        sx={{ minHeight: 32, pr: 4, gap: 1 }}
-      >
-        <Typography variant="h6" fontWeight={700} sx={{ flexShrink: 0 }}>
-          Agent 运行
-        </Typography>
-        <Chip
-          size="small"
-          label={state.status}
-          color={statusColor(state.status)}
-          sx={{ flexShrink: 0 }}
-        />
+    <Stack spacing={1.4} p={1.7} sx={{ overflow: 'auto', height: '100%' }}>
+      <Stack direction="row" alignItems="center" justifyContent="space-between">
+        <Typography sx={{ color: '#182441', fontSize: 18, fontWeight: 700 }}>Agent 运行</Typography>
+        <Chip size="small" icon={state.status === 'running' ? <SyncOutlined /> : <CheckCircleOutlined />} label={statusLabel[state.status]} sx={{ bgcolor: state.status === 'running' ? '#e9f8ee' : state.status === 'completed' ? '#e9f8ee' : '#f1f3f7', color: state.status === 'running' || state.status === 'completed' ? '#2b9a52' : '#778297', fontWeight: 600 }} />
       </Stack>
-
-      {/* Router 决策摘要 */}
       {state.router && (
-        <Alert severity="info" sx={{ py: 0.5, '& .MuiAlert-message': { fontSize: '0.8rem' } }}>
-          <strong>{state.router.execution_mode === 'plan_execute' ? 'Plan-Execute' : 'ReAct'}</strong>
-          <br />
-          {state.router.reason_summary}
-        </Alert>
+        <Alert severity="info" sx={{ py: 0.5 }}><strong>{state.router.execution_mode === 'react' ? 'ReAct 协作模式' : '计划执行模式'}</strong><br />{state.router.reason_summary}</Alert>
       )}
-
-      {/* 错误提示 */}
       {state.error && <Alert severity="error">{state.error.message}</Alert>}
-
-      <Divider />
-
-      {/* 计划步骤列表 — Trae 风格 */}
-      {state.plan && (
-        <Box>
-          <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1.5, display: 'flex', alignItems: 'center', gap: 0.5 }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <rect x="3" y="3" width="18" height="18" rx="2" />
-              <line x1="9" y1="12" x2="15" y2="12" />
-            </svg>
-            执行计划
-            <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
-              v{state.plan.version}
-            </Typography>
-          </Typography>
-          <Stack spacing={1.5}>
-            {state.plan.steps.map((step) => (
-              <Box key={step.step_no} sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5 }}>
-                {/* 左侧状态指示器 */}
-                <StepIndicator status={step.status} stepNo={step.step_no} />
-                {/* 右侧步骤内容 */}
-                <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography
-                    variant="body2"
-                    fontWeight={step.status === 'running' ? 700 : 500}
-                    sx={{
-                      color: step.status === 'running' ? 'primary.main' : step.status === 'completed' ? 'success.main' : 'text.primary',
-                      wordBreak: 'break-word',
-                    }}
-                  >
-                    {step.title}
-                  </Typography>
-                  {step.status === 'running' && (
-                    <Typography variant="caption" color="primary.main" sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.25 }}>
-                      <CircularProgress size={10} thickness={6} />
-                      执行中...
-                    </Typography>
-                  )}
-                  {step.status === 'failed' && step.error_message && (
-                    <Typography variant="caption" color="error" sx={{ mt: 0.25, display: 'block' }}>
-                      {step.error_message}
-                    </Typography>
-                  )}
-                </Box>
-              </Box>
-            ))}
+      <Paper variant="outlined" sx={{ p: 1.3, borderRadius: 2.5, borderColor: '#e2e6ee' }}>
+        <Typography sx={{ color: '#26324d', fontSize: 13, fontWeight: 700, mb: 1.2 }}>执行步骤</Typography>
+        {steps.length > 0 ? (
+          <Stack spacing={0.6}>
+            {steps.map((step, index) => {
+              const completed = step.status === 'completed' || step.status === 'succeeded';
+              const running = step.status === 'running';
+              return (
+                <Stack key={step.step_no} direction="row" spacing={1} alignItems="center" sx={{ minHeight: 47, px: 1, borderRadius: 1.7, bgcolor: running ? '#f0f2ff' : 'transparent', position: 'relative' }}>
+                  <Box sx={{ width: 22, height: 22, borderRadius: '50%', display: 'grid', placeItems: 'center', flexShrink: 0, bgcolor: completed ? '#29aa55' : running ? '#4e64ed' : '#e0e4ec', color: '#fff', fontSize: 11 }}>{completed ? <CheckCircleOutlined sx={{ fontSize: 15 }} /> : index + 1}</Box>
+                  <Box minWidth={0} flexGrow={1}><Typography noWrap sx={{ color: '#36425b', fontSize: 12.5 }}>{step.title}</Typography><Typography sx={{ color: running ? '#4e64ed' : '#8994a7', fontSize: 10.5 }}>{completed ? '已完成' : running ? '运行中' : '等待中'}</Typography></Box>
+                </Stack>
+              );
+            })}
           </Stack>
-        </Box>
-      )}
+        ) : <Typography sx={{ color: '#8792a6', fontSize: 12, py: 2 }}>提问后将在这里显示 Agent 执行步骤。</Typography>}
+      </Paper>
 
-      {/* 工具调用列表 */}
-      {state.tools.length > 0 && (
-        <Box>
-          <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
-            工具调用
-          </Typography>
-          <Stack spacing={1}>
-            {state.tools.map((tool) => (
-              <Box key={tool.tool_call_id} sx={{ display: 'flex', alignItems: 'flex-start', gap: 1 }}>
-                <Box sx={{
-                  width: 20, height: 20, borderRadius: '50%', flexShrink: 0, mt: '2px',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  bgcolor: tool.status === 'succeeded' ? 'success.main' : tool.status === 'failed' ? 'error.main' : 'primary.main',
-                }}>
-                  <Typography variant="caption" sx={{ color: '#fff', fontSize: '0.65rem', lineHeight: 1 }}>
-                    {tool.status === 'succeeded' ? '✓' : tool.status === 'failed' ? '✗' : '→'}
-                  </Typography>
-                </Box>
-                <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography variant="body2" fontWeight={500} sx={{ wordBreak: 'break-word' }}>
-                    {tool.tool_name}
-                  </Typography>
-                  {tool.output_summary && (
-                    <Typography variant="caption" color="text.secondary" sx={{
-                      display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    }}>
-                      {tool.output_summary}
-                    </Typography>
-                  )}
-                </Box>
-              </Box>
-            ))}
+      <Paper variant="outlined" sx={{ p: 1.3, borderRadius: 2.5, borderColor: '#e2e6ee' }}>
+        <Typography sx={{ color: '#26324d', fontSize: 13, fontWeight: 700, mb: 1 }}>本次使用工具</Typography>
+        {state.tools.length > 0 ? <Stack spacing={0.7}>{state.tools.map((tool) => (
+          <Stack key={tool.tool_call_id} direction="row" alignItems="center" spacing={1} sx={{ minHeight: 42, px: 1, border: '1px solid #e7eaf0', borderRadius: 1.6 }}>
+            <BuildOutlined sx={{ color: '#5370ee', fontSize: 18 }} />
+            <Typography noWrap sx={{ color: '#56627a', fontSize: 11.5, flexGrow: 1 }}>{tool.tool_name}</Typography>
+            <Typography sx={{ color: tool.status === 'completed' ? '#2ca457' : '#5670ec', fontSize: 10.5 }}>{tool.status === 'completed' ? '✓ 已完成' : '◌ 运行中'}</Typography>
           </Stack>
-        </Box>
-      )}
+        ))}</Stack> : <Typography sx={{ color: '#8792a6', fontSize: 12 }}>暂无工具调用</Typography>}
+      </Paper>
 
-      {/* 空状态 */}
-      {!state.plan && state.tools.length === 0 && (
-        <Typography color="text.secondary" variant="body2" sx={{ textAlign: 'center', py: 4 }}>
-          运行后将在这里显示可观察摘要。
-        </Typography>
-      )}
-
-      {/* Token 用量 */}
-      {state.usage && (
-        <Box sx={{ mt: 'auto', pt: 1 }}>
-          <Divider sx={{ mb: 1 }} />
-          <Typography variant="caption" color="text.secondary">
-            Token: {state.usage.input_tokens} in / {state.usage.output_tokens} out / {state.usage.total_tokens} total
-          </Typography>
-        </Box>
-      )}
+      <Paper variant="outlined" sx={{ p: 1.3, borderRadius: 2.5, borderColor: '#e2e6ee' }}>
+        <Typography sx={{ color: '#26324d', fontSize: 13, fontWeight: 700, mb: 1 }}>引用文档</Typography>
+        {state.citations.length > 0 ? <Stack spacing={0.7}>{state.citations.slice(0, 4).map((citation, index) => (
+          <Stack key={`${citationTitle(citation, index)}-${index}`} direction="row" spacing={1} alignItems="center" sx={{ minHeight: 44, px: 1, borderRadius: 1.5, bgcolor: '#f7f8fb' }}>
+            <Box sx={{ width: 28, height: 28, borderRadius: 1.2, display: 'grid', placeItems: 'center', bgcolor: '#e9edff', color: '#5068e9' }}><DescriptionOutlined sx={{ fontSize: 17 }} /></Box>
+            <Typography noWrap title={citationTitle(citation, index)} sx={{ color: '#56627a', fontSize: 11.5, flexGrow: 1 }}>{citationTitle(citation, index)}</Typography>
+          </Stack>
+        ))}<Button size="small">查看全部（{state.citations.length}）</Button></Stack> : <Typography sx={{ color: '#8792a6', fontSize: 12 }}>暂无引用文档</Typography>}
+      </Paper>
+      {state.usage && <><Divider /><Stack direction="row" alignItems="center" spacing={1}><SmartToyOutlined sx={{ color: '#6574ec', fontSize: 18 }} /><Typography sx={{ color: '#7b879b', fontSize: 11 }}>本次使用 {state.usage.total_tokens} Tokens</Typography></Stack></>}
     </Stack>
   );
-}
-
-/**
- * StepIndicator 渲染步骤左侧的状态指示器。
- * - pending: 灰色序号圆圈
- * - running: 蓝色高亮序号圆圈 + 旋转边框
- * - completed: 绿色实心对勾圆圈
- * - failed: 红色实心叉号圆圈
- */
-function StepIndicator({ status, stepNo }: { status: string; stepNo: number }) {
-  if (status === 'completed') {
-    return (
-      <Box sx={{
-        width: 24, height: 24, borderRadius: '50%', flexShrink: 0, mt: '2px',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        bgcolor: 'success.main', color: '#fff', fontSize: '0.75rem', fontWeight: 700,
-      }}>
-        ✓
-      </Box>
-    );
-  }
-
-  if (status === 'running') {
-    return (
-      <Box sx={{
-        width: 24, height: 24, borderRadius: '50%', flexShrink: 0, mt: '2px',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        border: '2px solid', borderColor: 'primary.main', color: 'primary.main',
-        fontSize: '0.75rem', fontWeight: 700, position: 'relative',
-      }}>
-        <CircularProgress size={24} thickness={2} sx={{ position: 'absolute', color: 'primary.main' }} />
-        <span style={{ zIndex: 1 }}>{stepNo}</span>
-      </Box>
-    );
-  }
-
-  if (status === 'failed') {
-    return (
-      <Box sx={{
-        width: 24, height: 24, borderRadius: '50%', flexShrink: 0, mt: '2px',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        bgcolor: 'error.main', color: '#fff', fontSize: '0.75rem', fontWeight: 700,
-      }}>
-        ✗
-      </Box>
-    );
-  }
-
-  // pending 或其他状态：灰色边框圆圈 + 序号
-  return (
-    <Box sx={{
-      width: 24, height: 24, borderRadius: '50%', flexShrink: 0, mt: '2px',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      border: '2px solid', borderColor: 'grey.400', color: 'grey.600',
-      fontSize: '0.75rem', fontWeight: 600,
-    }}>
-      {stepNo}
-    </Box>
-  );
-}
-
-/** statusColor 根据 Agent 运行状态返回对应的 Chip 颜色。 */
-function statusColor(status: string): 'default' | 'primary' | 'success' | 'error' | 'warning' | 'info' {
-  switch (status) {
-    case 'running': return 'primary';
-    case 'completed': return 'success';
-    case 'failed': return 'error';
-    case 'cancelled': return 'warning';
-    case 'queued': return 'info';
-    default: return 'default';
-  }
 }
