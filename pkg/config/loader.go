@@ -112,8 +112,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("preview.consumer.processing_timeout", "10m")
 	v.SetDefault("preview.consumer.claim_idle", "15m")
 	v.SetDefault("preview.consumer.max_attempts", 3)
-	// Office 文件默认由浏览器端渲染；LibreOffice PDF 转换仅作为显式启用的可选后备。
-	v.SetDefault("preview.office.enabled", false)
+	v.SetDefault("preview.office.enabled", true)
 	v.SetDefault("preview.office.max_concurrency", 1)
 	v.SetDefault("preview.office.timeout", "5m")
 	v.SetDefault("preview.xlsx.enabled", true)
