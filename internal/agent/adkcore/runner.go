@@ -47,6 +47,18 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 		return result, fmt.Errorf("build system prompt: %w", err)
 	}
 
+	// 追加工具调用失败处理规则到系统提示词。
+	// 当 SafeToolMiddleware 将工具错误转为字符串返回给 LLM 时，
+	// LLM 需要知道不应该无限重试同一个失败的工具。
+	systemPrompt += "\n\n[Tool Call Rules]\n" +
+		"When a tool call returns an error (Success=false), do NOT retry the same tool with the same parameters.\n" +
+		"If a tool fails, try at most once more with different parameters if appropriate.\n" +
+		"After a tool has failed twice, do not retry it again. Instead:\n" +
+		"- Try a different tool that might achieve the same goal\n" +
+		"- Use the information you already have to answer the user\n" +
+		"- If you cannot proceed, inform the user about the limitation clearly\n" +
+		"Do not waste iterations by repeatedly calling the same failing tool.\n"
+
 	// 2. 构建 ChatModel
 	chatModel, err := r.ModelFactory(ctx, contracts.ID(request.Context.ChatModelID))
 	if err != nil {
@@ -88,6 +100,8 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 	}
 
 	// 6. 创建 ADK ChatModelAgent
+	// 中间件顺序：SafeToolMiddleware 在最外层（捕获所有工具调用的错误并发布失败事件），
+	// AgentMiddleware 在内层（事件发布、引用收集、预算控制）。
 	chatModelAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:          "assistant",
 		Description:   "A helpful assistant that can use tools to help users.",
@@ -96,6 +110,10 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 		ToolsConfig:   toolsConfig,
 		MaxIterations: maxIterations,
 		Handlers: []adk.ChatModelAgentMiddleware{
+			&SafeToolMiddleware{
+				EventPublisher: eventPublisher,
+				RunID:          request.RunID,
+			},
 			middleware,
 		},
 	})
