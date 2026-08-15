@@ -14,22 +14,22 @@ app:
   write_timeout: 10m      # 单位/秒（Python 解析最长约 8 分钟、LibreOffice 转换最长约 5 分钟）
   shutdown_timeout: 10s   # 单位/秒
 
-# 数据库配置（PostgreSQL，使用超级用户连接；密码按本机安装填写）
+# 数据库配置（与 deploy/docker-compose.yml 的默认配置一致）
 database:
-  url: "postgres://postgres:root@localhost:5432/memora?sslmode=disable"
+  url: "postgres://memora:password@192.168.21.8:15432/memora?sslmode=disable"
   max_idle_conns: 5
   max_open_conns: 25
 
 # Redis 配置
 redis:
-  address: "localhost:6379"
+  address: "192.168.21.8:16379"
   password: ""
   db: 3
   pool_size: 10
 
 # MinIO 配置
 minio:
-  endpoint: "localhost:9000"
+  endpoint: "192.168.21.8:19000"
   access_key: "minioadmin"
   secret_key: "minioadmin"
   bucket: "memora"

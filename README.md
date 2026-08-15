@@ -84,7 +84,7 @@ API 容器默认限制为 4 GB 内存。
 
 - 管理端：`http://localhost:3000`
 - API：`http://localhost:8080`
-- MinIO Console：`http://localhost:9001`
+- MinIO Console：`http://localhost:19001`
 - Liveness：`GET http://localhost:8080/health/live`
 - Readiness：`GET http://localhost:8080/health/ready`
 - 后台消费者状态：`GET http://localhost:8080/health/workers`

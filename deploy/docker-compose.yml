@@ -7,7 +7,7 @@ services:
       POSTGRES_DB: memora
       POSTGRES_USER: memora
       POSTGRES_PASSWORD: password
-    ports: ["5432:5432"]
+    ports: ["15432:5432"]
     volumes:
       - memora-postgres:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
@@ -19,7 +19,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports: ["6379:6379"]
+    ports: ["16379:6379"]
     volumes: ["memora-redis:/data"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -33,7 +33,7 @@ services:
     environment:
       MINIO_ROOT_USER: ${MEMORA_MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MEMORA_MINIO_SECRET_KEY:-minioadmin}
-    ports: ["9000:9000", "9001:9001"]
+    ports: ["19000:9000", "19001:9001"]
     volumes: ["memora-minio:/data"]
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
