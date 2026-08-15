@@ -31,6 +31,8 @@ type AgentMiddleware struct {
 	Config contracts.AgentConfig
 	// StartedAt 记录运行开始时间。
 	StartedAt time.Time
+	// Usage 中间件收集到的 token 消耗，供 Runner 取回。
+	Usage contracts.TokenUsage
 }
 
 // Ensure AgentMiddleware implements the interface.
@@ -45,28 +47,9 @@ func (m *AgentMiddleware) BeforeAgent(ctx context.Context, runCtx *adk.ChatModel
 	return ctx, runCtx, nil
 }
 
-// AfterAgent 在 Agent 执行完成后调用。
+// AfterAgent 在 Agent 执行完成后调用，收集 token 用量供 Runner 取回。
 func (m *AgentMiddleware) AfterAgent(ctx context.Context, state *adk.ChatModelAgentState) (context.Context, error) {
-	if m.EventPublisher == nil {
-		return ctx, nil
-	}
-	var finalResult string
-	if len(state.Messages) > 0 {
-		last := state.Messages[len(state.Messages)-1]
-		if last != nil {
-			finalResult = last.Content
-		}
-	}
-	result := contracts.AgentRunResult{
-		RunID:         m.RunID,
-		ExecutionMode: contracts.ExecutionReact,
-		FinalResult:   finalResult,
-		Citations:     m.CitationCollector.Get(),
-		Usage:         extractUsage(state.Messages),
-		StartedAt:     m.StartedAt,
-		EndedAt:       time.Now().UTC(),
-	}
-	_ = m.EventPublisher.PublishRunCompleted(ctx, m.RunID, result)
+	m.Usage = extractUsage(state.Messages)
 	return ctx, nil
 }
 

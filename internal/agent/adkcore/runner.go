@@ -7,20 +7,15 @@ import (
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
-	"github.com/cloudwego/eino/components/tool"
-	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/1090-f/Memora/internal/agent/core"
-	"github.com/1090-f/Memora/internal/agent/tools"
 	"github.com/1090-f/Memora/internal/contracts"
 )
 
 // ADKReactRunner 是基于 Eino ADK ChatModelAgent 的 ReAct 运行器。
 // 它与现有的 core.ReactRunner 接口兼容，但使用 ADK 的内部 ReAct 循环。
 type ADKReactRunner struct {
-	// ToolSet 是注册到 ADK 的工具集合。
-	ToolSet *ToolSet
 	// ModelFactory 是创建 ChatModel 的工厂函数。
 	ModelFactory func(ctx context.Context, modelConfigID contracts.ID) (model.BaseModel[*schema.Message], error)
 	// SystemPromptBuilder 构建系统提示词。
@@ -31,13 +26,11 @@ type ADKReactRunner struct {
 
 // NewADKReactRunner 创建 ADK 驱动的 React 运行器。
 func NewADKReactRunner(
-	toolSet *ToolSet,
 	modelFactory func(ctx context.Context, modelConfigID contracts.ID) (model.BaseModel[*schema.Message], error),
 	systemPromptBuilder func(ctx context.Context, request contracts.AgentRunRequest) (string, error),
 	config contracts.AgentConfig,
 ) *ADKReactRunner {
 	return &ADKReactRunner{
-		ToolSet:             toolSet,
 		ModelFactory:        modelFactory,
 		SystemPromptBuilder: systemPromptBuilder,
 		Config:              config,
@@ -83,8 +76,8 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 		StartedAt: startedAt,
 	}
 
-	// 5. 构建 ADK ToolsConfig
-	toolsConfig := r.buildToolsConfig()
+	// 5. 使用上下文阶段构建好的 ADK ToolsConfig
+	toolsConfig := request.Context.ToolsConfig
 
 	maxIterations := request.Config.MaxReactRounds
 	if maxIterations <= 0 {
@@ -172,23 +165,10 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 		ExecutionMode: contracts.ExecutionReact,
 		FinalResult:   finalContent,
 		Citations:     citationCollector.Get(),
-		Usage:         contracts.TokenUsage{}, // 通过中间件收集
+		Usage:         middleware.Usage, // 由中间件 AfterAgent 收集
 		StartedAt:     startedAt,
 		EndedAt:       time.Now().UTC(),
 	}, nil
-}
-
-// buildToolsConfig 从 ToolSet 构建 ADK 的 ToolsConfig。
-func (r *ADKReactRunner) buildToolsConfig() adk.ToolsConfig {
-	if r.ToolSet == nil || len(r.ToolSet.Tools) == 0 {
-		return adk.ToolsConfig{}
-	}
-
-	return adk.ToolsConfig{
-		ToolsNodeConfig: compose.ToolsNodeConfig{
-			Tools: r.ToolSet.Tools,
-		},
-	}
 }
 
 // convertToSchemaMessages 将现有的聊天消息转换为 Eino schema.Message。
@@ -217,21 +197,4 @@ func convertToSchemaMessages(ctx context.Context, request contracts.AgentRunRequ
 		msgs = append(msgs, schema.UserMessage(request.Context.Query))
 	}
 	return msgs, nil
-}
-
-// ToolSet 是准备注册到 ADK 的工具集合。
-type ToolSet struct {
-	Tools    []tool.BaseTool
-	Executor *tools.Executor
-}
-
-// BuildToolSet 从 tool.BaseTool 列表构建 ADK 工具集。
-func BuildToolSet(innerTools []tool.BaseTool, executor *tools.Executor) *ToolSet {
-	if innerTools == nil {
-		innerTools = make([]tool.BaseTool, 0)
-	}
-	return &ToolSet{
-		Tools:    innerTools,
-		Executor: executor,
-	}
 }

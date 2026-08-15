@@ -35,8 +35,8 @@ import (
 	jwtmanager "github.com/1090-f/Memora/pkg/jwt"
 	"github.com/1090-f/Memora/pkg/logger"
 	"github.com/1090-f/Memora/pkg/objectstore"
+	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
-	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -284,27 +284,26 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	// 用带序列号的发布器包装底层 Redis 发布器，确保事件序号单调递增。
 	sequencedEvents := core.NewSequencedEventPublisher(eventPub)
 
-	// 初始化 PlanRunner（Plan-Execute 模式执行器），保留现有计划模式接入。
+	// 初始化 PlanRunner（Plan-Execute 模式执行器），供路由后的 Plan-Execute 调用。
 	planRunner := core.NewPlanRunner(plannerService, planExecutorService, reviewerService, replanService, planStateStore, sequencedEvents)
-	_ = planRunner
 
 	// 初始化 Agent 运行和工具调用 Repository
 	agentRunRepo := repository.NewAgentRunRepository(a.db)
 	toolCallRepo := repository.NewToolCallRepository(a.db)
 
-	// 将现有工具适配为 Eino ADK 工具。
-	adkTools := make([]tool.BaseTool, 0)
-	for _, registeredTool := range toolRegistry.Tools() {
-		adkTools = append(adkTools, adkcore.NewToolAdapter(registeredTool, toolExecutor))
+	// 注入 ADK 工具配置构建器：每次构建 AgentContext 时从最新的注册表快照生成 ToolsConfig。
+	// 这样 MCP 工具刷新后会自动反映到下一次 Agent 执行中。
+	if cb, ok := contextBuilder.(interface{ SetToolsConfigBuilder(func() adk.ToolsConfig) }); ok {
+		cb.SetToolsConfigBuilder(func() adk.ToolsConfig {
+			return adkcore.BuildToolsConfig(toolRegistry, toolExecutor)
+		})
 	}
-	adkToolSet := adkcore.BuildToolSet(adkTools, toolExecutor)
 
 	// 使用统一模型工厂获取原生 Eino ChatModel，供 ADK ChatModelAgent 使用。
 	adkModelFactory := func(ctx context.Context, modelConfigID contracts.ID) (model.BaseModel[*schema.Message], error) {
 		return ai.GetEinoChatModel(ctx, modelFactory, modelConfigID)
 	}
 	adkRunner := adkcore.NewADKReactRunner(
-		adkToolSet,
 		adkModelFactory,
 		func(_ context.Context, request contracts.AgentRunRequest) (string, error) {
 			return request.Context.ToPromptWithTags(), nil
@@ -319,7 +318,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 			MaxRunSeconds:      cfg.Agent.MaxRunSeconds,
 		},
 	)
-	adkService := adkcore.NewService(adkRunner, sequencedEvents, core.NewCitationCollector(), &agentRunRepoAdapter{repo: agentRunRepo})
+	adkService := adkcore.NewService(adkRunner, planRunner, routerService, sequencedEvents, core.NewCitationCollector(), &agentRunRepoAdapter{repo: agentRunRepo})
 	var agentCoreService contracts.AgentRunService = adkService
 
 	// 初始化 Agent 运行管理的 HTTP 控制器，注入事件订阅器以支持 SSE 流式事件推送
