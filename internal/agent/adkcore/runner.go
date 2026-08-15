@@ -133,8 +133,11 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 	// 10. 通过 agent.Run 直接运行（返回异步迭代器）
 	iter := chatModelAgent.Run(execCtx, input, opts...)
 
-	// 11. 迭代事件流并收集最终结果
+	// 11. 迭代事件流并收集最终结果和 token 用量
+	// 注意：ADK 的 AfterAgent 中间件钩子在错误路径上不会被调用，
+	// 因此必须在事件循环中主动累积 token 用量，确保失败时也有记录。
 	var finalContent string
+	var accumulatedUsage contracts.TokenUsage
 	for {
 		event, ok := iter.Next()
 		if !ok {
@@ -147,16 +150,25 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 		if event.Err != nil {
 			err = event.Err
 		}
-		// 从消息输出中提取最终内容
+		// 从消息输出中提取最终内容和 token 用量
 		// GetMessage 返回 (msg, wrappedEvent, error)
 		if msg, _, getErr := adk.GetMessage(event); getErr == nil && msg != nil {
 			if msg.Role == schema.Assistant && msg.Content != "" {
 				finalContent = msg.Content
 			}
+			// 从每条消息中提取 token 用量并累积
+			if msg.ResponseMeta != nil && msg.ResponseMeta.Usage != nil {
+				accumulatedUsage.InputTokens += msg.ResponseMeta.Usage.PromptTokens
+				accumulatedUsage.OutputTokens += msg.ResponseMeta.Usage.CompletionTokens
+				accumulatedUsage.TotalTokens += msg.ResponseMeta.Usage.TotalTokens
+			}
 		}
 	}
 
 	if err != nil {
+		// AfterAgent 不会被调用，使用事件循环中累积的用量
+		result.Usage = accumulatedUsage
+		result.RunID = request.RunID
 		return result, fmt.Errorf("adk agent run: %w", err)
 	}
 
@@ -165,7 +177,7 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 		ExecutionMode: contracts.ExecutionReact,
 		FinalResult:   finalContent,
 		Citations:     citationCollector.Get(),
-		Usage:         middleware.Usage, // 由中间件 AfterAgent 收集
+		Usage:         accumulatedUsage, // AfterAgent 只在成功路径被调用，此处等效
 		StartedAt:     startedAt,
 		EndedAt:       time.Now().UTC(),
 	}, nil
