@@ -156,15 +156,16 @@ func (s *importService) importSingleServer(ctx context.Context, userID string, n
 		return response.ImportedServer{}, fmt.Errorf("%w: %v", repository.ErrMCPConnectionFailed, initErr)
 	}
 
+	// 连接测试通过，设置状态和测试时间
+	now := time.Now().UTC()
 	serverEntity.ConnectionStatus = "available"
 	serverEntity.LastError = nil
+	serverEntity.LastTestedAt = &now
+
 	if err := s.servers.Create(ctx, serverEntity); err != nil {
 		if errors.Is(err, repository.ErrDuplicateResource) {
 			return response.ImportedServer{}, repository.ErrDuplicateResource
 		}
-		return response.ImportedServer{}, err
-	}
-	if err := s.servers.UpdateStatus(ctx, serverEntity.ID, "available", nil); err != nil {
 		return response.ImportedServer{}, err
 	}
 
@@ -182,7 +183,7 @@ func (s *importService) importSingleServer(ctx context.Context, userID string, n
 	// 处理并保存发现的工具
 	toolEntities := make([]entity.MCPTool, 0, len(discoveredTools))
 	toolSummaries := make([]response.MCPToolSummary, 0, len(discoveredTools))
-	now := time.Now().UTC()
+	now = time.Now().UTC()
 	for _, t := range discoveredTools {
 		schemaHash := computeSchemaHash(t.InputSchema)
 		toolEntity := entity.MCPTool{

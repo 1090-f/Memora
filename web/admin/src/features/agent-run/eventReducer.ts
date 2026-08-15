@@ -54,6 +54,39 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentEvent | R
           reason_summary: stringValue(payload.reason_summary),
         },
       };
+    case 'agent.plan.created':
+      // 初始化计划展示面板，包含版本号、目标、步骤列表等完整信息。
+      return {
+        ...next,
+        plan: {
+          version: numberValue(payload.version, 1),
+          reason_summary: stringValue(payload.goal),
+          steps: Array.isArray(payload.steps)
+            ? payload.steps.map((step: Record<string, unknown>) => ({
+                step_no: numberValue(step.step_no),
+                title: stringValue(step.title),
+                status: stringValue(step.status, 'pending'),
+              }))
+            : [],
+        },
+      };
+    case 'agent.plan.replanned':
+      // 计划重新规划后更新计划面板，版本号递增、步骤列表刷新。
+      if (!state.plan) return next;
+      return {
+        ...next,
+        plan: {
+          version: numberValue(payload.version, state.plan.version),
+          reason_summary: stringValue(payload.goal) || state.plan.reason_summary,
+          steps: Array.isArray(payload.steps)
+            ? payload.steps.map((step: Record<string, unknown>) => ({
+                step_no: numberValue(step.step_no),
+                title: stringValue(step.title),
+                status: stringValue(step.status, 'pending'),
+              }))
+            : state.plan.steps,
+        },
+      };
     case 'agent.step.started':
     case 'agent.step.completed': {
       if (!state.plan) return next;

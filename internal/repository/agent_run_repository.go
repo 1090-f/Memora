@@ -4,7 +4,6 @@ package repository
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -54,14 +53,24 @@ func (r *agentRunRepository) FindByIDAdmin(ctx context.Context, runID uuid.UUID)
 	return &run, nil
 }
 
-// ListByOwner 按用户、知识库分页查询运行记录，按创建时间降序排列。
+// ListByOwner 按用户、知识库、会话、状态和模式分页查询运行记录，按创建时间降序排列。
+// conversationID、status 和 executionMode 为空值时不按对应条件过滤。
 // page 从 1 开始，pageSize 为每页条数。
-func (r *agentRunRepository) ListByOwner(ctx context.Context, userID, kbID uuid.UUID, page, pageSize int) ([]entity.AgentRun, int64, error) {
+func (r *agentRunRepository) ListByOwner(ctx context.Context, userID, kbID, conversationID uuid.UUID, status, executionMode string, page, pageSize int) ([]entity.AgentRun, int64, error) {
 	var runs []entity.AgentRun
 	var total int64
 
 	query := r.db.WithContext(ctx).Model(&entity.AgentRun{}).
 		Where("user_id = ? AND knowledge_base_id = ?", userID, kbID)
+	if conversationID != uuid.Nil {
+		query = query.Where("conversation_id = ?", conversationID)
+	}
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+	if executionMode != "" {
+		query = query.Where("execution_mode = ?", executionMode)
+	}
 
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
@@ -144,18 +153,26 @@ func (r *agentRunRepository) MarkCompleted(ctx context.Context, runID uuid.UUID,
 		Updates(updates).Error
 }
 
-// MarkFailed 更新运行状态为 failed，记录错误码、错误信息和结束时间。
-func (r *agentRunRepository) MarkFailed(ctx context.Context, runID uuid.UUID, errorCode, errorMessage string) error {
+// MarkFailed 更新运行状态为 failed，记录错误码、错误信息、执行模式、Token 用量、耗时和结束时间。
+func (r *agentRunRepository) MarkFailed(ctx context.Context, runID uuid.UUID, errorCode, errorMessage, executionMode string, durationMs int64, inputTokens, outputTokens, totalTokens int) error {
 	now := time.Now().UTC()
+	updates := map[string]interface{}{
+		"status":        "failed",
+		"error_code":    errorCode,
+		"error_message": errorMessage,
+		"input_tokens":  inputTokens,
+		"output_tokens": outputTokens,
+		"total_tokens":  totalTokens,
+		"duration_ms":   durationMs,
+		"ended_at":      now,
+	}
+	if executionMode != "" {
+		updates["execution_mode"] = executionMode
+	}
 	return r.db.WithContext(ctx).
 		Model(&entity.AgentRun{}).
 		Where("id = ?", runID).
-		Updates(map[string]interface{}{
-			"status":        "failed",
-			"error_code":    errorCode,
-			"error_message": errorMessage,
-			"ended_at":      now,
-		}).Error
+		Updates(updates).Error
 }
 
 // MarkCancelled 更新运行状态为 cancelled（需同时验证用户 ID 确保所有者可取消）。
@@ -189,6 +206,14 @@ func (r *agentRunRepository) MarkCancelledAdmin(ctx context.Context, runID uuid.
 		}).Error
 }
 
+// SetAssistantMessageID 设置运行记录的助手消息 ID。
+func (r *agentRunRepository) SetAssistantMessageID(ctx context.Context, runID uuid.UUID, assistantMessageID uuid.UUID) error {
+	return r.db.WithContext(ctx).
+		Model(&entity.AgentRun{}).
+		Where("id = ?", runID).
+		Update("assistant_message_id", assistantMessageID).Error
+}
+
 // CreateRetry 基于失败运行创建新的排队运行，返回新运行 ID。
 // 新运行的 retry_of_run_id 指向原始运行，其他字段从原始运行复制。
 func (r *agentRunRepository) CreateRetry(ctx context.Context, originalRunID, userID uuid.UUID) (uuid.UUID, error) {
@@ -201,12 +226,7 @@ func (r *agentRunRepository) CreateRetry(ctx context.Context, originalRunID, use
 			return fmt.Errorf("查找原始运行记录失败: %w", err)
 		}
 
-		// 2. 只允许对 failed 状态创建重试
-		if original.Status != "failed" {
-			return errors.New("仅允许对失败状态的运行创建重试")
-		}
-
-		// 3. 创建新运行，从原始运行复制关键字段
+		// 2. 创建新运行，从原始运行复制关键字段
 		retry := &entity.AgentRun{
 			UserID:          original.UserID,
 			KnowledgeBaseID: original.KnowledgeBaseID,
@@ -227,6 +247,13 @@ func (r *agentRunRepository) CreateRetry(ctx context.Context, originalRunID, use
 		return uuid.Nil, err
 	}
 	return newID, nil
+}
+
+// DeleteByConversationID 删除指定会话的所有 Agent 运行记录。
+func (r *agentRunRepository) DeleteByConversationID(ctx context.Context, conversationID uuid.UUID) error {
+	return r.db.WithContext(ctx).
+		Where("conversation_id = ?", conversationID).
+		Delete(&entity.AgentRun{}).Error
 }
 
 // 编译时确保实现接口

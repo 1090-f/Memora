@@ -19,6 +19,8 @@ export const queryKeys = {
     ['knowledge-bases', knowledgeBaseId, 'import-tasks'] as const,
   conversations: (knowledgeBaseId: string) =>
     ['knowledge-bases', knowledgeBaseId, 'conversations'] as const,
+  conversationMessages: (conversationId: string) =>
+    ['conversations', conversationId, 'messages'] as const,
   agentRuns: ['agent-runs'] as const,
   memories: ['memories'] as const,
   mcpServers: ['mcp', 'servers'] as const,

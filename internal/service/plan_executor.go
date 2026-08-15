@@ -12,6 +12,11 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// StepEventCallback 是步骤事件回调函数的类型。
+// 通过回调发布步骤事件，保持 service 层不依赖 core 包。
+// runID: 运行 ID, stepNo: 步骤序号, title: 步骤标题
+type StepEventCallback func(ctx context.Context, runID contracts.ID, stepNo int, title string) error
+
 // PlanExecutorService 实现 contracts.PlanExecutor 接口。
 type PlanExecutorService struct {
 	toolExecutor   contracts.ToolExecutor
@@ -19,6 +24,15 @@ type PlanExecutorService struct {
 	modelFactory   contracts.ModelFactory
 	maxToolCalls   int
 	maxResultBytes int
+	// 步骤事件回调，由 PlanRunner 在调用 Execute 时设置，用于实时发布步骤生命周期事件。
+	onStepStarted   StepEventCallback
+	onStepCompleted StepEventCallback
+	onUsage         PlanUsageCallback // 可选：token 消耗回调
+}
+
+// SetUsageCallback 设置 token 消耗回调。
+func (s *PlanExecutorService) SetUsageCallback(cb PlanUsageCallback) {
+	s.onUsage = cb
 }
 
 // NewPlanExecutorService 创建 PlanExecutorService 实例。
@@ -36,6 +50,13 @@ func NewPlanExecutorService(
 		maxToolCalls:   maxToolCalls,
 		maxResultBytes: maxResultBytes,
 	}
+}
+
+// SetStepEventCallbacks 设置步骤事件回调，用于发布步骤生命周期事件。
+// 由 PlanRunner 在 Run 时调用，参考 ReAct 的回调模式设计。
+func (s *PlanExecutorService) SetStepEventCallbacks(onStarted, onCompleted StepEventCallback) {
+	s.onStepStarted = onStarted
+	s.onStepCompleted = onCompleted
 }
 
 // Execute 实现 contracts.PlanExecutor 接口。
@@ -118,6 +139,17 @@ func (s *PlanExecutorService) executeStep(ctx context.Context, agentContext cont
 		return fmt.Errorf("update step status: %w", err)
 	}
 
+	// 发布步骤开始事件（前端据此实时更新步骤状态为 running）
+	if s.onStepStarted != nil {
+		if err := s.onStepStarted(ctx, plan.RunID, step.StepNo, step.Title); err != nil {
+			logger.Warn("发布步骤开始事件失败",
+				zap.String("plan_id", string(plan.ID)),
+				zap.Int("step_no", step.StepNo),
+				zap.Error(err),
+			)
+		}
+	}
+
 	// 使用 LLM 决定是否需要调用工具
 	toolCall, err := s.decideToolCall(ctx, agentContext, plan, step)
 	if err != nil {
@@ -163,6 +195,17 @@ func (s *PlanExecutorService) executeStep(ctx context.Context, agentContext cont
 		}
 	}
 
+	// 发布步骤完成事件（前端据此实时更新步骤状态为 completed）
+	if s.onStepCompleted != nil {
+		if err := s.onStepCompleted(ctx, plan.RunID, step.StepNo, step.Title); err != nil {
+			logger.Warn("发布步骤完成事件失败",
+				zap.String("plan_id", string(plan.ID)),
+				zap.Int("step_no", step.StepNo),
+				zap.Error(err),
+			)
+		}
+	}
+
 	logger.Info("步骤执行完成",
 		zap.String("plan_id", string(plan.ID)),
 		zap.Int("step_no", step.StepNo),
@@ -196,6 +239,11 @@ func (s *PlanExecutorService) decideToolCall(ctx context.Context, agentContext c
 	})
 	if err != nil {
 		return nil, fmt.Errorf("chat with model: %w", err)
+	}
+
+	// 记录 token 消耗
+	if s.onUsage != nil {
+		s.onUsage(response.Usage.InputTokens, response.Usage.OutputTokens, response.Usage.TotalTokens)
 	}
 
 	// 解析响应

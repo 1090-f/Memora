@@ -5,19 +5,25 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cloudwego/eino/adk"
+
 	"github.com/1090-f/Memora/internal/agent/tools"
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/repository"
+	"github.com/1090-f/Memora/pkg/logger"
+	"go.uber.org/zap"
 )
 
 // contextBuilder 是 contracts.ContextBuilder 接口的实现。
 // 使用固定插槽 + 结构化标签策略组装 AgentContext。
 type contextBuilder struct {
-	agentConfigRepo  repository.AgentConfigRepository
-	convCtxService   contracts.ConversationContextService
-	memoryRetriever  contracts.MemoryRetriever
-	retrievalSvc     contracts.RetrievalService
-	mcpToolRefresher *tools.MCPToolRefresher // 可选：MCP 工具刷新器（第一层校验）
+	agentConfigRepo    repository.AgentConfigRepository
+	convCtxService     contracts.ConversationContextService
+	memoryRetriever    contracts.MemoryRetriever
+	retrievalSvc       contracts.RetrievalService
+	mcpToolRefresher   *tools.MCPToolRefresher // 可选：MCP 工具刷新器（第一层校验）
+	toolRegistry       contracts.ToolRegistry  // 可选：工具注册表，用于检测已注册的 MCP 工具
+	toolsConfigBuilder func() adk.ToolsConfig  // 可选：构建本次运行的 ADK 工具配置
 }
 
 // NewContextBuilder 创建新的上下文构建器实例。
@@ -26,12 +32,14 @@ func NewContextBuilder(
 	convCtxService contracts.ConversationContextService,
 	memoryRetriever contracts.MemoryRetriever,
 	retrievalSvc contracts.RetrievalService,
+	toolRegistry contracts.ToolRegistry,
 ) contracts.ContextBuilder {
 	return &contextBuilder{
 		agentConfigRepo: agentConfigRepo,
 		convCtxService:  convCtxService,
 		memoryRetriever: memoryRetriever,
 		retrievalSvc:    retrievalSvc,
+		toolRegistry:    toolRegistry,
 	}
 }
 
@@ -40,8 +48,11 @@ func (b *contextBuilder) SetMCPToolRefresher(refresher *tools.MCPToolRefresher) 
 	b.mcpToolRefresher = refresher
 }
 
-// Build 根据请求构建 AgentContext。
-// 采用固定优先级插槽策略组装上下文。
+// SetToolsConfigBuilder 注入 ADK 工具配置构建器。
+func (b *contextBuilder) SetToolsConfigBuilder(builder func() adk.ToolsConfig) {
+	b.toolsConfigBuilder = builder
+}
+
 func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRequest) (contracts.AgentContext, error) {
 	// ====== 双层校验机制的第一层：Agent 启动前刷新 MCP 工具列表 ======
 	// 在构建上下文之前，先刷新该用户的 MCP 工具列表。
@@ -53,7 +64,10 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 		refreshErr := b.mcpToolRefresher.RefreshForUserWithTimeout(ctx, string(req.UserID), 3*time.Second)
 		if refreshErr != nil {
 			// 刷新失败不阻断核心流程，降级处理：Agent 将只使用内置工具
-			fmt.Printf("警告: MCP 工具列表刷新失败（用户 %s），降级处理: %v\n", req.UserID, refreshErr)
+			logger.Warn("MCP 工具列表刷新失败，降级处理",
+				zap.String("user_id", string(req.UserID)),
+				zap.Error(refreshErr),
+			)
 		}
 	}
 
@@ -86,6 +100,9 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 
 		// 记忆上下文（固定插槽 - 可选）
 		Memories: []contracts.MemoryQueryResult{},
+	}
+	if b.toolsConfigBuilder != nil {
+		agentCtx.ToolsConfig = b.toolsConfigBuilder()
 	}
 
 	// 3. 并行获取对话上下文、记忆和知识状态（如果启用）
@@ -177,6 +194,30 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 		agentCtx.KnowledgeStatus = ""
 	} else {
 		agentCtx.KnowledgeStatus = retrievalRes.knowledgeStatus
+	}
+
+	// 自动启用网络：当注册表中存在 MCP 类型工具时，自动将 NetworkEnabled 设为 true。
+	// 因为 MCP 工具（如 baidu_search）必然需要网络访问，且用户已在 MCP 管理页面显式启用了这些工具。
+	if !agentCtx.NetworkEnabled && b.toolRegistry != nil {
+		for _, spec := range b.toolRegistry.Specs() {
+			if spec.Type == contracts.ToolTypeMCP && spec.Enabled {
+				agentCtx.NetworkEnabled = true
+				logger.Debug("自动启用网络：检测到已注册的 MCP 工具",
+					zap.String("tool_name", spec.Name),
+					zap.String("source_id", spec.SourceID),
+				)
+				break
+			}
+		}
+	}
+
+	// 日志：记录当前注册的工具数量（用于诊断工具注册问题）
+	if b.mcpToolRefresher != nil {
+		logger.Debug("AgentContext 构建完成，注册表工具状态",
+			zap.Any("allowed_tools", agentCtx.AllowedTools),
+			zap.Bool("network_enabled", agentCtx.NetworkEnabled),
+			zap.String("chat_model_id", agentCtx.ChatModelID),
+		)
 	}
 
 	return agentCtx, nil

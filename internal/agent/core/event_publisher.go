@@ -15,7 +15,7 @@ type EventPublisher interface {
 	Publish(ctx context.Context, event contracts.AgentEvent) error
 	PublishRunStarted(ctx context.Context, runID contracts.ID, mode contracts.ExecutionMode) error
 	PublishRunCompleted(ctx context.Context, runID contracts.ID, result contracts.AgentRunResult) error
-	PublishRunFailed(ctx context.Context, runID contracts.ID, err error) error
+	PublishRunFailed(ctx context.Context, runID contracts.ID, mode contracts.ExecutionMode, err error) error
 	PublishRunCancelled(ctx context.Context, runID contracts.ID) error
 	PublishRouterSelected(ctx context.Context, runID contracts.ID, decision contracts.RouterDecision) error
 	// PublishReactRoundStarted 发布 ReAct 轮次开始事件。
@@ -28,6 +28,10 @@ type EventPublisher interface {
 	PublishToolCallCompleted(ctx context.Context, runID contracts.ID, callID contracts.ID, toolName string, success bool, summary string) error
 	// PublishAnswerDelta 发布流式回答增量事件。
 	PublishAnswerDelta(ctx context.Context, runID contracts.ID, delta string) error
+	// PublishPlanCreated 发布计划创建事件，携带完整的 Plan 结构供前端展示。
+	PublishPlanCreated(ctx context.Context, runID contracts.ID, plan contracts.Plan) error
+	// PublishPlanReplanned 发布计划重新规划事件，携带更新后的 Plan。
+	PublishPlanReplanned(ctx context.Context, runID contracts.ID, plan contracts.Plan) error
 }
 
 // NoopEventPublisher 用于未接入事件存储时保持执行链路可运行。
@@ -40,8 +44,10 @@ func (NoopEventPublisher) PublishRunStarted(context.Context, contracts.ID, contr
 func (NoopEventPublisher) PublishRunCompleted(context.Context, contracts.ID, contracts.AgentRunResult) error {
 	return nil
 }
-func (NoopEventPublisher) PublishRunFailed(context.Context, contracts.ID, error) error { return nil }
-func (NoopEventPublisher) PublishRunCancelled(context.Context, contracts.ID) error     { return nil }
+func (NoopEventPublisher) PublishRunFailed(context.Context, contracts.ID, contracts.ExecutionMode, error) error {
+	return nil
+}
+func (NoopEventPublisher) PublishRunCancelled(context.Context, contracts.ID) error { return nil }
 func (NoopEventPublisher) PublishRouterSelected(context.Context, contracts.ID, contracts.RouterDecision) error {
 	return nil
 }
@@ -58,6 +64,12 @@ func (NoopEventPublisher) PublishToolCallCompleted(context.Context, contracts.ID
 	return nil
 }
 func (NoopEventPublisher) PublishAnswerDelta(context.Context, contracts.ID, string) error { return nil }
+func (NoopEventPublisher) PublishPlanCreated(context.Context, contracts.ID, contracts.Plan) error {
+	return nil
+}
+func (NoopEventPublisher) PublishPlanReplanned(context.Context, contracts.ID, contracts.Plan) error {
+	return nil
+}
 
 // SequencedEventPublisher 为每个 Run 分配单调递增的事件序号。
 type SequencedEventPublisher struct {
@@ -103,8 +115,11 @@ func (p *SequencedEventPublisher) PublishRunStarted(ctx context.Context, id cont
 func (p *SequencedEventPublisher) PublishRunCompleted(ctx context.Context, id contracts.ID, result contracts.AgentRunResult) error {
 	return p.publish(ctx, id, contracts.EventRunCompleted, map[string]any{"final_result": result.FinalResult})
 }
-func (p *SequencedEventPublisher) PublishRunFailed(ctx context.Context, id contracts.ID, runErr error) error {
-	return p.publish(ctx, id, contracts.EventRunFailed, map[string]any{"error_code": errorCode(runErr)})
+func (p *SequencedEventPublisher) PublishRunFailed(ctx context.Context, id contracts.ID, mode contracts.ExecutionMode, runErr error) error {
+	return p.publish(ctx, id, contracts.EventRunFailed, map[string]any{
+		"execution_mode": mode,
+		"error_code":     errorCode(runErr),
+	})
 }
 func (p *SequencedEventPublisher) PublishRunCancelled(ctx context.Context, id contracts.ID) error {
 	return p.publish(ctx, id, contracts.EventRunCancelled, nil)
@@ -140,4 +155,26 @@ func (p *SequencedEventPublisher) PublishToolCallCompleted(ctx context.Context, 
 
 func (p *SequencedEventPublisher) PublishAnswerDelta(ctx context.Context, id contracts.ID, delta string) error {
 	return p.publish(ctx, id, contracts.EventAnswerDelta, map[string]any{"delta": delta})
+}
+
+func (p *SequencedEventPublisher) PublishPlanCreated(ctx context.Context, id contracts.ID, plan contracts.Plan) error {
+	// 构建计划创建的 payload，包含计划结构信息供前端渲染
+	return p.publish(ctx, id, contracts.EventPlanCreated, map[string]any{
+		"plan_id": plan.ID,
+		"version": plan.Version,
+		"goal":    plan.Goal,
+		"steps":   plan.Steps,
+		"status":  plan.Status,
+	})
+}
+
+func (p *SequencedEventPublisher) PublishPlanReplanned(ctx context.Context, id contracts.ID, plan contracts.Plan) error {
+	// 构建重新规划的 payload，包含更新后的计划和重新规划原因
+	return p.publish(ctx, id, contracts.EventPlanReplanned, map[string]any{
+		"plan_id": plan.ID,
+		"version": plan.Version,
+		"goal":    plan.Goal,
+		"steps":   plan.Steps,
+		"status":  plan.Status,
+	})
 }

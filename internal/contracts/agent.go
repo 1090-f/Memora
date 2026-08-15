@@ -2,6 +2,7 @@ package contracts
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -31,6 +32,15 @@ type AgentRunRequest struct {
 	Config  AgentConfig  `json:"config"`  // 运行配置
 }
 
+// AgentRunError 表示已经确定执行模式后发生的运行失败。
+type AgentRunError struct {
+	ExecutionMode ExecutionMode
+	Err           error
+}
+
+func (e *AgentRunError) Error() string { return fmt.Sprintf("%s: %v", e.ExecutionMode, e.Err) }
+func (e *AgentRunError) Unwrap() error { return e.Err }
+
 // AgentRunResult 表示已完成的 Agent 执行运行的结果。
 type AgentRunResult struct {
 	RunID           ID            `json:"run_id"`           // 运行 ID
@@ -49,6 +59,6 @@ type AgentRunService interface {
 	Run(ctx context.Context, request AgentRunRequest) (AgentRunResult, error)
 	// Cancel 停止一个正在运行的 Agent 执行。
 	Cancel(ctx context.Context, runID, userID ID) error
-	// Retry 重新启动一个失败的 Agent 执行并返回新的运行 ID。
+	// Retry 重新启动已有的 Agent 执行并返回新的运行 ID。
 	Retry(ctx context.Context, runID, userID ID) (ID, error)
 }

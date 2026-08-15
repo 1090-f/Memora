@@ -209,7 +209,7 @@ func (ctrl *Controller) GetRun(c *gin.Context) {
 	response.Success(c, http.StatusOK, toRunResponse(run))
 }
 
-// ListRuns 处理 GET /api/v1/agent/runs，按用户和知识库分页查询运行记录。
+// ListRuns 处理 GET /api/v1/agent/runs，按用户、知识库和会话分页查询运行记录。
 func (ctrl *Controller) ListRuns(c *gin.Context) {
 	user, ok := middleware.GetUser(c)
 	if !ok {
@@ -222,6 +222,9 @@ func (ctrl *Controller) ListRuns(c *gin.Context) {
 		response.Failure(c, apperrors.ErrInvalidArgument)
 		return
 	}
+	conversationID := c.Query("conversation_id")
+	status := c.Query("status")
+	executionMode := c.Query("execution_mode")
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
@@ -242,8 +245,16 @@ func (ctrl *Controller) ListRuns(c *gin.Context) {
 		response.Failure(c, apperrors.ErrInvalidArgument)
 		return
 	}
+	conversationUUID := uuid.Nil
+	if conversationID != "" {
+		conversationUUID, err = uuid.Parse(conversationID)
+		if err != nil {
+			response.Failure(c, apperrors.ErrInvalidArgument)
+			return
+		}
+	}
 
-	runs, total, err := ctrl.runRepo.ListByOwner(c.Request.Context(), userID, kbUUID, page, pageSize)
+	runs, total, err := ctrl.runRepo.ListByOwner(c.Request.Context(), userID, kbUUID, conversationUUID, status, executionMode, page, pageSize)
 	if err != nil {
 		response.Failure(c, apperrors.ErrInternal)
 		return
@@ -277,7 +288,7 @@ func (ctrl *Controller) CancelRun(c *gin.Context) {
 	response.Success(c, http.StatusOK, gin.H{"cancelled": true})
 }
 
-// RetryRun 处理 POST /api/v1/agent/runs/:id/retry，基于失败运行创建新的排队运行。
+// RetryRun 处理 POST /api/v1/agent/runs/:id/retry，基于已有运行创建新的排队运行。
 func (ctrl *Controller) RetryRun(c *gin.Context) {
 	user, ok := middleware.GetUser(c)
 	if !ok {
@@ -317,6 +328,12 @@ func (ctrl *Controller) SubscribeEvents(c *gin.Context) {
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no") // 禁用 Nginx 缓冲，确保流式推送的实时性
+
+	// 禁用 WriteTimeout：SSE 是长期流式连接，HTTP Server 的全局 WriteTimeout
+	// 会强制中断流式推送。使用 http.ResponseController 将写入截止时间置零。
+	if rc := http.NewResponseController(c.Writer); rc != nil {
+		rc.SetWriteDeadline(time.Time{}) // zero value = no deadline
+	}
 
 	// 3. 订阅事件通道
 	eventCh, err := ctrl.eventSub.Subscribe(c.Request.Context(), runID, afterSeq)
@@ -362,6 +379,14 @@ func (ctrl *Controller) SubscribeEvents(c *gin.Context) {
 			//   data: {"event_id":"...","sequence":1,...}
 			fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event.EventType, eventData)
 			c.Writer.Flush()
+
+			// 终端事件处理：Agent 运行已结束（完成/失败/取消），无需继续等待。
+			// 立即退出循环避免 handler 长时间空转占用连接。
+			if event.EventType == contracts.EventRunCompleted ||
+				event.EventType == contracts.EventRunFailed ||
+				event.EventType == contracts.EventRunCancelled {
+				return
+			}
 		}
 	}
 }
@@ -460,12 +485,13 @@ func toRunResponse(run *entity.AgentRun) *respdto.AgentRunResponse {
 // toRunListItem 将 AgentRun 实体转换为列表项 DTO。
 func toRunListItem(run *entity.AgentRun) *respdto.AgentRunListItem {
 	item := &respdto.AgentRunListItem{
-		ID:          run.ID.String(),
-		Query:       run.Query,
-		Status:      run.Status,
-		TotalTokens: run.TotalTokens,
-		DurationMs:  run.DurationMs,
-		CreatedAt:   run.CreatedAt,
+		ID:             run.ID.String(),
+		ConversationID: run.ConversationID.String(),
+		Query:          run.Query,
+		Status:         run.Status,
+		TotalTokens:    run.TotalTokens,
+		DurationMs:     run.DurationMs,
+		CreatedAt:      run.CreatedAt,
 	}
 	if run.ExecutionMode != nil {
 		mode := *run.ExecutionMode

@@ -22,11 +22,20 @@ type PlannerPromptConfig struct {
 	User   string `yaml:"user"`
 }
 
+// PlanUsageCallback 是 Plan 模式下 token 消耗的回调类型。
+type PlanUsageCallback func(inputTokens, outputTokens, totalTokens int)
+
 // PlannerService 实现 contracts.Planner 接口。
 type PlannerService struct {
 	modelFactory contracts.ModelFactory
 	promptConfig PlannerPromptConfig
 	maxSteps     int
+	onUsage      PlanUsageCallback // 可选：token 消耗回调
+}
+
+// SetUsageCallback 设置 token 消耗回调。
+func (s *PlannerService) SetUsageCallback(cb PlanUsageCallback) {
+	s.onUsage = cb
 }
 
 // NewPlannerService 创建 PlannerService 实例。
@@ -89,6 +98,11 @@ func (s *PlannerService) Plan(ctx context.Context, agentContext contracts.AgentC
 	})
 	if err != nil {
 		return contracts.Plan{}, fmt.Errorf("chat with model: %w", err)
+	}
+
+	// 记录 token 消耗
+	if s.onUsage != nil {
+		s.onUsage(response.Usage.InputTokens, response.Usage.OutputTokens, response.Usage.TotalTokens)
 	}
 
 	// 解析响应

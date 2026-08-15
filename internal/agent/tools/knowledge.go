@@ -29,8 +29,27 @@ func NewKnowledgeSearchTool(service contracts.RetrievalService) *KnowledgeSearch
 
 // Spec 返回注册表和 Executor 使用的静态安全规格。
 func (t *KnowledgeSearchTool) Spec() contracts.ToolSpec {
-	return contracts.ToolSpec{Name: KnowledgeSearchToolName, Description: "在当前知识库中检索相关文档片段", Type: contracts.ToolTypeBuiltin, ReadOnly: true, Enabled: true, MaxCalls: 10}
+	return contracts.ToolSpec{
+		Name:        KnowledgeSearchToolName,
+		Description: "检索当前知识库中的相关资料",
+		InputSchema: knowledgeSearchInputSchema,
+		Type:        contracts.ToolTypeBuiltin,
+		ReadOnly:    true,
+		Enabled:     true,
+		MaxCalls:    10,
+	}
 }
+
+// knowledgeSearchInputSchema 是 knowledge_search 工具的 JSON Schema 入参定义。
+var knowledgeSearchInputSchema = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"query": {"type": "string", "description": "要检索的问题或关键词"},
+		"mode": {"type": "string", "description": "检索模式：keyword（关键词）、vector（向量）、hybrid（混合）", "enum": ["keyword", "vector", "hybrid"]},
+		"top_k": {"type": "integer", "description": "返回结果条数，最大 20"}
+	},
+	"required": ["query"]
+}`)
 
 // Info 返回给模型的工具名称、用途和固定 JSON 参数模式。
 func (t *KnowledgeSearchTool) Info(context.Context) (*schema.ToolInfo, error) {

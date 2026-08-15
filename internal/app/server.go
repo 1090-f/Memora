@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/1090-f/Memora/internal/agent/adkcore"
 	"github.com/1090-f/Memora/internal/agent/core"
 	"github.com/1090-f/Memora/internal/agent/tools"
 	"github.com/1090-f/Memora/internal/ai"
@@ -33,6 +34,9 @@ import (
 	jwtmanager "github.com/1090-f/Memora/pkg/jwt"
 	"github.com/1090-f/Memora/pkg/logger"
 	"github.com/1090-f/Memora/pkg/objectstore"
+	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -212,21 +216,23 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	conversationRepo := repository.NewConversationRepository(a.db)
 	conversationService := service.NewConversationService(conversationRepo)
 
-	contextBuilder := service.NewContextBuilder(agentConfigs, convCtxService, memoryRetriever, retrievalService)
-
-	// 初始化 RouterService（Phase 4）
-	// 使用用户配置的 ChatModelID 做路由判断
-	llmRouter := service.NewLLMRouter(modelFactory)
-	routerService := service.NewRouterService(llmRouter)
-
-	// 初始化工具注册表和执行器
+	// 初始化工具注册表和执行器（Phase 3.5）
 	// 注册内置只读工具：知识检索 + 文档阅读
+	// 必须在 ContextBuilder 之前创建，因为 ContextBuilder 需要访问工具注册表
 	toolRegistry, err := tools.NewBuiltinRegistry(retrievalService, documentReader)
 	if err != nil {
 		_ = a.Close()
 		return fmt.Errorf("初始化工具注册表失败: %w", err)
 	}
 	toolExecutor := tools.NewExecutor(toolRegistry)
+
+	// 初始化 ContextBuilder（Phase 3）
+	contextBuilder := service.NewContextBuilder(agentConfigs, convCtxService, memoryRetriever, retrievalService, toolRegistry)
+
+	// 初始化 RouterService（Phase 4）
+	// 使用用户配置的 ChatModelID 做路由判断
+	llmRouter := service.NewLLMRouter(modelFactory)
+	routerService := service.NewRouterService(llmRouter)
 
 	// 初始化 MCP ImportService（用于 MCP Server 和工具管理）
 	// 使用前面已创建的 mcpServers 和 mcpTools 仓库
@@ -269,13 +275,6 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 
 	replanService := service.NewReplanService(plannerService, planStateStore, cfg.Agent.MaxReplans)
 
-	// 初始化 ReAct Agent 服务（Phase 6）
-	reactService, err := service.NewReactService(modelFactory, toolExecutor, toolRegistry, "internal/ai/prompts/react.yaml")
-	if err != nil {
-		_ = a.Close()
-		return fmt.Errorf("初始化 ReactService 失败: %w", err)
-	}
-
 	// 初始化事件发布器与订阅器（Phase 7）：使用 Redis Pub/Sub 实现实时事件推送。
 	// eventPub 将 AgentEvent 序列化为 JSON 后发布到 Redis 频道；
 	// eventSub 从同一频道过滤出指定 runID 的事件供 SSE 端点使用。
@@ -284,22 +283,42 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	// 用带序列号的发布器包装底层 Redis 发布器，确保事件序号单调递增。
 	sequencedEvents := core.NewSequencedEventPublisher(eventPub)
 
-	// 初始化 ReactRunner（ReAct 模式执行器）
-	reactRunner := core.NewReactRunner(reactService, sequencedEvents)
-
-	// 初始化 PlanRunner（Plan-Execute 模式执行器）
-	planRunner := core.NewPlanRunner(plannerService, planExecutorService, reviewerService, replanService, planStateStore)
+	// 初始化 PlanRunner（Plan-Execute 模式执行器），供路由后的 Plan-Execute 调用。
+	planRunner := core.NewPlanRunner(plannerService, planExecutorService, reviewerService, replanService, planStateStore, sequencedEvents)
 
 	// 初始化 Agent 运行和工具调用 Repository
 	agentRunRepo := repository.NewAgentRunRepository(a.db)
 	toolCallRepo := repository.NewToolCallRepository(a.db)
 
-	// 创建 Repository 适配器，使 repository.AgentRunRepository 适配 core.RunRepository 接口
-	runRepoAdapter := &agentRunRepoAdapter{repo: agentRunRepo}
+	// 注入 ADK 工具配置构建器：每次构建 AgentContext 时从最新的注册表快照生成 ToolsConfig。
+	// 这样 MCP 工具刷新后会自动反映到下一次 Agent 执行中。
+	if cb, ok := contextBuilder.(interface{ SetToolsConfigBuilder(func() adk.ToolsConfig) }); ok {
+		cb.SetToolsConfigBuilder(func() adk.ToolsConfig {
+			return adkcore.BuildToolsConfig(toolRegistry, toolExecutor)
+		})
+	}
 
-	// 初始化 Agent Core Service，作为 contracts.AgentRunService 的实现
-	agentCoreService := core.NewService(reactRunner, routerService, runRepoAdapter, sequencedEvents)
-	agentCoreService.SetPlanRunner(planRunner)
+	// 使用统一模型工厂获取原生 Eino ChatModel，供 ADK ChatModelAgent 使用。
+	adkModelFactory := func(ctx context.Context, modelConfigID contracts.ID) (model.BaseModel[*schema.Message], error) {
+		return ai.GetEinoChatModel(ctx, modelFactory, modelConfigID)
+	}
+	adkRunner := adkcore.NewADKReactRunner(
+		adkModelFactory,
+		func(_ context.Context, request contracts.AgentRunRequest) (string, error) {
+			return request.Context.ToPromptWithTags(), nil
+		},
+		contracts.AgentConfig{
+			MaxReactRounds:     contracts.DefaultAgentConfig().MaxReactRounds,
+			MaxPlanSteps:       cfg.Agent.MaxPlanSteps,
+			MaxReplans:         cfg.Agent.MaxReplans,
+			ReviewerRuns:       cfg.Agent.ReviewerRuns,
+			MaxToolCalls:       cfg.Agent.MaxToolCalls,
+			MaxToolResultBytes: cfg.Agent.MaxToolResultBytes,
+			MaxRunSeconds:      cfg.Agent.MaxRunSeconds,
+		},
+	)
+	adkService := adkcore.NewService(adkRunner, planRunner, routerService, sequencedEvents, core.NewCitationCollector(), &agentRunRepoAdapter{repo: agentRunRepo})
+	var agentCoreService contracts.AgentRunService = adkService
 
 	// 初始化 Agent 运行管理的 HTTP 控制器，注入事件订阅器以支持 SSE 流式事件推送
 	agentController := agent.NewController(
@@ -317,6 +336,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	agentWorker := worker.NewAgentWorker(
 		agentCoreService,
 		agentRunRepo,
+		messages,
 		contextBuilder,
 		worker.DefaultAgentWorkerConfig(),
 	)
@@ -354,6 +374,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		MemoryRepo:      memoryRepo,
 		AgentController: agentController,
 		Conversations:   conversationService,
+		Messages:        messages,
 		PostgresHealth:  func(ctx context.Context) error { return database.CheckPostgres(ctx, a.db) },
 		RedisHealth:     func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
 		MinIOHealth:     a.store.Health,
@@ -430,7 +451,7 @@ func (a *agentRunRepoAdapter) Cancel(ctx context.Context, runID, userID contract
 	return a.repo.MarkCancelled(ctx, uid, rid)
 }
 
-// Retry 基于失败运行创建新的排队运行，返回新运行 ID。
+// Retry 基于已有运行创建新的排队运行，返回新运行 ID。
 func (a *agentRunRepoAdapter) Retry(ctx context.Context, runID, userID contracts.ID) (contracts.ID, error) {
 	uid, err := uuid.Parse(string(userID))
 	if err != nil {
