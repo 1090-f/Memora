@@ -170,7 +170,7 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 		)
 		// 标记运行失败，避免一直处于 running 状态
 		failureMessage := fmt.Sprintf("构建上下文失败: %v", err)
-		if markErr := w.runRepo.MarkFailed(execCtx, run.ID, "context_build_error", failureMessage, "", time.Since(startedAt).Milliseconds()); markErr != nil {
+		if markErr := w.runRepo.MarkFailed(execCtx, run.ID, "context_build_error", failureMessage, "", time.Since(startedAt).Milliseconds(), 0, 0, 0); markErr != nil {
 			logger.Error("标记运行失败状态出错", zap.String("run_id", run.ID.String()), zap.Error(markErr))
 		}
 		// 创建失败状态的助手消息，确保问答页面能够展示本次运行失败的结果。
@@ -197,9 +197,12 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 		logger.Error("Agent 运行执行失败",
 			zap.String("run_id", run.ID.String()),
 			zap.String("execution_mode", executionMode),
+			zap.Int("input_tokens", result.Usage.InputTokens),
+			zap.Int("output_tokens", result.Usage.OutputTokens),
+			zap.Int("total_tokens", result.Usage.TotalTokens),
 			zap.Error(err),
 		)
-		if markErr := w.runRepo.MarkFailed(context.Background(), run.ID, "agent_run_error", err.Error(), executionMode, time.Since(startedAt).Milliseconds()); markErr != nil {
+		if markErr := w.runRepo.MarkFailed(context.Background(), run.ID, "agent_run_error", err.Error(), executionMode, time.Since(startedAt).Milliseconds(), result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens); markErr != nil {
 			logger.Error("标记 Agent 运行失败状态出错", zap.String("run_id", run.ID.String()), zap.Error(markErr))
 		}
 		// 创建失败状态的助手消息，向用户反馈本次运行执行失败。

@@ -209,7 +209,7 @@ func (ctrl *Controller) GetRun(c *gin.Context) {
 	response.Success(c, http.StatusOK, toRunResponse(run))
 }
 
-// ListRuns 处理 GET /api/v1/agent/runs，按用户和知识库分页查询运行记录。
+// ListRuns 处理 GET /api/v1/agent/runs，按用户、知识库和会话分页查询运行记录。
 func (ctrl *Controller) ListRuns(c *gin.Context) {
 	user, ok := middleware.GetUser(c)
 	if !ok {
@@ -222,6 +222,9 @@ func (ctrl *Controller) ListRuns(c *gin.Context) {
 		response.Failure(c, apperrors.ErrInvalidArgument)
 		return
 	}
+	conversationID := c.Query("conversation_id")
+	status := c.Query("status")
+	executionMode := c.Query("execution_mode")
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
@@ -242,8 +245,16 @@ func (ctrl *Controller) ListRuns(c *gin.Context) {
 		response.Failure(c, apperrors.ErrInvalidArgument)
 		return
 	}
+	conversationUUID := uuid.Nil
+	if conversationID != "" {
+		conversationUUID, err = uuid.Parse(conversationID)
+		if err != nil {
+			response.Failure(c, apperrors.ErrInvalidArgument)
+			return
+		}
+	}
 
-	runs, total, err := ctrl.runRepo.ListByOwner(c.Request.Context(), userID, kbUUID, page, pageSize)
+	runs, total, err := ctrl.runRepo.ListByOwner(c.Request.Context(), userID, kbUUID, conversationUUID, status, executionMode, page, pageSize)
 	if err != nil {
 		response.Failure(c, apperrors.ErrInternal)
 		return
@@ -474,12 +485,13 @@ func toRunResponse(run *entity.AgentRun) *respdto.AgentRunResponse {
 // toRunListItem 将 AgentRun 实体转换为列表项 DTO。
 func toRunListItem(run *entity.AgentRun) *respdto.AgentRunListItem {
 	item := &respdto.AgentRunListItem{
-		ID:          run.ID.String(),
-		Query:       run.Query,
-		Status:      run.Status,
-		TotalTokens: run.TotalTokens,
-		DurationMs:  run.DurationMs,
-		CreatedAt:   run.CreatedAt,
+		ID:             run.ID.String(),
+		ConversationID: run.ConversationID.String(),
+		Query:          run.Query,
+		Status:         run.Status,
+		TotalTokens:    run.TotalTokens,
+		DurationMs:     run.DurationMs,
+		CreatedAt:      run.CreatedAt,
 	}
 	if run.ExecutionMode != nil {
 		mode := *run.ExecutionMode

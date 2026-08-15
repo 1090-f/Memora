@@ -20,8 +20,8 @@ type AgentRunRepository interface {
 	// FindByIDAdmin 根据运行 ID 直接查找（用于 Worker，跳过用户过滤）。
 	FindByIDAdmin(ctx context.Context, runID uuid.UUID) (*entity.AgentRun, error)
 
-	// ListByOwner 按用户、知识库分页查询运行记录，按创建时间降序排列。
-	ListByOwner(ctx context.Context, userID, kbID uuid.UUID, page, pageSize int) ([]entity.AgentRun, int64, error)
+	// ListByOwner 按用户、知识库、会话、状态和模式分页查询运行记录，按创建时间降序排列。
+	ListByOwner(ctx context.Context, userID, kbID, conversationID uuid.UUID, status, executionMode string, page, pageSize int) ([]entity.AgentRun, int64, error)
 
 	// ListQueued 获取所有 queued 状态的运行记录（用于 Worker 批量领取）。
 	ListQueued(ctx context.Context, limit int) ([]entity.AgentRun, error)
@@ -36,8 +36,9 @@ type AgentRunRepository interface {
 	// MarkCompleted 更新运行状态为 completed，记录最终结果、Token 用量、耗时、执行模式、知识状态和结束时间。
 	MarkCompleted(ctx context.Context, runID uuid.UUID, finalResult string, inputTokens, outputTokens, totalTokens int, durationMs int64, executionMode, knowledgeStatus string) error
 
-	// MarkFailed 更新运行状态为 failed，记录错误码、错误信息、执行模式、耗时和结束时间。
-	MarkFailed(ctx context.Context, runID uuid.UUID, errorCode, errorMessage, executionMode string, durationMs int64) error
+	// MarkFailed 更新运行状态为 failed，记录错误码、错误信息、执行模式、Token 用量、耗时和结束时间。
+	// inputTokens/outputTokens/totalTokens 用于记录失败前已消耗的 Token。
+	MarkFailed(ctx context.Context, runID uuid.UUID, errorCode, errorMessage, executionMode string, durationMs int64, inputTokens, outputTokens, totalTokens int) error
 
 	// MarkCancelled 更新运行状态为 cancelled（需同时验证用户 ID 确保所有者可取消）。
 	MarkCancelled(ctx context.Context, userID, runID uuid.UUID) error
@@ -50,4 +51,7 @@ type AgentRunRepository interface {
 
 	// CreateRetry 基于已有运行创建新的排队运行（retry_of_run_id 指向原运行），返回新运行 ID。
 	CreateRetry(ctx context.Context, originalRunID, userID uuid.UUID) (uuid.UUID, error)
+
+	// DeleteByConversationID 删除指定会话的所有 Agent 运行记录。
+	DeleteByConversationID(ctx context.Context, conversationID uuid.UUID) error
 }

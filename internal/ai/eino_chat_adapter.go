@@ -20,6 +20,19 @@ type einoChatModelAdapter struct {
 	model model.ToolCallingChatModel
 }
 
+// GetEinoChatModel 从统一模型工厂获取 ADK 所需的原生 Eino ChatModel。
+func GetEinoChatModel(ctx context.Context, factory contracts.ModelFactory, modelConfigID contracts.ID) (model.BaseChatModel, error) {
+	chatModel, err := factory.GetChatModel(ctx, modelConfigID)
+	if err != nil {
+		return nil, err
+	}
+	adapter, ok := chatModel.(*einoChatModelAdapter)
+	if !ok {
+		return nil, fmt.Errorf("chat model does not expose an Eino base model")
+	}
+	return adapter.model, nil
+}
+
 // Generate 实现 contracts.ChatModel.Generate。
 func (a *einoChatModelAdapter) Generate(ctx context.Context, request contracts.ChatRequest) (contracts.ChatResponse, error) {
 	// 转换消息格式（包含 ToolCallID 和 ToolCalls 映射）
@@ -131,6 +144,9 @@ func (a *einoChatModelAdapter) Stream(ctx context.Context, request contracts.Cha
 		defer close(eventChan)
 		defer stream.Close()
 
+		// 跟踪最后一条消息的 Usage，部分 LLM 实现在最后一个事件中携带 Usage
+		var lastUsage *contracts.TokenUsage
+
 		for {
 			event, recvErr := stream.Recv()
 			if recvErr != nil {
@@ -140,17 +156,17 @@ func (a *einoChatModelAdapter) Stream(ctx context.Context, request contracts.Cha
 						zap.Error(recvErr),
 					)
 				}
-				// 流正常结束或异常终止，发送 Done 事件
-				usage := &contracts.TokenUsage{}
-				// 尝试从 event 中获取最后一条消息的用法
-				if event != nil && event.ResponseMeta != nil && event.ResponseMeta.Usage != nil {
-					usage.InputTokens = event.ResponseMeta.Usage.PromptTokens
-					usage.OutputTokens = event.ResponseMeta.Usage.CompletionTokens
-					usage.TotalTokens = event.ResponseMeta.Usage.TotalTokens
+				// 如果主循环中未捕获到 Usage，尝试从 event 中提取（部分实现在 EOF 时返回最后一个消息）
+				if lastUsage == nil && event != nil && event.ResponseMeta != nil && event.ResponseMeta.Usage != nil {
+					lastUsage = &contracts.TokenUsage{
+						InputTokens:  event.ResponseMeta.Usage.PromptTokens,
+						OutputTokens: event.ResponseMeta.Usage.CompletionTokens,
+						TotalTokens:  event.ResponseMeta.Usage.TotalTokens,
+					}
 				}
 				eventChan <- contracts.ChatStreamEvent{
 					Done:  true,
-					Usage: usage,
+					Usage: lastUsage,
 				}
 				return
 			}
@@ -169,6 +185,14 @@ func (a *einoChatModelAdapter) Stream(ctx context.Context, request contracts.Cha
 					}
 				}
 				out.ToolCalls = tcs
+			}
+			// 从每个事件中提取 Usage，确保即使主循环中处理的事件携带 Usage 也不会丢失
+			if event.ResponseMeta != nil && event.ResponseMeta.Usage != nil {
+				lastUsage = &contracts.TokenUsage{
+					InputTokens:  event.ResponseMeta.Usage.PromptTokens,
+					OutputTokens: event.ResponseMeta.Usage.CompletionTokens,
+					TotalTokens:  event.ResponseMeta.Usage.TotalTokens,
+				}
 			}
 			eventChan <- out
 		}

@@ -77,11 +77,19 @@ func (s *conversationService) ListByKnowledgeBase(ctx context.Context, userID, k
 }
 
 // Update 更新会话标题。
+// 标题最多保留前15个字符（按UTF-8字符计数，支持中文）。
 func (s *conversationService) Update(ctx context.Context, userID, conversationID, title string) error {
 	conversation, err := s.conversations.FindByID(ctx, conversationID, userID)
 	if err != nil {
 		return err
 	}
+
+	// 截断标题为最多15个字符
+	runes := []rune(title)
+	if len(runes) > 15 {
+		title = string(runes[:15])
+	}
+
 	conversation.Title = title
 	return s.conversations.Update(ctx, conversation)
 }

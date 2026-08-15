@@ -1,12 +1,30 @@
-export type AgentRunStatus = 'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type AgentRunStatus =
+  | 'idle'
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
 export type AgentEventType =
-  | 'agent.run.queued' | 'agent.run.started' | 'agent.run.completed' | 'agent.run.failed' | 'agent.run.cancelled'
+  | 'agent.run.queued'
+  | 'agent.run.started'
+  | 'agent.run.completed'
+  | 'agent.run.failed'
+  | 'agent.run.cancelled'
   | 'agent.router.completed'
-  | 'agent.plan.created' | 'agent.plan.replanned'
-  | 'agent.step.started' | 'agent.step.completed'
-  | 'agent.react.round.started' | 'agent.react.round.completed'
-  | 'agent.tool.started' | 'agent.tool.completed' | 'agent.tool.call.failed'
-  | 'agent.answer.delta' | 'citation.created' | 'usage.updated' | 'memory.updated';
+  | 'agent.plan.created'
+  | 'agent.plan.replanned'
+  | 'agent.step.started'
+  | 'agent.step.completed'
+  | 'agent.react.round.started'
+  | 'agent.react.round.completed'
+  | 'agent.tool.started'
+  | 'agent.tool.completed'
+  | 'agent.tool.call.failed'
+  | 'agent.answer.delta'
+  | 'citation.created'
+  | 'usage.updated'
+  | 'memory.updated';
 
 export interface AgentEvent {
   run_id: string;
@@ -14,6 +32,18 @@ export interface AgentEvent {
   timestamp: string;
   type: AgentEventType;
   payload: Record<string, unknown>;
+}
+
+export interface AgentRunListItem {
+  id: string;
+  conversation_id: string;
+  query: string;
+  execution_mode?: 'react' | 'plan_execute';
+  status: Exclude<AgentRunStatus, 'idle'>;
+  total_tokens: number;
+  duration_ms?: number;
+  error_code?: string;
+  created_at: string;
 }
 
 export interface AgentRun {
@@ -54,12 +84,39 @@ export interface AgentRunViewState {
   highest_sequence: number;
   status: AgentRunStatus;
   answer: string;
-  router: { execution_mode: 'react' | 'plan_execute'; reason_summary: string } | null;
-  plan: { version: number; reason_summary?: string; steps: Array<{ step_no: number; title: string; status: string; error_message?: string }> } | null;
-  rounds: Array<{ round_no: number; status: string; action_summary: string; tool_name?: string }>;
-  tools: Array<{ tool_call_id: string; tool_name: string; status: string; input_summary?: string; output_summary?: string }>;
+  router: {
+    execution_mode: 'react' | 'plan_execute';
+    reason_summary: string;
+  } | null;
+  plan: {
+    version: number;
+    reason_summary?: string;
+    steps: Array<{
+      step_no: number;
+      title: string;
+      status: string;
+      error_message?: string;
+    }>;
+  } | null;
+  rounds: Array<{
+    round_no: number;
+    status: string;
+    action_summary: string;
+    tool_name?: string;
+  }>;
+  tools: Array<{
+    tool_call_id: string;
+    tool_name: string;
+    status: string;
+    input_summary?: string;
+    output_summary?: string;
+  }>;
   citations: Array<Record<string, unknown>>;
-  usage: { input_tokens: number; output_tokens: number; total_tokens: number } | null;
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+  } | null;
   error: { code: string; message: string } | null;
   resumable: boolean;
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/1090-f/Memora/internal/contracts"
@@ -57,21 +58,48 @@ func (r *planRunner) Run(ctx context.Context, agentCtx contracts.AgentContext, c
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(cfg.MaxRunSeconds)*time.Second)
 	defer cancel()
 
+	// 创建线程安全的 token 用量累计器（executeStep 可能并行执行）
+	var usageMu sync.Mutex
+	var totalUsage contracts.TokenUsage
+
+	// 设置 token 消耗回调，各 service 在每次模型调用后累加用量
+	r.planner.SetUsageCallback(func(inputTokens, outputTokens, totalTokens int) {
+		usageMu.Lock()
+		totalUsage.InputTokens += inputTokens
+		totalUsage.OutputTokens += outputTokens
+		totalUsage.TotalTokens += totalTokens
+		usageMu.Unlock()
+	})
+	r.executor.SetUsageCallback(func(inputTokens, outputTokens, totalTokens int) {
+		usageMu.Lock()
+		totalUsage.InputTokens += inputTokens
+		totalUsage.OutputTokens += outputTokens
+		totalUsage.TotalTokens += totalTokens
+		usageMu.Unlock()
+	})
+	r.reviewer.SetUsageCallback(func(inputTokens, outputTokens, totalTokens int) {
+		usageMu.Lock()
+		totalUsage.InputTokens += inputTokens
+		totalUsage.OutputTokens += outputTokens
+		totalUsage.TotalTokens += totalTokens
+		usageMu.Unlock()
+	})
+
 	var lastReview contracts.ReviewerResult
 	var lastPlan contracts.Plan
 
 	for replanCount := 0; replanCount <= cfg.MaxReplans; replanCount++ {
 		if err := ctx.Err(); err != nil {
-			return RunOutput{}, err
+			return RunOutput{Usage: totalUsage}, err
 		}
 		if err := (DefaultBudgetController{Config: cfg}).CheckRunDuration(startedAt); err != nil {
-			return RunOutput{}, err
+			return RunOutput{Usage: totalUsage}, err
 		}
 
 		// 1. 生成计划
 		plan, err := r.planner.Plan(ctx, agentCtx, cfg)
 		if err != nil {
-			return RunOutput{}, newCoreError(contracts.ErrModelCallFailed, err)
+			return RunOutput{Usage: totalUsage}, newCoreError(contracts.ErrModelCallFailed, err)
 		}
 
 		// 2. 保存计划到数据库
@@ -92,9 +120,7 @@ func (r *planRunner) Run(ctx context.Context, agentCtx contracts.AgentContext, c
 		}
 
 		// 设置步骤事件回调，让 PlanExecutorService 在执行步骤时实时发布生命周期事件。
-		// 参考 ReAct 的回调模式：PlanRunner 持有 EventPublisher，通过闭包桥接到 service 层。
 		r.executor.SetStepEventCallbacks(
-			// onStepStarted：步骤开始时发布 step.started 事件
 			func(ctx context.Context, runID contracts.ID, stepNo int, title string) error {
 				return r.events.Publish(ctx, contracts.AgentEvent{
 					RunID:     runID,
@@ -102,7 +128,6 @@ func (r *planRunner) Run(ctx context.Context, agentCtx contracts.AgentContext, c
 					Data:      mustMarshal(map[string]any{"step_no": stepNo, "title": title, "status": "running"}),
 				})
 			},
-			// onStepCompleted：步骤完成时发布 step.completed 事件
 			func(ctx context.Context, runID contracts.ID, stepNo int, title string) error {
 				return r.events.Publish(ctx, contracts.AgentEvent{
 					RunID:     runID,
@@ -115,13 +140,13 @@ func (r *planRunner) Run(ctx context.Context, agentCtx contracts.AgentContext, c
 		// 3. 执行计划
 		plan, err = r.executor.Execute(ctx, agentCtx, plan)
 		if err != nil {
-			return RunOutput{}, newCoreError(contracts.ErrInternal, err)
+			return RunOutput{Usage: totalUsage}, newCoreError(contracts.ErrInternal, err)
 		}
 
 		// 4. 审查计划
 		review, err := r.reviewer.Review(ctx, agentCtx, plan)
 		if err != nil {
-			return RunOutput{}, newCoreError(contracts.ErrModelCallFailed, err)
+			return RunOutput{Usage: totalUsage}, newCoreError(contracts.ErrModelCallFailed, err)
 		}
 
 		lastPlan = plan
@@ -129,7 +154,7 @@ func (r *planRunner) Run(ctx context.Context, agentCtx contracts.AgentContext, c
 
 		// 5. 检查是否需要重新规划
 		if strings.EqualFold(strings.TrimSpace(lastReview.Result), "failed") {
-			return RunOutput{}, newCoreError(contracts.ErrInternal, fmt.Errorf("plan review failed"))
+			return RunOutput{Usage: totalUsage}, newCoreError(contracts.ErrInternal, fmt.Errorf("plan review failed"))
 		}
 
 		if !r.replanService.ShouldReplan(plan, review) || replanCount == cfg.MaxReplans {
@@ -144,10 +169,10 @@ func (r *planRunner) Run(ctx context.Context, agentCtx contracts.AgentContext, c
 
 		plan, err = r.replanService.Replan(ctx, agentCtx, plan)
 		if err != nil {
-			return RunOutput{}, newCoreError(contracts.ErrInternal, err)
+			return RunOutput{Usage: totalUsage}, newCoreError(contracts.ErrInternal, err)
 		}
 
-		// 发布计划重新规划事件，前端据此更新计划展示面板（版本递增、步骤刷新）
+		// 发布计划重新规划事件
 		if err := r.events.PublishPlanReplanned(ctx, agentCtx.RunID, plan); err != nil {
 			logger.Warn("发布计划重新规划事件失败",
 				zap.String("plan_id", string(plan.ID)),
@@ -162,12 +187,13 @@ func (r *planRunner) Run(ctx context.Context, agentCtx contracts.AgentContext, c
 		result = strings.TrimSpace(lastPlan.Goal)
 	}
 	if result == "" {
-		return RunOutput{}, newCoreError(contracts.ErrInternal, fmt.Errorf("plan result is empty"))
+		return RunOutput{Usage: totalUsage}, newCoreError(contracts.ErrInternal, fmt.Errorf("plan result is empty"))
 	}
 
 	return RunOutput{
 		FinalResult:     result,
 		Summary:         result,
+		Usage:           totalUsage,
 		KnowledgeStatus: agentCtx.KnowledgeStatus,
 	}, nil
 }

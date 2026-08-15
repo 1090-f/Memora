@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, ContentCopyOutlined, ReplayOutlined } from '@mui/icons-material';
+import { CheckOutlined, ChevronLeft, ChevronRight, ContentCopyOutlined, ReplayOutlined } from '@mui/icons-material';
 import { Box, Button, IconButton, Paper, Stack, Tooltip, Typography } from '@mui/material';
 import { useEffect, useRef, useState } from 'react';
 import { MarkdownViewer } from '@/features/document/components/preview/MarkdownViewer';
@@ -254,9 +254,7 @@ function MessageActionButtons({ isUser, content, agentRunId, onRetry }: {
       <Tooltip title={copied ? '已复制' : '复制内容'} placement={isUser ? 'bottom' : 'bottom-end'}>
         <IconButton size="small" onClick={handleCopy} sx={{ width: 28, height: 28 }}>
           {copied ? (
-            <Typography variant="caption" sx={{ fontSize: '0.65rem', fontWeight: 600, color: 'success.main' }}>
-              已复制
-            </Typography>
+            <CheckOutlined sx={{ fontSize: '0.9rem', color: 'success.main' }} />
           ) : (
             <ContentCopyOutlined sx={{ fontSize: '0.9rem' }} />
           )}

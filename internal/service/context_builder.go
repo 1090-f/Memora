@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cloudwego/eino/adk"
+
 	"github.com/1090-f/Memora/internal/agent/tools"
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/repository"
@@ -15,12 +17,13 @@ import (
 // contextBuilder 是 contracts.ContextBuilder 接口的实现。
 // 使用固定插槽 + 结构化标签策略组装 AgentContext。
 type contextBuilder struct {
-	agentConfigRepo  repository.AgentConfigRepository
-	convCtxService   contracts.ConversationContextService
-	memoryRetriever  contracts.MemoryRetriever
-	retrievalSvc     contracts.RetrievalService
-	mcpToolRefresher *tools.MCPToolRefresher // 可选：MCP 工具刷新器（第一层校验）
-	toolRegistry     contracts.ToolRegistry  // 可选：工具注册表，用于检测已注册的 MCP 工具
+	agentConfigRepo    repository.AgentConfigRepository
+	convCtxService     contracts.ConversationContextService
+	memoryRetriever    contracts.MemoryRetriever
+	retrievalSvc       contracts.RetrievalService
+	mcpToolRefresher   *tools.MCPToolRefresher // 可选：MCP 工具刷新器（第一层校验）
+	toolRegistry       contracts.ToolRegistry  // 可选：工具注册表，用于检测已注册的 MCP 工具
+	toolsConfigBuilder func() adk.ToolsConfig  // 可选：构建本次运行的 ADK 工具配置
 }
 
 // NewContextBuilder 创建新的上下文构建器实例。
@@ -45,8 +48,11 @@ func (b *contextBuilder) SetMCPToolRefresher(refresher *tools.MCPToolRefresher) 
 	b.mcpToolRefresher = refresher
 }
 
-// Build 根据请求构建 AgentContext。
-// 采用固定优先级插槽策略组装上下文。
+// SetToolsConfigBuilder 注入 ADK 工具配置构建器。
+func (b *contextBuilder) SetToolsConfigBuilder(builder func() adk.ToolsConfig) {
+	b.toolsConfigBuilder = builder
+}
+
 func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRequest) (contracts.AgentContext, error) {
 	// ====== 双层校验机制的第一层：Agent 启动前刷新 MCP 工具列表 ======
 	// 在构建上下文之前，先刷新该用户的 MCP 工具列表。
@@ -94,6 +100,9 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 
 		// 记忆上下文（固定插槽 - 可选）
 		Memories: []contracts.MemoryQueryResult{},
+	}
+	if b.toolsConfigBuilder != nil {
+		agentCtx.ToolsConfig = b.toolsConfigBuilder()
 	}
 
 	// 3. 并行获取对话上下文、记忆和知识状态（如果启用）

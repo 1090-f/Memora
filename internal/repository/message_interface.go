@@ -15,4 +15,7 @@ type MessageRepository interface {
 	ListByConversation(ctx context.Context, conversationID string, limit int, offset int) ([]entity.Message, error)
 	// CountByConversation 统计会话的消息数量。
 	CountByConversation(ctx context.Context, conversationID string) (int64, error)
+
+	// DeleteByConversationID 删除指定会话的所有消息。
+	DeleteByConversationID(ctx context.Context, conversationID string) error
 }

@@ -34,14 +34,15 @@ type AgentRunResponse struct {
 
 // AgentRunListItem 表示 Agent 运行列表项（不含最终结果和详细轨迹）。
 type AgentRunListItem struct {
-	ID            string    `json:"id"`                       // ID 运行 ID
-	Query         string    `json:"query"`                    // Query 用户查询原文
-	ExecutionMode *string   `json:"execution_mode,omitempty"` // ExecutionMode 执行模式
-	Status        string    `json:"status"`                   // Status 运行状态
-	TotalTokens   int       `json:"total_tokens"`             // TotalTokens 总 Token 数
-	DurationMs    *int64    `json:"duration_ms,omitempty"`    // DurationMs 执行耗时（毫秒）
-	ErrorCode     *string   `json:"error_code,omitempty"`     // ErrorCode 错误码
-	CreatedAt     time.Time `json:"created_at"`               // CreatedAt 创建时间
+	ID             string    `json:"id"`                       // ID 运行 ID
+	ConversationID string    `json:"conversation_id"`          // ConversationID 所属会话 ID
+	Query          string    `json:"query"`                    // Query 用户查询原文
+	ExecutionMode  *string   `json:"execution_mode,omitempty"` // ExecutionMode 执行模式
+	Status         string    `json:"status"`                   // Status 运行状态
+	TotalTokens    int       `json:"total_tokens"`             // TotalTokens 总 Token 数
+	DurationMs     *int64    `json:"duration_ms,omitempty"`    // DurationMs 执行耗时（毫秒）
+	ErrorCode      *string   `json:"error_code,omitempty"`     // ErrorCode 错误码
+	CreatedAt      time.Time `json:"created_at"`               // CreatedAt 创建时间
 }
 
 // AgentRunList 表示 Agent 运行记录的分页列表响应。

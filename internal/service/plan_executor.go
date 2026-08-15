@@ -13,7 +13,7 @@ import (
 )
 
 // StepEventCallback 是步骤事件回调函数的类型。
-// 参考 ReactService.RunReActLoop 的回调模式，保持 service 层不依赖 core 包。
+// 通过回调发布步骤事件，保持 service 层不依赖 core 包。
 // runID: 运行 ID, stepNo: 步骤序号, title: 步骤标题
 type StepEventCallback func(ctx context.Context, runID contracts.ID, stepNo int, title string) error
 
@@ -27,6 +27,12 @@ type PlanExecutorService struct {
 	// 步骤事件回调，由 PlanRunner 在调用 Execute 时设置，用于实时发布步骤生命周期事件。
 	onStepStarted   StepEventCallback
 	onStepCompleted StepEventCallback
+	onUsage         PlanUsageCallback // 可选：token 消耗回调
+}
+
+// SetUsageCallback 设置 token 消耗回调。
+func (s *PlanExecutorService) SetUsageCallback(cb PlanUsageCallback) {
+	s.onUsage = cb
 }
 
 // NewPlanExecutorService 创建 PlanExecutorService 实例。
@@ -233,6 +239,11 @@ func (s *PlanExecutorService) decideToolCall(ctx context.Context, agentContext c
 	})
 	if err != nil {
 		return nil, fmt.Errorf("chat with model: %w", err)
+	}
+
+	// 记录 token 消耗
+	if s.onUsage != nil {
+		s.onUsage(response.Usage.InputTokens, response.Usage.OutputTokens, response.Usage.TotalTokens)
 	}
 
 	// 解析响应
