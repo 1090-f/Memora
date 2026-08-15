@@ -649,7 +649,12 @@ func (s *importService) CheckToolAvailable(ctx context.Context, userID contracts
 	if spec.Type != contracts.ToolTypeMCP || spec.SourceID == "" {
 		return true, nil
 	}
-	enabled, err := s.tools.IsEnabled(ctx, string(userID), spec.SourceID, spec.Name)
+	// spec.Name 是复合格式 "serverID::toolName"，数据库只存原始 toolName，需提取后半部分。
+	rawName := spec.Name
+	if idx := strings.LastIndex(spec.Name, "::"); idx >= 0 {
+		rawName = spec.Name[idx+2:]
+	}
+	enabled, err := s.tools.IsEnabled(ctx, string(userID), spec.SourceID, rawName)
 	if err != nil {
 		return false, fmt.Errorf("check mcp tool availability: %w", err)
 	}
