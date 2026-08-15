@@ -13,7 +13,7 @@ import (
 )
 
 // StepEventCallback 是步骤事件回调函数的类型。
-// 参考 ReactService.RunReActLoop 的回调模式，保持 service 层不依赖 core 包。
+// 通过回调发布步骤事件，保持 service 层不依赖 core 包。
 // runID: 运行 ID, stepNo: 步骤序号, title: 步骤标题
 type StepEventCallback func(ctx context.Context, runID contracts.ID, stepNo int, title string) error
 
