@@ -24,6 +24,7 @@ import {
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { listKnowledgeBases } from '@/features/knowledge-base/api';
+import { listConversations } from '@/features/conversation/api';
 import { getAgentRun, listAgentRuns, retryAgentRun } from '../api';
 import type { AgentRun } from '../types';
 
@@ -77,15 +78,30 @@ export function AgentRunListPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [selectedKbId, setSelectedKbId] = useState('');
+  const [selectedConversationId, setSelectedConversationId] = useState('');
+  const [selectedStatus, setSelectedStatus] = useState('');
+  const [selectedExecutionMode, setSelectedExecutionMode] = useState('');
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(20);
   const knowledgeBasesQuery = useQuery({
     queryKey: ['agent-run-knowledge-bases'],
     queryFn: () => listKnowledgeBases({ page: 1, page_size: 100 }),
   });
+  const conversationsQuery = useQuery({
+    queryKey: ['agent-run-conversations', selectedKbId],
+    queryFn: () => listConversations(selectedKbId, { page: 1, page_size: 100 }),
+    enabled: Boolean(selectedKbId) && !runId,
+  });
   const runsQuery = useQuery({
-    queryKey: ['agent-runs', selectedKbId, page, pageSize],
-    queryFn: () => listAgentRuns({ knowledge_base_id: selectedKbId, page: page + 1, page_size: pageSize }),
+    queryKey: ['agent-runs', selectedKbId, selectedConversationId, selectedStatus, selectedExecutionMode, page, pageSize],
+    queryFn: () => listAgentRuns({
+      knowledge_base_id: selectedKbId,
+      ...(selectedConversationId ? { conversation_id: selectedConversationId } : {}),
+      ...(selectedStatus ? { status: selectedStatus } : {}),
+      ...(selectedExecutionMode ? { execution_mode: selectedExecutionMode } : {}),
+      page: page + 1,
+      page_size: pageSize,
+    }),
     enabled: Boolean(selectedKbId) && !runId,
   });
   const detailQuery = useQuery({
@@ -109,14 +125,55 @@ export function AgentRunListPage() {
     <Stack spacing={3}>
       <Stack direction="row" alignItems="center">
         <Typography component="h2" variant="h5" fontWeight={750} sx={{ flexGrow: 1 }}>Agent 运行记录</Typography>
-        <Button startIcon={<RefreshOutlined />} onClick={() => void queryClient.invalidateQueries({ queryKey: ['agent-runs', selectedKbId] })}>刷新</Button>
+        <Button startIcon={<RefreshOutlined />} onClick={() => void queryClient.invalidateQueries({ queryKey: ['agent-runs', selectedKbId, selectedConversationId, selectedStatus, selectedExecutionMode] })}>刷新</Button>
       </Stack>
-      <FormControl size="small" sx={{ maxWidth: 360 }}>
-        <InputLabel id="run-kb-label">知识库</InputLabel>
-        <Select labelId="run-kb-label" value={selectedKbId} label="知识库" onChange={(e) => { setSelectedKbId(e.target.value); setPage(0); }}>
-          {knowledgeBasesQuery.data?.items.map((kb) => <MenuItem key={kb.id} value={kb.id}>{kb.name}</MenuItem>)}
-        </Select>
-      </FormControl>
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+        <FormControl size="small" sx={{ minWidth: 240 }}>
+          <InputLabel id="run-kb-label">知识库</InputLabel>
+          <Select labelId="run-kb-label" value={selectedKbId} label="知识库" onChange={(e) => {
+            setSelectedKbId(e.target.value);
+            setSelectedConversationId('');
+            setPage(0);
+          }}>
+            {knowledgeBasesQuery.data?.items.map((kb) => <MenuItem key={kb.id} value={kb.id}>{kb.name}</MenuItem>)}
+          </Select>
+        </FormControl>
+        <FormControl size="small" sx={{ minWidth: 280 }} disabled={!selectedKbId}>
+          <InputLabel id="run-conversation-label">会话</InputLabel>
+          <Select labelId="run-conversation-label" value={selectedConversationId} label="会话" onChange={(e) => {
+            setSelectedConversationId(e.target.value);
+            setPage(0);
+          }}>
+            <MenuItem value="">全部会话</MenuItem>
+            {conversationsQuery.data?.items.map((conversation) => (
+              <MenuItem key={conversation.id} value={conversation.id}>
+                {conversation.title || `未命名会话（${conversation.id.slice(0, 8)}）`}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+        <FormControl size="small" sx={{ minWidth: 160 }} disabled={!selectedKbId}>
+          <InputLabel id="run-status-label">状态</InputLabel>
+          <Select labelId="run-status-label" value={selectedStatus} label="状态" onChange={(e) => {
+            setSelectedStatus(e.target.value);
+            setPage(0);
+          }}>
+            <MenuItem value="">全部状态</MenuItem>
+            {Object.entries(statusLabel).map(([value, label]) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
+          </Select>
+        </FormControl>
+        <FormControl size="small" sx={{ minWidth: 180 }} disabled={!selectedKbId}>
+          <InputLabel id="run-mode-label">模式</InputLabel>
+          <Select labelId="run-mode-label" value={selectedExecutionMode} label="模式" onChange={(e) => {
+            setSelectedExecutionMode(e.target.value);
+            setPage(0);
+          }}>
+            <MenuItem value="">全部模式</MenuItem>
+            <MenuItem value="react">ReAct</MenuItem>
+            <MenuItem value="plan_execute">Plan-Execute</MenuItem>
+          </Select>
+        </FormControl>
+      </Stack>
       {!selectedKbId && <Typography color="text.secondary">请选择一个知识库查看运行记录。</Typography>}
       {runsQuery.error && <Alert severity="error">运行记录加载失败，请检查后端服务。</Alert>}
       <Paper variant="outlined">

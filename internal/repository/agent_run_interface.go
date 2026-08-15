@@ -20,8 +20,8 @@ type AgentRunRepository interface {
 	// FindByIDAdmin 根据运行 ID 直接查找（用于 Worker，跳过用户过滤）。
 	FindByIDAdmin(ctx context.Context, runID uuid.UUID) (*entity.AgentRun, error)
 
-	// ListByOwner 按用户、知识库分页查询运行记录，按创建时间降序排列。
-	ListByOwner(ctx context.Context, userID, kbID uuid.UUID, page, pageSize int) ([]entity.AgentRun, int64, error)
+	// ListByOwner 按用户、知识库、会话、状态和模式分页查询运行记录，按创建时间降序排列。
+	ListByOwner(ctx context.Context, userID, kbID, conversationID uuid.UUID, status, executionMode string, page, pageSize int) ([]entity.AgentRun, int64, error)
 
 	// ListQueued 获取所有 queued 状态的运行记录（用于 Worker 批量领取）。
 	ListQueued(ctx context.Context, limit int) ([]entity.AgentRun, error)

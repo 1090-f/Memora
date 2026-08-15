@@ -53,14 +53,24 @@ func (r *agentRunRepository) FindByIDAdmin(ctx context.Context, runID uuid.UUID)
 	return &run, nil
 }
 
-// ListByOwner 按用户、知识库分页查询运行记录，按创建时间降序排列。
+// ListByOwner 按用户、知识库、会话、状态和模式分页查询运行记录，按创建时间降序排列。
+// conversationID、status 和 executionMode 为空值时不按对应条件过滤。
 // page 从 1 开始，pageSize 为每页条数。
-func (r *agentRunRepository) ListByOwner(ctx context.Context, userID, kbID uuid.UUID, page, pageSize int) ([]entity.AgentRun, int64, error) {
+func (r *agentRunRepository) ListByOwner(ctx context.Context, userID, kbID, conversationID uuid.UUID, status, executionMode string, page, pageSize int) ([]entity.AgentRun, int64, error) {
 	var runs []entity.AgentRun
 	var total int64
 
 	query := r.db.WithContext(ctx).Model(&entity.AgentRun{}).
 		Where("user_id = ? AND knowledge_base_id = ?", userID, kbID)
+	if conversationID != uuid.Nil {
+		query = query.Where("conversation_id = ?", conversationID)
+	}
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+	if executionMode != "" {
+		query = query.Where("execution_mode = ?", executionMode)
+	}
 
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
