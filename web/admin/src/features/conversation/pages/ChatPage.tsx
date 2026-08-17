@@ -12,6 +12,7 @@ import { createConversation, listMessages, updateConversation } from '../api';
 import { streamAgentEvents } from '../events';
 import { ChatComposer } from '../components/ChatComposer';
 import { MessageList } from '../components/MessageList';
+import type { AgentRunViewState } from '@/features/agent-run/types';
 import type { Citation, Message } from '../types';
 
 const conversationStorageKey = (kbId: string) => `memora:conversation:${kbId}`;
@@ -99,6 +100,8 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [retryingMessageId, setRetryingMessageId] = useState<string | null>(null);
   const [resumingRun, setResumingRun] = useState(false);
+  const [historicalRunStates, setHistoricalRunStates] = useState<Record<string, AgentRunViewState>>({});
+  const historicalHydratedRef = useRef<Set<string>>(new Set());
 
   /**
    * Wrapper around setMessages that auto-applies merge logic.
@@ -127,6 +130,8 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
     setSubmitting(false);
     hydratedRunIdRef.current = null;
     dispatchRun({ type: 'RESET_AGENT_RUN_STATE' });
+    setHistoricalRunStates({});
+    historicalHydratedRef.current = new Set();
   }, [kbId, conversationId]);
 
   const knowledgeBasesQuery = useQuery({
@@ -209,15 +214,73 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
         if (!controller.signal.aborted) setErrorMessage(error instanceof Error ? error.message : 'Agent 运行轨迹恢复失败');
       } finally {
         if (replayAbortRef.current === controller) replayAbortRef.current = null;
+        setResumingRun(false);
         if (activeConversationIdRef.current === replayConversationId && currentRunId.current === latestRunId) {
           setSubmitting(false);
-          setResumingRun(false);
         }
       }
     })();
 
     return () => controller.abort();
   }, [messagesQuery.data, activeConversationId]);
+
+  // Replay ALL historical (non-latest) agent runs to populate historical run states
+  useEffect(() => {
+    if (!messagesQuery.data || !activeConversationId) return;
+
+    const sortedMessages = [...messagesQuery.data.items].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    const allRunIds = [...new Set(sortedMessages
+      .filter((m) => m.role === 'assistant' && m.agent_run_id)
+      .map((m) => m.agent_run_id))] as string[];
+
+    const latestRunId = allRunIds[allRunIds.length - 1];
+    const historicalRunIds = allRunIds.filter((id) => id !== latestRunId);
+
+    const hydrateConversationId = activeConversationId;
+    const controller = new AbortController();
+
+    void (async () => {
+      for (const runId of historicalRunIds) {
+        if (controller.signal.aborted) break;
+        if (historicalHydratedRef.current.has(runId)) continue;
+        historicalHydratedRef.current.add(runId);
+
+        let state = initialAgentRunState;
+        try {
+          await streamAgentEvents(`${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${runId}/events`, {
+            signal: controller.signal,
+            afterSequence: 0,
+            onEvent: (event) => {
+              if (activeConversationIdRef.current === hydrateConversationId) {
+                state = reduceAgentEvent(state, event);
+              }
+            },
+            timeout: 10000,
+          });
+        } catch {
+          // Stream ended or timeout — use whatever state was accumulated
+        }
+        if (activeConversationIdRef.current === hydrateConversationId) {
+          setHistoricalRunStates((prev) => {
+            if (prev[runId] === state) return prev;
+            return { ...prev, [runId]: state };
+          });
+        }
+      }
+    })();
+
+    return () => controller.abort();
+  }, [messagesQuery.data, activeConversationId]);
+
+  // Sync the live agent run state into historical run states for display
+  useEffect(() => {
+    if (activeRunId && runState.status !== 'idle') {
+      setHistoricalRunStates((prev) => {
+        if (prev[activeRunId] === runState) return prev;
+        return { ...prev, [activeRunId]: runState };
+      });
+    }
+  }, [runState, activeRunId]);
 
   const getConversationId = async () => {
     if (activeConversationId) return activeConversationId;
@@ -241,6 +304,7 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
     currentRunId.current = runId;
     setActiveRunId(runId);
     hydratedRunIdRef.current = runId;
+    setResumingRun(false);
     dispatchRun({ type: 'RESET_AGENT_RUN_STATE' });
     dispatchRun({ type: 'SET_AGENT_RUN_QUEUED' });
     const controller = new AbortController();
@@ -381,7 +445,7 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
       {!enabled && <Alert severity="info" sx={{ m: 2, mb: 0 }}>智能问答后端未启用，请检查服务配置。</Alert>}
       {errorMessage && <Alert severity="error" sx={{ m: 2, mb: 0 }}>{errorMessage}</Alert>}
       {messagesQuery.error && <Alert severity="warning" sx={{ m: 2, mb: 0 }}>历史消息加载失败，请稍后重试。</Alert>}
-      <MessageList messages={messages} streamingAnswer={submitting && !resumingRun ? runState.answer : ''} agentRunState={runState} agentRunId={activeRunId} retryingMessageId={retryingMessageId} resumingRun={resumingRun} emptyComposer={empty ? composer : undefined} onSuggestion={setDraft} onRetry={retry} onSwitchVersion={switchVersion} />
+      <MessageList messages={messages} streamingAnswer={submitting && !resumingRun ? runState.answer : ''} agentRunState={runState} agentRunId={activeRunId} agentRunStates={historicalRunStates} retryingMessageId={retryingMessageId} resumingRun={resumingRun} emptyComposer={empty ? composer : undefined} onSuggestion={setDraft} onRetry={retry} onSwitchVersion={switchVersion} />
     </Stack>
   );
 

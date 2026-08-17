@@ -58,11 +58,12 @@ function getEffectiveContent(message: Message): string {
   return message.content;
 }
 
-export function MessageList({ messages, streamingAnswer, agentRunState, agentRunId, retryingMessageId, resumingRun, emptyComposer, onSuggestion, onRetry, onSwitchVersion }: {
+export function MessageList({ messages, streamingAnswer, agentRunState, agentRunId, agentRunStates, retryingMessageId, resumingRun, emptyComposer, onSuggestion, onRetry, onSwitchVersion }: {
   messages: Message[];
   streamingAnswer: string;
   agentRunState: AgentRunViewState;
   agentRunId: string | null;
+  agentRunStates?: Record<string, AgentRunViewState>;
   retryingMessageId: string | null;
   resumingRun: boolean;
   emptyComposer?: ReactNode;
@@ -88,7 +89,8 @@ export function MessageList({ messages, streamingAnswer, agentRunState, agentRun
   const shouldShowRunUnderUser = agentRunState.status !== 'idle'
     && !retryingMessageId
     && !messages.some((message) => message.role === 'assistant' && message.agent_run_id === agentRunId);
-  const hidePreviousAssistantReply = shouldShowRunUnderUser && resumingRun && Boolean(lastAssistantMsg);
+  const hidePreviousAssistantReply = shouldShowRunUnderUser && resumingRun && Boolean(lastAssistantMsg)
+    && lastAssistantMsg?.agent_run_id === agentRunId;
 
   if (messages.length === 0 && !streamingAnswer) {
     return (
@@ -107,6 +109,16 @@ export function MessageList({ messages, streamingAnswer, agentRunState, agentRun
       <Stack spacing={2.2} sx={{ width: '100%', maxWidth: 980, flexShrink: 0 }}>
       {messages.map((message, idx) => (
         <Box key={message.id}>
+        {/* Historical agent run process — shown above completed assistant messages */}
+        {(() => {
+          const runState = agentRunStates?.[message.agent_run_id ?? ''];
+          return message.role === 'assistant' && message.agent_run_id && message.id !== retryingMessageId
+            && runState && runState.status !== 'idle' && (
+            <Box sx={{ mb: 1.5 }}>
+              <InlineAgentRun state={runState} />
+            </Box>
+          );
+        })()}
         {message.role === 'assistant' && message.id === retryingMessageId && <InlineAgentRun state={agentRunState} />}
         {message.id !== retryingMessageId && !(hidePreviousAssistantReply && message.id === lastAssistantMsg?.id) && <Stack direction={message.role === 'user' ? 'row-reverse' : 'row'} spacing={1.2} alignItems="flex-start" sx={{ mt: message.role === 'assistant' && message.id === retryingMessageId ? 1.2 : 0, width: message.role === 'assistant' ? '100%' : 'fit-content', ml: message.role === 'user' ? 'auto' : 0, maxWidth: message.role === 'user' ? '78%' : '100%' }}> 
           <Box sx={{ width: 34, height: 34, flexShrink: 0, borderRadius: message.role === 'user' ? '50%' : 2, display: 'grid', placeItems: 'center', color: '#fff', background: message.role === 'user' ? 'linear-gradient(145deg,#5683f7,#5862e9)' : 'linear-gradient(145deg,#697af6,#704de5)', boxShadow: '0 7px 16px rgba(75,74,220,.2)', fontSize: 12 }}>
