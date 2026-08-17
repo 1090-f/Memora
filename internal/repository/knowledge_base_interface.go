@@ -2,9 +2,27 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/1090-f/Memora/internal/model/entity"
 )
+
+// KnowledgeBaseImportTrendPoint 表示某个 UTC 自然日创建的导入任务数量。
+type KnowledgeBaseImportTrendPoint struct {
+	Day   time.Time
+	Count int64
+}
+
+// KnowledgeBaseDashboardSnapshot 是知识库仪表盘所需的聚合读模型。
+type KnowledgeBaseDashboardSnapshot struct {
+	DocumentTotal             int64
+	IndexedTotal              int64
+	ProcessingTotal           int64
+	FailedTotal               int64
+	HighestActiveIndexVersion int
+	ImportTrend               []KnowledgeBaseImportTrendPoint
+	RecentTasks               []*entity.ImportTask
+}
 
 // KnowledgeBaseRepository 定义知识库数据访问接口。
 // 所有查询必须包含 user_id 与软删除过滤，禁止先查后验。
@@ -21,4 +39,6 @@ type KnowledgeBaseRepository interface {
 	SoftDelete(ctx context.Context, userID, kbID string) error
 	// CountDocuments 统计知识库内未删除文档数量（列表项 document_count 使用）。
 	CountDocuments(ctx context.Context, userID, kbID string) (int64, error)
+	// GetDashboardSnapshot 聚合知识库健康度、导入趋势和近期活动所需数据。
+	GetDashboardSnapshot(ctx context.Context, userID, kbID string, since time.Time, recentLimit int) (*KnowledgeBaseDashboardSnapshot, error)
 }

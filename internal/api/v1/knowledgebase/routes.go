@@ -8,6 +8,7 @@ func (ctrl *Controller) RegisterRoutes(v1 *gin.RouterGroup, authRequired gin.Han
 	kbs := v1.Group("/knowledge-bases", authRequired)
 	kbs.POST("", ctrl.Create)
 	kbs.GET("", ctrl.List)
+	kbs.GET("/:kb_id/dashboard", ctrl.GetDashboard)
 	kbs.GET("/:kb_id", ctrl.Get)
 	kbs.PATCH("/:kb_id", ctrl.Update)
 	kbs.DELETE("/:kb_id", ctrl.Delete)

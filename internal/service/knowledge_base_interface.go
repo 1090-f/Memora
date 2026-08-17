@@ -15,6 +15,8 @@ type KnowledgeBaseService interface {
 	List(ctx context.Context, userID string, page, pageSize int, keyword string) (*dto.KnowledgeBaseList, error)
 	// Get 查询知识库详情。
 	Get(ctx context.Context, userID, kbID string) (*dto.KnowledgeBaseResponse, error)
+	// GetDashboard 查询知识库健康度、趋势和近期活动。
+	GetDashboard(ctx context.Context, userID, kbID string) (*dto.KnowledgeBaseDashboardResponse, error)
 	// Update 修改知识库基础信息。
 	Update(ctx context.Context, userID, kbID string, req *request.UpdateKnowledgeBaseRequest) (*dto.KnowledgeBaseResponse, error)
 	// Delete 软删除知识库。

@@ -33,6 +33,30 @@ export interface KnowledgeBaseDetail {
   updated_at: string;
 }
 
+export interface KnowledgeBaseImportTrendPoint {
+  date: string;
+  count: number;
+}
+
+export interface KnowledgeBaseActivity {
+  id: string;
+  title: string;
+  description: string;
+  status: string;
+  occurred_at: string;
+}
+
+export interface KnowledgeBaseDashboard {
+  health_score: number;
+  document_total: number;
+  indexed_total: number;
+  processing_total: number;
+  failed_total: number;
+  highest_active_index_version: number;
+  import_trend: KnowledgeBaseImportTrendPoint[];
+  recent_activities: KnowledgeBaseActivity[];
+}
+
 export interface KnowledgeBaseInput {
   name: string;
   description?: string;

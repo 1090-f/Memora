@@ -174,15 +174,6 @@ export interface CreateDirectoryInput {
   sort_order?: number;
 }
 
-export interface CreateManualDocumentInput {
-  title: string;
-  content?: string;
-  format?: 'txt' | 'markdown';
-  directory_id?: string;
-  source_type: 'manual';
-  source_url?: string;
-}
-
 export interface ImportURLInput {
   url: string;
   directory_id?: string;

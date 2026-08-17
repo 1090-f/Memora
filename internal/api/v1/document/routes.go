@@ -21,9 +21,8 @@ func (ctrl *Controller) RegisterRoutes(v1 *gin.RouterGroup, authRequired gin.Han
 	assets := v1.Group("/documents/:document_id/assets")
 	assets.GET("/:asset_id", ctrl.Asset)
 
-	// 知识库域下的文档集合操作（创建/列表）与导入上传分别成组。
+	// 知识库域下的文档集合操作（列表）与导入上传分别成组。
 	kbDocs := v1.Group("/knowledge-bases/:kb_id/documents", authRequired)
-	kbDocs.POST("", ctrl.CreateManual)
 	kbDocs.GET("", ctrl.List)
 	kbDocs.GET("/:document_id/content", ctrl.ReadContent)
 

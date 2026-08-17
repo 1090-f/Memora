@@ -2,6 +2,7 @@ import AddOutlined from '@mui/icons-material/AddOutlined';
 import DeleteOutlineOutlined from '@mui/icons-material/DeleteOutlineOutlined';
 import DescriptionOutlined from '@mui/icons-material/DescriptionOutlined';
 import EditOutlined from '@mui/icons-material/EditOutlined';
+import FolderOutlined from '@mui/icons-material/FolderOutlined';
 import GridViewOutlined from '@mui/icons-material/GridViewOutlined';
 import MenuBookOutlined from '@mui/icons-material/MenuBookOutlined';
 import MoreVertOutlined from '@mui/icons-material/MoreVertOutlined';
@@ -461,6 +462,7 @@ export function KnowledgeBaseListContent({ status }: { status: CapabilityStatus 
         slotProps={{ paper: { sx: { minWidth: 180, borderRadius: 2.5, boxShadow: '0 12px 36px rgba(31,45,90,.16)' } } }}
       >
         {menuTarget && <MenuItem component={Link} to={`/chat/${menuTarget.id}`} onClick={closeMenu}><ListItemIcon><QuestionAnswerOutlined fontSize="small" /></ListItemIcon><ListItemText>开始问答</ListItemText></MenuItem>}
+        {menuTarget && <MenuItem component={Link} to={`/kb/${menuTarget.id}/docs`} onClick={closeMenu}><ListItemIcon><FolderOutlined fontSize="small" /></ListItemIcon><ListItemText>管理文档</ListItemText></MenuItem>}
         {menuTarget && <MenuItem component={Link} to={`/kb/${menuTarget.id}/search-test`} onClick={closeMenu}><ListItemIcon><SearchOutlined fontSize="small" /></ListItemIcon><ListItemText>检索测试</ListItemText></MenuItem>}
         {menuTarget && <MenuItem component={Link} to={`/kb/${menuTarget.id}/settings`} onClick={closeMenu}><ListItemIcon><SettingsOutlined fontSize="small" /></ListItemIcon><ListItemText>知识库设置</ListItemText></MenuItem>}
         {menuTarget && <MenuItem onClick={() => { const target = menuTarget; closeMenu(); openEditor(target); }}><ListItemIcon><EditOutlined fontSize="small" /></ListItemIcon><ListItemText>编辑</ListItemText></MenuItem>}

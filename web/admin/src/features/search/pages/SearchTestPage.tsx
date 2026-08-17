@@ -1,6 +1,5 @@
 import ArrowBackOutlined from '@mui/icons-material/ArrowBackOutlined';
 import SearchOutlined from '@mui/icons-material/SearchOutlined';
-import SettingsOutlined from '@mui/icons-material/SettingsOutlined';
 import {
   Alert,
   Box,
@@ -26,6 +25,7 @@ import { errorMessage } from '@/api/errors';
 import { capabilities, type CapabilityStatus } from '@/app/capabilities';
 import { UnavailableState } from '@/components/shared/UnavailableState';
 import { runSearchTest } from '../api';
+import { SearchConfigPanel } from '../components/SearchConfigPanel';
 import type { SearchMode, SearchResult, SearchTestResponse } from '../types';
 
 const modeLabel: Record<SearchMode, string> = {
@@ -65,7 +65,7 @@ function ResultTable({ items }: { items: SearchResult[] }) {
               <TableCell>{item.final_rank ?? index + 1}</TableCell>
               <TableCell>
                 <Typography fontWeight={700}>{item.document_title || item.citation.document_title || item.document_id}</Typography>
-                <Typography variant="caption" color="text.secondary">索引 v{item.index_version} · Chunk {item.chunk_id.slice(0, 8)}</Typography>
+                <Typography variant="caption" color="text.secondary">片段 {item.chunk_id.slice(0, 8)}</Typography>
               </TableCell>
               <TableCell>
                 <Typography sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{item.content}</Typography>
@@ -142,7 +142,7 @@ function ResultSummary({ result }: { result: SearchTestResponse }) {
   );
 }
 
-export function SearchTestPageContent({ status, kbId }: { status: CapabilityStatus; kbId: string }) {
+export function SearchTestPageContent({ status, kbId, embedded = false }: { status: CapabilityStatus; kbId: string; embedded?: boolean }) {
   const enabled = status === 'available';
   const [query, setQuery] = useState('');
   const [mode, setMode] = useState<SearchMode>('hybrid');
@@ -156,14 +156,15 @@ export function SearchTestPageContent({ status, kbId }: { status: CapabilityStat
 
   return (
     <Stack spacing={3}>
-      <Stack direction={{ xs: 'column', md: 'row' }} alignItems={{ md: 'center' }} gap={1}>
-        <Box sx={{ flexGrow: 1 }}>
-          <Typography component="h2" variant="h5" fontWeight={750}>RAG 检索测试</Typography>
-          <Typography color="text.secondary">验证关键词、向量、RRF、Reranker 和 Citation 的完整检索链路。</Typography>
-        </Box>
-        <Button component={Link} to={`/kb/${kbId}/docs`} startIcon={<ArrowBackOutlined />}>返回文档</Button>
-        <Button component={Link} to={`/kb/${kbId}/settings`} startIcon={<SettingsOutlined />}>检索配置</Button>
-      </Stack>
+      {!embedded && (
+        <Stack direction={{ xs: 'column', md: 'row' }} alignItems={{ md: 'center' }} gap={1}>
+          <Box sx={{ flexGrow: 1 }}>
+            <Typography component="h2" variant="h5" fontWeight={750}>RAG 检索测试</Typography>
+            <Typography color="text.secondary">验证关键词、向量、RRF、Reranker 和 Citation 的完整检索链路。</Typography>
+          </Box>
+          <Button component={Link} to={`/kb/${kbId}/docs`} startIcon={<ArrowBackOutlined />}>返回文档</Button>
+        </Stack>
+      )}
       {!enabled && <UnavailableState title="检索后端待接入" description="检索接口当前不可用。" capability="search" />}
       <Paper component="form" variant="outlined" sx={{ p: 3 }} onSubmit={submit}>
         <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ md: 'flex-start' }}>
@@ -186,6 +187,7 @@ export function SearchTestPageContent({ status, kbId }: { status: CapabilityStat
           </Button>
         </Stack>
       </Paper>
+      {enabled && <SearchConfigPanel kbId={kbId} />}
       {mutation.error && <Alert severity="error">{errorMessage(mutation.error)}</Alert>}
       {mutation.data && <ResultSummary result={mutation.data} />}
     </Stack>

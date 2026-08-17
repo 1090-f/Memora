@@ -1,7 +1,12 @@
 package logger
 
 import (
+	"errors"
+	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/1090-f/Memora/pkg/config"
 
@@ -11,14 +16,55 @@ import (
 )
 
 var (
-	log   *zap.Logger
-	sugar *zap.SugaredLogger
+	log          = zap.NewNop()
+	sugar        = log.Sugar()
+	outputCloser io.Closer
 )
 
 // Init 初始化日志系统
 func Init(cfg *config.LogConfig) error {
-	// 日志编码器配置
-	encoderConfig := zapcore.EncoderConfig{
+	if cfg == nil {
+		return errors.New("日志配置不能为空")
+	}
+	if err := ensureLogDir(cfg.Filename); err != nil {
+		return fmt.Errorf("创建日志目录: %w", err)
+	}
+	if err := closeOutput(); err != nil {
+		return fmt.Errorf("关闭旧日志输出: %w", err)
+	}
+
+	level := parseLevel(cfg.Level)
+	cores := []zapcore.Core{
+		zapcore.NewCore(
+			zapcore.NewConsoleEncoder(newConsoleEncoderConfig()),
+			zapcore.AddSync(os.Stdout),
+			level,
+		),
+	}
+
+	if cfg.Filename != "" {
+		fileWriter := &lumberjack.Logger{
+			Filename:   cfg.Filename,
+			MaxSize:    cfg.MaxSize,
+			MaxBackups: cfg.MaxBackups,
+			MaxAge:     cfg.MaxAge,
+			Compress:   cfg.Compress,
+		}
+		outputCloser = fileWriter
+		cores = append(cores, zapcore.NewCore(
+			zapcore.NewJSONEncoder(newJSONEncoderConfig()),
+			zapcore.AddSync(fileWriter),
+			level,
+		))
+	}
+
+	log = zap.New(zapcore.NewTee(cores...), zap.AddCaller(), zap.AddCallerSkip(1), zap.AddStacktrace(zapcore.ErrorLevel))
+	sugar = log.Sugar()
+	return nil
+}
+
+func newBaseEncoderConfig() zapcore.EncoderConfig {
+	return zapcore.EncoderConfig{
 		TimeKey:        "time",
 		LevelKey:       "level",
 		NameKey:        "logger",
@@ -27,53 +73,56 @@ func Init(cfg *config.LogConfig) error {
 		MessageKey:     "msg",
 		StacktraceKey:  "stacktrace",
 		LineEnding:     zapcore.DefaultLineEnding,
-		EncodeLevel:    zapcore.LowercaseLevelEncoder,
-		EncodeTime:     zapcore.ISO8601TimeEncoder,
+		EncodeTime:     zapcore.TimeEncoderOfLayout("2006-01-02 15:04:05"),
 		EncodeDuration: zapcore.SecondsDurationEncoder,
 		EncodeCaller:   zapcore.ShortCallerEncoder,
 	}
+}
 
-	// 日志级别
-	level := zapcore.InfoLevel
-	switch cfg.Level {
+func newConsoleEncoderConfig() zapcore.EncoderConfig {
+	cfg := newBaseEncoderConfig()
+	cfg.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	cfg.ConsoleSeparator = "  "
+	return cfg
+}
+
+func newJSONEncoderConfig() zapcore.EncoderConfig {
+	cfg := newBaseEncoderConfig()
+	cfg.EncodeLevel = zapcore.LowercaseLevelEncoder
+	return cfg
+}
+
+func parseLevel(raw string) zapcore.Level {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "debug":
-		level = zapcore.DebugLevel
-	case "info":
-		level = zapcore.InfoLevel
+		return zapcore.DebugLevel
 	case "warn":
-		level = zapcore.WarnLevel
+		return zapcore.WarnLevel
 	case "error":
-		level = zapcore.ErrorLevel
+		return zapcore.ErrorLevel
+	default:
+		return zapcore.InfoLevel
 	}
+}
 
-	// 文件输出
-	fileWriter := &lumberjack.Logger{
-		Filename:   cfg.Filename,
-		MaxSize:    cfg.MaxSize,
-		MaxBackups: cfg.MaxBackups,
-		MaxAge:     cfg.MaxAge,
-		Compress:   cfg.Compress,
+func ensureLogDir(filename string) error {
+	if filename == "" {
+		return nil
 	}
-
-	// 创建多个输出（文件 + 控制台）
-	var writers []zapcore.WriteSyncer
-	if cfg.Filename != "" {
-		writers = append(writers, zapcore.AddSync(fileWriter))
+	dir := filepath.Dir(filename)
+	if dir == "." {
+		return nil
 	}
-	writers = append(writers, zapcore.AddSync(os.Stdout))
+	return os.MkdirAll(dir, 0o755)
+}
 
-	// 核心
-	core := zapcore.NewCore(
-		zapcore.NewJSONEncoder(encoderConfig),
-		zapcore.NewMultiWriteSyncer(writers...),
-		level,
-	)
-
-	// 创建 logger
-	log = zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1), zap.AddStacktrace(zapcore.ErrorLevel))
-	sugar = log.Sugar()
-
-	return nil
+func closeOutput() error {
+	if outputCloser == nil {
+		return nil
+	}
+	err := outputCloser.Close()
+	outputCloser = nil
+	return err
 }
 
 // Debug 调试日志

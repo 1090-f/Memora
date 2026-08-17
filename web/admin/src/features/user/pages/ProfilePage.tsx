@@ -143,11 +143,6 @@ export function ProfilePage() {
     <Stack spacing={2.4} sx={{ width: '100%', maxWidth: 1220, mx: 'auto' }}>
       <Stack direction="row" alignItems="flex-start" spacing={2}>
         <Box sx={{ flexGrow: 1 }}>
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
-            <Typography sx={{ color: '#8590a5', fontSize: 13 }}>主页</Typography>
-            <Typography sx={{ color: '#b1b8c5', fontSize: 13 }}>/</Typography>
-            <Typography sx={{ color: '#748098', fontSize: 13 }}>个人资料</Typography>
-          </Stack>
           <Typography component="h2" sx={{ color: '#111c3a', fontSize: { xs: 27, md: 31 }, fontWeight: 700, lineHeight: 1.2 }}>个人资料设置</Typography>
           <Typography sx={{ color: '#66728c', fontSize: 14, mt: 0.75 }}>管理您的个人信息和账户安全设置，确保账户信息准确完整。</Typography>
         </Box>

@@ -275,9 +275,8 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 
 	replanService := service.NewReplanService(plannerService, planStateStore, cfg.Agent.MaxReplans)
 
-	// 初始化事件发布器与订阅器（Phase 7）：使用 Redis Pub/Sub 实现实时事件推送。
-	// eventPub 将 AgentEvent 序列化为 JSON 后发布到 Redis 频道；
-	// eventSub 从同一频道过滤出指定 runID 的事件供 SSE 端点使用。
+	// 初始化事件发布器与订阅器：使用按 Run 隔离的 Redis Stream 保存并推送事件。
+	// eventSub 会先回放历史事件，再从同一 cursor 继续等待实时事件。
 	eventPub := events.NewRedisEventPublisher(a.redis)
 	eventSub := events.NewRedisEventSubscriber(a.redis)
 	// 用带序列号的发布器包装底层 Redis 发布器，确保事件序号单调递增。

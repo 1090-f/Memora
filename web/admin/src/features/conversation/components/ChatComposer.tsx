@@ -1,26 +1,45 @@
-import AttachFileOutlined from '@mui/icons-material/AttachFileOutlined';
-import AutoAwesomeOutlined from '@mui/icons-material/AutoAwesomeOutlined';
-import CodeOutlined from '@mui/icons-material/CodeOutlined';
-import ImageOutlined from '@mui/icons-material/ImageOutlined';
-import SendOutlined from '@mui/icons-material/SendOutlined';
+import AddOutlined from '@mui/icons-material/AddOutlined';
+import ArrowUpwardRounded from '@mui/icons-material/ArrowUpwardRounded';
+import CheckRounded from '@mui/icons-material/CheckRounded';
 import StopCircleOutlined from '@mui/icons-material/StopCircleOutlined';
-import { Box, Button, IconButton, Stack, TextField } from '@mui/material';
-import type { FormEvent } from 'react';
+import { Box, IconButton, ListItemIcon, ListItemText, Menu, MenuItem, Stack, TextField } from '@mui/material';
+import { useState, type FormEvent, type KeyboardEvent, type MouseEvent } from 'react';
 
-export function ChatComposer({ draft, disabled, streaming, onDraftChange, onSend, onStop }: {
+export function ChatComposer({ draft, disabled, streaming, knowledgeBases, selectedKnowledgeBaseId, onDraftChange, onKnowledgeBaseChange, onSend, onStop }: {
   draft: string;
   disabled: boolean;
   streaming: boolean;
+  knowledgeBases: Array<{ id: string; name: string }>;
+  selectedKnowledgeBaseId: string;
   onDraftChange: (value: string) => void;
+  onKnowledgeBaseChange: (knowledgeBaseId: string) => void;
   onSend: () => void;
   onStop: () => void;
 }) {
-  const submit = (event: FormEvent) => { event.preventDefault(); if (!disabled && draft.trim()) onSend(); };
+  const [knowledgeBaseMenuAnchor, setKnowledgeBaseMenuAnchor] = useState<HTMLElement | null>(null);
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!disabled && draft.trim()) onSend();
+  };
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+      event.preventDefault();
+      if (!disabled && draft.trim()) onSend();
+    }
+  };
+  const openKnowledgeBaseMenu = (event: MouseEvent<HTMLElement>) => {
+    setKnowledgeBaseMenuAnchor(event.currentTarget);
+  };
+  const selectKnowledgeBase = (knowledgeBaseId: string) => {
+    setKnowledgeBaseMenuAnchor(null);
+    onKnowledgeBaseChange(knowledgeBaseId);
+  };
+
   return (
-    <Box component="form" sx={{ p: 1.5, borderTop: '1px solid #e5e8ef', bgcolor: '#fff' }} onSubmit={submit}>
-      <Box sx={{ border: '1px solid #dce1ea', borderRadius: 2.5, p: 1.2, transition: 'border-color .2s, box-shadow .2s', '&:focus-within': { borderColor: '#7180ef', boxShadow: '0 0 0 4px rgba(82,95,230,.08)' } }}>
+    <Box component="form" sx={{ width: '100%', px: { xs: 2, md: 3 }, pb: 2.2, bgcolor: '#fff' }} onSubmit={submit}>
+      <Box sx={{ width: '100%', maxWidth: 980, mx: 'auto', border: '1px solid #e1e5eb', borderRadius: 3.5, px: 1.4, py: 1.15, bgcolor: '#fff', boxShadow: '0 8px 28px rgba(31,45,90,.09)', transition: 'border-color .2s, box-shadow .2s', '&:focus-within': { borderColor: '#9aabdf', boxShadow: '0 10px 32px rgba(31,45,90,.12)' } }}>
         <TextField
-          placeholder="输入问题，支持基于知识库提问..."
+          placeholder="问点什么？使用 @ 可以提及哦~"
           value={draft}
           onChange={(event) => onDraftChange(event.target.value)}
           disabled={disabled}
@@ -28,18 +47,40 @@ export function ChatComposer({ draft, disabled, streaming, onDraftChange, onSend
           multiline
           minRows={2}
           maxRows={5}
+          onKeyDown={handleKeyDown}
           variant="standard"
           slotProps={{ input: { disableUnderline: true } }}
         />
-        <Stack direction="row" alignItems="center" sx={{ mt: 0.6 }}>
-          <IconButton size="small" aria-label="添加附件"><AttachFileOutlined sx={{ fontSize: 20 }} /></IconButton>
-          <IconButton size="small" aria-label="插入代码"><CodeOutlined sx={{ fontSize: 20 }} /></IconButton>
-          <IconButton size="small" aria-label="添加图片"><ImageOutlined sx={{ fontSize: 20 }} /></IconButton>
-          <IconButton size="small" aria-label="智能增强"><AutoAwesomeOutlined sx={{ fontSize: 20 }} /></IconButton>
+        <Stack direction="row" alignItems="center" gap={0.7} sx={{ mt: 0.5 }}>
+          <IconButton
+            size="small"
+            aria-label="选择知识库"
+            aria-haspopup="menu"
+            aria-expanded={Boolean(knowledgeBaseMenuAnchor)}
+            onClick={openKnowledgeBaseMenu}
+            disabled={disabled || streaming}
+            sx={{ color: '#687384' }}
+          >
+            <AddOutlined />
+          </IconButton>
+          <Menu
+            anchorEl={knowledgeBaseMenuAnchor}
+            open={Boolean(knowledgeBaseMenuAnchor)}
+            onClose={() => setKnowledgeBaseMenuAnchor(null)}
+            slotProps={{ paper: { sx: { minWidth: 230, maxHeight: 320, mt: 0.8, borderRadius: 2.5, boxShadow: '0 12px 36px rgba(31,45,90,.16)' } } }}
+          >
+            {knowledgeBases.length === 0 && <MenuItem disabled>暂无可用知识库</MenuItem>}
+            {knowledgeBases.map((knowledgeBase) => (
+              <MenuItem key={knowledgeBase.id} selected={knowledgeBase.id === selectedKnowledgeBaseId} onClick={() => selectKnowledgeBase(knowledgeBase.id)}>
+                <ListItemIcon>{knowledgeBase.id === selectedKnowledgeBaseId && <CheckRounded fontSize="small" />}</ListItemIcon>
+                <ListItemText primary={knowledgeBase.name} />
+              </MenuItem>
+            ))}
+          </Menu>
           {streaming ? (
-            <Button sx={{ ml: 'auto', borderRadius: 2 }} variant="outlined" color="error" startIcon={<StopCircleOutlined />} onClick={onStop}>停止</Button>
+            <IconButton sx={{ ml: 'auto', width: 40, height: 40 }} color="error" aria-label="停止生成" onClick={onStop}><StopCircleOutlined /></IconButton>
           ) : (
-            <Button sx={{ ml: 'auto', minWidth: 100, height: 40, borderRadius: 2, background: 'linear-gradient(135deg,#4e5be8,#5c44e7)' }} type="submit" variant="contained" startIcon={<SendOutlined />} disabled={disabled || !draft.trim()}>发送</Button>
+            <IconButton sx={{ ml: 'auto', width: 40, height: 40, bgcolor: '#9fc9f7', color: '#fff', '&:hover': { bgcolor: '#75afea' }, '&.Mui-disabled': { bgcolor: '#dce9f7', color: '#fff' } }} type="submit" aria-label="发送" disabled={disabled || !draft.trim()}><ArrowUpwardRounded /></IconButton>
           )}
         </Stack>
       </Box>

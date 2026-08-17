@@ -91,7 +91,12 @@ export function DocumentProcessingDrawer({ open, onClose, document, processing }
   ];
 
   return (
-    <Drawer anchor="right" open={open} onClose={onClose}>
+    <Drawer
+      anchor="right"
+      open={open}
+      onClose={onClose}
+      sx={(theme) => ({ zIndex: theme.zIndex.modal + 1 })}
+    >
       <Stack spacing={2} sx={{ width: 440, p: 3 }}>
         <Stack direction="row" alignItems="center" spacing={1}>
           <Typography variant="h6" sx={{ flexGrow: 1 }}>处理详情</Typography>

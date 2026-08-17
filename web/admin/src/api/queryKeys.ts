@@ -4,6 +4,10 @@ export const queryKeys = {
   // 资源级查询键保持统一，便于上传、重试和删除后精确刷新关联缓存。
   knowledgeBase: (knowledgeBaseId: string) =>
     ['knowledge-bases', knowledgeBaseId] as const,
+  knowledgeBaseDashboard: (knowledgeBaseId: string) =>
+    ['knowledge-bases', knowledgeBaseId, 'dashboard'] as const,
+  knowledgeBaseSearchConfig: (knowledgeBaseId: string) =>
+    ['knowledge-bases', knowledgeBaseId, 'search-config'] as const,
   directories: (knowledgeBaseId: string) =>
     ['knowledge-bases', knowledgeBaseId, 'directories'] as const,
   documents: (knowledgeBaseId: string) =>

@@ -129,17 +129,26 @@ func (p *SequencedEventPublisher) PublishRouterSelected(ctx context.Context, id 
 }
 
 func (p *SequencedEventPublisher) PublishReactRoundStarted(ctx context.Context, id contracts.ID, round int) error {
-	return p.publish(ctx, id, contracts.EventReactRoundStarted, map[string]any{"round": round})
+	return p.publish(ctx, id, contracts.EventReactRoundStarted, map[string]any{
+		"round_no": round,
+		"round":    round,
+	})
 }
 
 func (p *SequencedEventPublisher) PublishReactRoundCompleted(ctx context.Context, id contracts.ID, round int, toolCallCount int) error {
-	return p.publish(ctx, id, contracts.EventReactRoundCompleted, map[string]any{"round": round, "tool_call_count": toolCallCount})
+	return p.publish(ctx, id, contracts.EventReactRoundCompleted, map[string]any{
+		"round_no":        round,
+		"round":           round,
+		"tool_call_count": toolCallCount,
+	})
 }
 
 func (p *SequencedEventPublisher) PublishToolCallStarted(ctx context.Context, id contracts.ID, toolName string, callID contracts.ID) error {
 	return p.publish(ctx, id, contracts.EventToolStarted, map[string]any{
-		"tool_name":    toolName,
-		"tool_call_id": callID,
+		"tool_name":     toolName,
+		"tool_call_id":  callID,
+		"call_id":       callID,
+		"input_summary": "",
 	})
 }
 
@@ -151,7 +160,9 @@ func (p *SequencedEventPublisher) PublishToolCallCompleted(ctx context.Context, 
 	payload := map[string]any{
 		"tool_name":      toolName,
 		"tool_call_id":   callID,
+		"call_id":        callID,
 		"success":        success,
+		"summary":        summary,
 		"output_summary": summary,
 	}
 	if !success {

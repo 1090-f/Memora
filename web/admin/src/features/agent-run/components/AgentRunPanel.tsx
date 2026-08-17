@@ -21,7 +21,13 @@ function citationTitle(citation: Record<string, unknown>, index: number) {
 }
 
 export function AgentRunPanel({ state }: { state: AgentRunViewState }) {
-  const steps = state.plan?.steps ?? state.rounds.map((round) => ({ step_no: round.round_no, title: round.action_summary || `执行轮次 ${round.round_no}`, status: round.status }));
+  const rounds = state.rounds.map((round) => ({ step_no: round.round_no, title: round.action_summary || `执行轮次 ${round.round_no}`, status: round.status }));
+  const fallbackSteps = state.status === 'idle' ? [] : [{
+    step_no: 1,
+    title: state.status === 'completed' ? 'Agent 回答已完成' : state.status === 'failed' ? 'Agent 执行失败' : state.status === 'cancelled' ? 'Agent 执行已取消' : '分析问题并生成回答',
+    status: state.status,
+  }];
+  const steps = state.plan?.steps ?? (rounds.length > 0 ? rounds : fallbackSteps);
   return (
     <Stack spacing={1.4} p={1.7} sx={{ overflow: 'auto', height: '100%' }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between">

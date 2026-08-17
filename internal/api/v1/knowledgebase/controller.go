@@ -75,6 +75,21 @@ func (ctrl *Controller) Get(c *gin.Context) {
 	response.Success(c, http.StatusOK, result)
 }
 
+// GetDashboard 查询知识库运营仪表盘数据。
+func (ctrl *Controller) GetDashboard(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	result, err := ctrl.kbs.GetDashboard(c.Request.Context(), user.ID, c.Param("kb_id"))
+	if err != nil {
+		response.Failure(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, result)
+}
+
 // Update 修改知识库基础信息。
 func (ctrl *Controller) Update(c *gin.Context) {
 	user, ok := middleware.GetUser(c)

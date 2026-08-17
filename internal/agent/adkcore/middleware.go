@@ -33,6 +33,8 @@ type AgentMiddleware struct {
 	StartedAt time.Time
 	// Usage 中间件收集到的 token 消耗，供 Runner 取回。
 	Usage contracts.TokenUsage
+	// RoundNo 记录当前 ReAct 模型调用轮次。
+	RoundNo int
 }
 
 // Ensure AgentMiddleware implements the interface.
@@ -60,6 +62,10 @@ func (m *AgentMiddleware) BeforeModelRewriteState(ctx context.Context, state *ad
 			return ctx, state, fmt.Errorf("adk agent: max run time exceeded (%d seconds)", m.Config.MaxRunSeconds)
 		}
 	}
+	m.RoundNo++
+	if m.EventPublisher != nil {
+		_ = m.EventPublisher.PublishReactRoundStarted(ctx, m.RunID, m.RoundNo)
+	}
 	return ctx, state, nil
 }
 
@@ -72,6 +78,7 @@ func (m *AgentMiddleware) AfterModelRewriteState(ctx context.Context, state *adk
 	if last != nil && last.Content != "" {
 		_ = m.EventPublisher.PublishAnswerDelta(ctx, m.RunID, last.Content)
 	}
+	_ = m.EventPublisher.PublishReactRoundCompleted(ctx, m.RunID, m.RoundNo, 0)
 	return ctx, state, nil
 }
 

@@ -38,8 +38,6 @@ const (
 	MaxUploadFileSize = 50 * 1024 * 1024
 	// MaxUploadFilesPerRequest 单次请求最大文件数。
 	MaxUploadFilesPerRequest = 20
-	// MaxManualContentBytes 手工文档正文最大字节数。
-	MaxManualContentBytes = 2 * 1024 * 1024
 	// minioUploadTimeout 单文件上传超时。
 	minioUploadTimeout = 5 * time.Minute
 	// ImportModeFolderArchive 表示 ZIP 是文件夹传输容器，内部每个文档都应创建独立任务。
@@ -115,66 +113,6 @@ func NewDocumentService(
 	office *OfficeConverter,
 ) DocumentService {
 	return &documentService{docs: docs, tasks: tasks, kbs: kbs, dirs: dirs, store: store, parseConfigHash: parseConfigHash, assetSignKey: assetSignKey, office: office}
-}
-
-// CreateManual 手工创建只读知识文档。
-func (s *documentService) CreateManual(ctx context.Context, userID, kbID string, req *request.CreateDocumentRequest) (*dto.DocumentResponse, error) {
-	if req == nil || strings.TrimSpace(req.Title) == "" {
-		return nil, apperrors.ErrInvalidArgument
-	}
-	if _, err := s.kbs.FindByID(ctx, userID, kbID); err != nil {
-		if errors.Is(err, repository.ErrKnowledgeBaseNotFound) {
-			return nil, apperrors.ErrNotFound
-		}
-		return nil, apperrors.New(contracts.ErrInternal, err)
-	}
-	if req.DirectoryID != nil && *req.DirectoryID != "" {
-		if _, err := s.dirs.FindByIDInKB(ctx, userID, kbID, *req.DirectoryID); err != nil {
-			if errors.Is(err, repository.ErrDirectoryNotFound) {
-				return nil, apperrors.New(contracts.ErrInvalidArgument, err)
-			}
-			return nil, apperrors.New(contracts.ErrInternal, err)
-		}
-	}
-	content := ""
-	if req.Content != nil {
-		content = *req.Content
-	}
-	if len([]byte(content)) > MaxManualContentBytes {
-		return nil, apperrors.New(contracts.ErrPayloadTooLarge, nil)
-	}
-	contentFormat := "txt"
-	if req.Format != nil && *req.Format == "markdown" {
-		contentFormat = "markdown"
-	}
-	doc := &entity.Document{
-		UserID: userID, KnowledgeBaseID: kbID, DirectoryID: req.DirectoryID,
-		Title: strings.TrimSpace(req.Title), Content: &content, ContentFormat: contentFormat,
-		SourceType:       string(contracts.DocumentSourceManual),
-		SourceURL:        req.SourceURL,
-		ProcessingStatus: string(contracts.ProcessingPending),
-		ContentVersion:   1, ChunkVersion: 1,
-	}
-	if err := s.docs.Create(ctx, doc); err != nil {
-		return nil, apperrors.New(contracts.ErrInternal, err)
-	}
-	// 手工文档进入索引流水线：创建并关联任务后入队，由 Worker 完成分块、
-	// 关键词索引与向量索引（与文件导入共用同一加工 Graph）。
-	fileName := manualTaskFileName(doc)
-	task := &entity.ImportTask{
-		UserID: userID, KnowledgeBaseID: kbID, TargetDirectoryID: req.DirectoryID,
-		SourceType:      string(contracts.DocumentSourceManual),
-		FileName:        &fileName,
-		DuplicatePolicy: "create_new",
-		Status:          string(contracts.TaskStatusPending),
-		DocumentID:      &doc.ID,
-	}
-	if err := s.tasks.Create(ctx, task); err != nil {
-		// 任务创建/入队失败时补偿删除文档，避免残留永远 pending 的孤文档。
-		_ = s.docs.SoftDelete(ctx, userID, doc.ID)
-		return nil, apperrors.New(contracts.ErrInternal, err)
-	}
-	return documentResponse(doc), nil
 }
 
 // manualTaskFileName 为手工文档构造解析文件名：按正文格式追加扩展名，

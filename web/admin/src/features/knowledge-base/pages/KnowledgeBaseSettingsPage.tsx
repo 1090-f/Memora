@@ -9,79 +9,9 @@ import { ErrorState } from '@/components/shared/ErrorState';
 import { LoadingState } from '@/components/shared/LoadingState';
 import { UnavailableState } from '@/components/shared/UnavailableState';
 import { listModelConfigs } from '@/features/model/api';
-import type { ModelConfig } from '@/features/model/types';
-import { getKnowledgeBase, getSearchConfig, updateKnowledgeBase, updateSearchConfig } from '../api';
-import type { SearchConfig } from '../types';
+import { getKnowledgeBase, updateKnowledgeBase } from '../api';
 
-function intField(value: string | undefined): number | undefined {
-  if (value === undefined || value === '') return undefined;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? Math.trunc(parsed) : undefined;
-}
-
-function SearchConfigForm({ kbId, config, rerankerModels }: { kbId: string; config: SearchConfig; rerankerModels: ModelConfig[] }) {
-  const queryClient = useQueryClient();
-  const [values, setValues] = useState<Record<string, string>>({});
-  const [notice, setNotice] = useState('');
-  const mutation = useMutation({
-    mutationFn: () => updateSearchConfig(kbId, {
-      keyword_top_k: intField(values.keyword_top_k),
-      vector_top_k: intField(values.vector_top_k),
-      rrf_k: intField(values.rrf_k),
-      rrf_top_k: intField(values.rrf_top_k),
-      reranker_top_k: intField(values.reranker_top_k),
-      reranker_threshold: values.reranker_threshold === '' ? undefined : Number(values.reranker_threshold),
-      minimum_effective_results: intField(values.minimum_effective_results),
-      reranker_model_id: values.reranker_model_id || undefined,
-    }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['knowledge-bases', kbId, 'search-config'] });
-      setNotice('搜索配置已保存');
-    },
-  });
-
-  useEffect(() => {
-    setValues({
-      keyword_top_k: String(config.keyword_top_k),
-      vector_top_k: String(config.vector_top_k),
-      rrf_k: String(config.rrf_k),
-      rrf_top_k: String(config.rrf_top_k),
-      reranker_top_k: String(config.reranker_top_k),
-      reranker_threshold: config.reranker_threshold === null ? '' : String(config.reranker_threshold),
-      minimum_effective_results: String(config.minimum_effective_results),
-      reranker_model_id: config.reranker_model_id || '',
-    });
-  }, [config]);
-
-  const setField = (key: string, value: string) => setValues((prev) => ({ ...prev, [key]: value }));
-
-  return (
-    <Paper variant="outlined" sx={{ p: 3 }}>
-      <Stack spacing={2}>
-        <Typography component="h3" variant="h6">检索配置</Typography>
-        <Typography color="text.secondary" variant="body2">关键词与向量候选数、RRF 融合与重排序参数。</Typography>
-        <TextField label="关键词候选数（keyword_top_k）" type="number" value={values.keyword_top_k ?? ''} onChange={(event) => setField('keyword_top_k', event.target.value)} helperText="1～200" />
-        <TextField label="向量候选数（vector_top_k）" type="number" value={values.vector_top_k ?? ''} onChange={(event) => setField('vector_top_k', event.target.value)} helperText="1～200" />
-        <TextField label="RRF 常数（rrf_k）" type="number" value={values.rrf_k ?? ''} onChange={(event) => setField('rrf_k', event.target.value)} helperText="大于 0，通常为 60" />
-        <TextField label="RRF 融合保留条数（rrf_top_k）" type="number" value={values.rrf_top_k ?? ''} onChange={(event) => setField('rrf_top_k', event.target.value)} helperText="1～100" />
-        <TextField label="重排序返回条数（reranker_top_k）" type="number" value={values.reranker_top_k ?? ''} onChange={(event) => setField('reranker_top_k', event.target.value)} helperText="1～20" />
-        <TextField label="重排序阈值（reranker_threshold）" type="number" inputProps={{ step: 0.05 }} value={values.reranker_threshold ?? ''} onChange={(event) => setField('reranker_threshold', event.target.value)} helperText="0～1，留空表示不设阈值" />
-        <TextField label="最低有效结果数（minimum_effective_results）" type="number" value={values.minimum_effective_results ?? ''} onChange={(event) => setField('minimum_effective_results', event.target.value)} helperText="检索结果少于该值时判定知识不足" />
-        <TextField select label="Reranker 模型" value={values.reranker_model_id ?? ''} onChange={(event) => setField('reranker_model_id', event.target.value)} helperText="留空时使用知识库默认 Reranker">
-          <MenuItem value="">使用知识库默认模型</MenuItem>
-          {rerankerModels.map((model) => <MenuItem key={model.id} value={model.id}>{model.name} · {model.provider}</MenuItem>)}
-        </TextField>
-        {mutation.error && <Alert severity="error">{errorMessage(mutation.error)}</Alert>}
-        {notice && <Alert severity="success" onClose={() => setNotice('')}>{notice}</Alert>}
-        <Stack direction="row" justifyContent="flex-end">
-          <Button variant="contained" disabled={mutation.isPending} onClick={() => mutation.mutate()}>保存检索配置</Button>
-        </Stack>
-      </Stack>
-    </Paper>
-  );
-}
-
-export function KnowledgeBaseSettingsContent({ status, kbId }: { status: CapabilityStatus; kbId: string }) {
+export function KnowledgeBaseSettingsContent({ status, kbId, embedded = false }: { status: CapabilityStatus; kbId: string; embedded?: boolean }) {
   const enabled = status === 'available';
   const queryClient = useQueryClient();
   const [name, setName] = useState('');
@@ -96,11 +26,6 @@ export function KnowledgeBaseSettingsContent({ status, kbId }: { status: Capabil
   const kbQuery = useQuery({
     queryKey: ['knowledge-bases', kbId],
     queryFn: () => getKnowledgeBase(kbId),
-    enabled,
-  });
-  const configQuery = useQuery({
-    queryKey: ['knowledge-bases', kbId, 'search-config'],
-    queryFn: () => getSearchConfig(kbId),
     enabled,
   });
   const modelsQuery = useQuery({
@@ -140,8 +65,8 @@ export function KnowledgeBaseSettingsContent({ status, kbId }: { status: Capabil
 
   if (!enabled) {
     return (
-      <Stack spacing={3} maxWidth={760}>
-        <Typography component="h2" variant="h5" fontWeight={750}>知识库设置</Typography>
+      <Stack spacing={3} maxWidth={embedded ? 960 : 760} mx={embedded ? 'auto' : undefined}>
+        {!embedded && <Typography component="h2" variant="h5" fontWeight={750}>知识库设置</Typography>}
         <UnavailableState
           title="配置接口待接入"
           description="搜索和 Agent 配置的字段已按 Memora 契约预留，后端可用前不会提交更改。"
@@ -158,11 +83,10 @@ export function KnowledgeBaseSettingsContent({ status, kbId }: { status: Capabil
     );
   }
 
-  if (kbQuery.isPending || configQuery.isPending || modelsQuery.isPending) return <LoadingState label="正在加载知识库设置" />;
+  if (kbQuery.isPending || modelsQuery.isPending) return <LoadingState label="正在加载知识库设置" />;
   if (kbQuery.error) return <ErrorState error={kbQuery.error as Error} onRetry={() => void kbQuery.refetch()} />;
-  if (configQuery.error) return <ErrorState error={configQuery.error as Error} onRetry={() => void configQuery.refetch()} />;
   if (modelsQuery.error) return <ErrorState error={modelsQuery.error as Error} onRetry={() => void modelsQuery.refetch()} />;
-  if (!kbQuery.data || !configQuery.data || !modelsQuery.data) return null;
+  if (!kbQuery.data || !modelsQuery.data) return null;
 
   const models = modelsQuery.data.items;
   const chatModels = models.filter((model) => model.model_type === 'chat');
@@ -170,10 +94,12 @@ export function KnowledgeBaseSettingsContent({ status, kbId }: { status: Capabil
   const rerankerModels = models.filter((model) => model.model_type === 'reranker');
 
   return (
-    <Stack spacing={3} maxWidth={760}>
-      <Stack direction="row" alignItems="center">
-        <Typography component="h2" variant="h5" fontWeight={750} sx={{ flexGrow: 1 }}>知识库设置</Typography>
-      </Stack>
+    <Stack spacing={3} maxWidth={embedded ? 960 : 760} mx={embedded ? 'auto' : undefined}>
+      {!embedded && (
+        <Stack direction="row" alignItems="center">
+          <Typography component="h2" variant="h5" fontWeight={750} sx={{ flexGrow: 1 }}>知识库设置</Typography>
+        </Stack>
+      )}
       {notice && <Alert severity="success" onClose={() => setNotice('')}>{notice}</Alert>}
       <Paper variant="outlined" sx={{ p: 3 }}>
         <Stack spacing={2}>
@@ -211,8 +137,6 @@ export function KnowledgeBaseSettingsContent({ status, kbId }: { status: Capabil
           </Stack>
         </Stack>
       </Paper>
-      <Divider />
-      <SearchConfigForm kbId={kbId} config={configQuery.data} rerankerModels={rerankerModels} />
     </Stack>
   );
 }
