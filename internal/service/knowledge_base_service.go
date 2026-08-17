@@ -114,6 +114,7 @@ func (s *knowledgeBaseService) Create(ctx context.Context, userID string, req *r
 			QAEnabled:       boolValue(req.QAEnabled, true),
 			AgentEnabled:    boolValue(req.AgentEnabled, true),
 			NetworkEnabled:  boolValue(req.NetworkEnabled, false),
+			DuplicatePolicy: "skip",
 		}
 		if req.DefaultChatModelID != nil {
 			id := *req.DefaultChatModelID
@@ -255,7 +256,8 @@ func (s *knowledgeBaseService) Update(ctx context.Context, userID, kbID string, 
 	if req == nil || (req.Name == nil && req.Description == nil && req.Icon == nil &&
 		req.DefaultLanguage == nil && req.QAEnabled == nil && req.AgentEnabled == nil &&
 		req.NetworkEnabled == nil && req.DefaultChatModelID == nil &&
-		req.DefaultEmbeddingModelID == nil && req.DefaultRerankerModelID == nil) {
+		req.DefaultEmbeddingModelID == nil && req.DefaultRerankerModelID == nil &&
+		req.DuplicatePolicy == nil) {
 		return nil, apperrors.ErrInvalidArgument
 	}
 	if req.Name != nil && strings.TrimSpace(*req.Name) == "" {
@@ -282,6 +284,9 @@ func (s *knowledgeBaseService) Update(ctx context.Context, userID, kbID string, 
 	}
 	if req.NetworkEnabled != nil {
 		updates["network_enabled"] = *req.NetworkEnabled
+	}
+	if req.DuplicatePolicy != nil {
+		updates["duplicate_policy"] = *req.DuplicatePolicy
 	}
 	// 默认模型字段：显式传值即更新；传空串表示清除（写 NULL），
 	// 字段未传（nil）时不修改，保证部分更新语义。
@@ -488,6 +493,7 @@ func knowledgeBaseResponse(kb *entity.KnowledgeBase) *dto.KnowledgeBaseResponse 
 		AgentEnabled: kb.AgentEnabled, NetworkEnabled: kb.NetworkEnabled,
 		DefaultChatModelID: kb.DefaultChatModelID, DefaultEmbeddingModelID: kb.DefaultEmbeddingModelID,
 		DefaultRerankerModelID: kb.DefaultRerankerModelID,
+		DuplicatePolicy:        kb.DuplicatePolicy,
 		CreatedAt:              kb.CreatedAt, UpdatedAt: kb.UpdatedAt,
 	}
 }

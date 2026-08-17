@@ -14,6 +14,7 @@ type KnowledgeBase struct {
 	DefaultChatModelID      *string `gorm:"column:default_chat_model_id" json:"default_chat_model_id,omitempty"`           // DefaultChatModelID 默认对话模型配置 ID，可选
 	DefaultEmbeddingModelID *string `gorm:"column:default_embedding_model_id" json:"default_embedding_model_id,omitempty"` // DefaultEmbeddingModelID 默认向量化模型配置 ID，可选
 	DefaultRerankerModelID  *string `gorm:"column:default_reranker_model_id" json:"default_reranker_model_id,omitempty"`   // DefaultRerankerModelID 默认重排序模型配置 ID，可选
+	DuplicatePolicy         string  `gorm:"column:duplicate_policy" json:"duplicate_policy"`                                // DuplicatePolicy 文档导入重复处理策略（skip/create_new）
 }
 
 // TableName 返回知识库实体对应的数据库表名。

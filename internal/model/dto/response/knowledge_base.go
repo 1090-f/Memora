@@ -15,6 +15,7 @@ type KnowledgeBaseResponse struct {
 	DefaultChatModelID      *string   `json:"default_chat_model_id,omitempty"`      // DefaultChatModelID 默认对话模型配置 ID，可选
 	DefaultEmbeddingModelID *string   `json:"default_embedding_model_id,omitempty"` // DefaultEmbeddingModelID 默认向量化模型配置 ID，可选
 	DefaultRerankerModelID  *string   `json:"default_reranker_model_id,omitempty"`  // DefaultRerankerModelID 默认重排序模型配置 ID，可选
+	DuplicatePolicy         string    `json:"duplicate_policy"`                     // DuplicatePolicy 文档导入重复处理策略（skip/create_new）
 	CreatedAt               time.Time `json:"created_at"`                           // CreatedAt 创建时间
 	UpdatedAt               time.Time `json:"updated_at"`                           // UpdatedAt 更新时间
 }

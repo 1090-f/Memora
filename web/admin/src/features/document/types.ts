@@ -177,7 +177,6 @@ export interface CreateDirectoryInput {
 export interface ImportURLInput {
   url: string;
   directory_id?: string;
-  duplicate_policy?: 'create_new' | 'skip';
 }
 
 export interface ImportSubmission {

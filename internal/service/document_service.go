@@ -574,18 +574,13 @@ func (s *documentService) Delete(ctx context.Context, userID, documentID string)
 // UploadFiles 文件导入：先创建 import_tasks，再流式上传 MinIO，最后更新任务对象信息。
 // 校验阶段（扩展名/大小/数量/归属）全部通过后才开始创建任务；
 // 上传阶段任一文件失败时，补偿删除已创建但未完成的任务与已上传对象。
-func (s *documentService) UploadFiles(ctx context.Context, userID, kbID string, directoryID *string, duplicatePolicy string, files []UploadFileInput) (*dto.UploadFilesResponse, error) {
+// 重复处理策略读取知识库级配置（knowledge_bases.duplicate_policy），不再由单次请求携带。
+func (s *documentService) UploadFiles(ctx context.Context, userID, kbID string, directoryID *string, files []UploadFileInput) (*dto.UploadFilesResponse, error) {
 	if len(files) == 0 {
 		return nil, apperrors.ErrInvalidArgument
 	}
 	if len(files) > MaxUploadFilesPerRequest {
 		return nil, apperrors.New(contracts.ErrInvalidArgument, nil)
-	}
-	if duplicatePolicy == "" {
-		duplicatePolicy = "skip"
-	}
-	if duplicatePolicy != "create_new" && duplicatePolicy != "skip" {
-		return nil, apperrors.ErrInvalidArgument
 	}
 	for _, file := range files {
 		if err := validateUploadFile(file); err != nil {
@@ -607,11 +602,16 @@ func (s *documentService) UploadFiles(ctx context.Context, userID, kbID string, 
 			return nil, apperrors.New(contracts.ErrInternal, err)
 		}
 	}
-	if _, err := s.kbs.FindByID(ctx, userID, kbID); err != nil {
+	kb, err := s.kbs.FindByID(ctx, userID, kbID)
+	if err != nil {
 		if errors.Is(err, repository.ErrKnowledgeBaseNotFound) {
 			return nil, apperrors.ErrNotFound
 		}
 		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	duplicatePolicy := kb.DuplicatePolicy
+	if duplicatePolicy == "" {
+		duplicatePolicy = "skip"
 	}
 
 	batchID := uuid.NewString()
@@ -664,6 +664,7 @@ func (s *documentService) UploadFiles(ctx context.Context, userID, kbID string, 
 }
 
 // ImportURL 只创建 pending 任务；网络抓取、SSRF 校验、正文解析和索引全部在 Worker 内执行。
+// 重复处理策略读取知识库级配置（knowledge_bases.duplicate_policy）。
 func (s *documentService) ImportURL(ctx context.Context, userID, kbID string, req *request.ImportURLRequest) (*dto.UploadTaskItem, error) {
 	if req == nil || len(req.URL) > 4096 {
 		return nil, apperrors.ErrInvalidArgument
@@ -672,7 +673,8 @@ func (s *documentService) ImportURL(ctx context.Context, userID, kbID string, re
 	if err != nil || target.Hostname() == "" || (target.Scheme != "http" && target.Scheme != "https") || target.User != nil {
 		return nil, apperrors.ErrInvalidArgument
 	}
-	if _, err := s.kbs.FindByID(ctx, userID, kbID); err != nil {
+	kb, err := s.kbs.FindByID(ctx, userID, kbID)
+	if err != nil {
 		if errors.Is(err, repository.ErrKnowledgeBaseNotFound) {
 			return nil, apperrors.ErrNotFound
 		}
@@ -686,12 +688,9 @@ func (s *documentService) ImportURL(ctx context.Context, userID, kbID string, re
 			return nil, apperrors.New(contracts.ErrInternal, err)
 		}
 	}
-	policy := req.DuplicatePolicy
+	policy := kb.DuplicatePolicy
 	if policy == "" {
 		policy = "skip"
-	}
-	if policy != "skip" && policy != "create_new" {
-		return nil, apperrors.ErrInvalidArgument
 	}
 	sourceURL := target.String()
 	task := &entity.ImportTask{
