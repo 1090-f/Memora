@@ -119,6 +119,62 @@ func (r *knowledgeBaseRepository) CountDocuments(ctx context.Context, userID, kb
 	return count, nil
 }
 
+// GetDashboardSnapshot 使用聚合查询构造知识库仪表盘读模型，避免前端为每个指标分别请求文档列表。
+func (r *knowledgeBaseRepository) GetDashboardSnapshot(ctx context.Context, userID, kbID string, since time.Time, recentLimit int) (*KnowledgeBaseDashboardSnapshot, error) {
+	db := dbFromContext(ctx, r.db).WithContext(ctx)
+	var counts struct {
+		DocumentTotal             int64 `gorm:"column:document_total"`
+		IndexedTotal              int64 `gorm:"column:indexed_total"`
+		ProcessingTotal           int64 `gorm:"column:processing_total"`
+		FailedTotal               int64 `gorm:"column:failed_total"`
+		HighestActiveIndexVersion int   `gorm:"column:highest_active_index_version"`
+	}
+	if err := db.Raw(`
+		SELECT
+			COUNT(*) AS document_total,
+			COUNT(*) FILTER (WHERE active_index_version IS NOT NULL) AS indexed_total,
+			COUNT(*) FILTER (WHERE processing_status IN ('pending', 'parsing', 'cleaning', 'chunking', 'embedding', 'keyword_indexing')) AS processing_total,
+			COUNT(*) FILTER (WHERE processing_status = 'failed') AS failed_total,
+			COALESCE(MAX(active_index_version), 0) AS highest_active_index_version
+		FROM documents
+		WHERE user_id = ? AND knowledge_base_id = ? AND deleted_at IS NULL`, userID, kbID).
+		Scan(&counts).Error; err != nil {
+		return nil, fmt.Errorf("聚合知识库文档指标失败: %w", err)
+	}
+
+	var trendRows []struct {
+		Day   time.Time `gorm:"column:day"`
+		Count int64     `gorm:"column:count"`
+	}
+	if err := db.Model(&entity.ImportTask{}).
+		Select("DATE(created_at) AS day, COUNT(*) AS count").
+		Where("user_id = ? AND knowledge_base_id = ? AND created_at >= ?", userID, kbID, since).
+		Group("DATE(created_at)").Order("day ASC").Scan(&trendRows).Error; err != nil {
+		return nil, fmt.Errorf("聚合知识库导入趋势失败: %w", err)
+	}
+
+	if recentLimit <= 0 {
+		recentLimit = 4
+	}
+	var recentTasks []*entity.ImportTask
+	if err := db.Where("user_id = ? AND knowledge_base_id = ?", userID, kbID).
+		Order("COALESCE(completed_at, started_at, created_at) DESC").Limit(recentLimit).
+		Find(&recentTasks).Error; err != nil {
+		return nil, fmt.Errorf("查询知识库近期活动失败: %w", err)
+	}
+
+	trend := make([]KnowledgeBaseImportTrendPoint, 0, len(trendRows))
+	for _, row := range trendRows {
+		trend = append(trend, KnowledgeBaseImportTrendPoint{Day: row.Day, Count: row.Count})
+	}
+	return &KnowledgeBaseDashboardSnapshot{
+		DocumentTotal: counts.DocumentTotal, IndexedTotal: counts.IndexedTotal,
+		ProcessingTotal: counts.ProcessingTotal, FailedTotal: counts.FailedTotal,
+		HighestActiveIndexVersion: counts.HighestActiveIndexVersion,
+		ImportTrend:               trend, RecentTasks: recentTasks,
+	}, nil
+}
+
 func mapKnowledgeBaseResult(kb *entity.KnowledgeBase, err error) (*entity.KnowledgeBase, error) {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrKnowledgeBaseNotFound

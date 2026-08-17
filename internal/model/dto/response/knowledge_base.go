@@ -40,6 +40,33 @@ type KnowledgeBaseList struct {
 	Total    int64                    `json:"total"`     // Total 知识库总数
 }
 
+// KnowledgeBaseDashboardResponse 表示知识库运营仪表盘的聚合数据。
+type KnowledgeBaseDashboardResponse struct {
+	HealthScore               int                             `json:"health_score"`
+	DocumentTotal             int64                           `json:"document_total"`
+	IndexedTotal              int64                           `json:"indexed_total"`
+	ProcessingTotal           int64                           `json:"processing_total"`
+	FailedTotal               int64                           `json:"failed_total"`
+	HighestActiveIndexVersion int                             `json:"highest_active_index_version"`
+	ImportTrend               []KnowledgeBaseImportTrendPoint `json:"import_trend"`
+	RecentActivities          []KnowledgeBaseActivity         `json:"recent_activities"`
+}
+
+// KnowledgeBaseImportTrendPoint 表示单日导入任务数量。
+type KnowledgeBaseImportTrendPoint struct {
+	Date  string `json:"date"`
+	Count int64  `json:"count"`
+}
+
+// KnowledgeBaseActivity 表示可在仪表盘展示的一条近期导入活动。
+type KnowledgeBaseActivity struct {
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	Status      string    `json:"status"`
+	OccurredAt  time.Time `json:"occurred_at"`
+}
+
 // SearchConfigResponse 表示搜索配置的响应。
 type SearchConfigResponse struct {
 	KeywordTopK            int      `json:"keyword_top_k"`                // KeywordTopK 关键词检索返回的候选条数

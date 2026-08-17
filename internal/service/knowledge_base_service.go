@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	apperrors "github.com/1090-f/Memora/internal/apperror"
 	"github.com/1090-f/Memora/internal/contracts"
@@ -231,6 +232,22 @@ func (s *knowledgeBaseService) Get(ctx context.Context, userID, kbID string) (*d
 		return nil, apperrors.New(contracts.ErrInternal, err)
 	}
 	return knowledgeBaseResponse(kb), nil
+}
+
+// GetDashboard 查询知识库仪表盘聚合数据。
+func (s *knowledgeBaseService) GetDashboard(ctx context.Context, userID, kbID string) (*dto.KnowledgeBaseDashboardResponse, error) {
+	if _, err := s.kbs.FindByID(ctx, userID, kbID); err != nil {
+		if errors.Is(err, repository.ErrKnowledgeBaseNotFound) {
+			return nil, apperrors.ErrNotFound
+		}
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	snapshot, err := s.kbs.GetDashboardSnapshot(ctx, userID, kbID, today.AddDate(0, 0, -6), 4)
+	if err != nil {
+		return nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	return knowledgeBaseDashboardResponse(snapshot, today), nil
 }
 
 // Update 修改知识库基础信息。
@@ -473,6 +490,72 @@ func knowledgeBaseResponse(kb *entity.KnowledgeBase) *dto.KnowledgeBaseResponse 
 		DefaultRerankerModelID: kb.DefaultRerankerModelID,
 		CreatedAt:              kb.CreatedAt, UpdatedAt: kb.UpdatedAt,
 	}
+}
+
+func knowledgeBaseDashboardResponse(snapshot *repository.KnowledgeBaseDashboardSnapshot, today time.Time) *dto.KnowledgeBaseDashboardResponse {
+	result := &dto.KnowledgeBaseDashboardResponse{
+		ImportTrend:      make([]dto.KnowledgeBaseImportTrendPoint, 0, 7),
+		RecentActivities: make([]dto.KnowledgeBaseActivity, 0),
+	}
+	if snapshot == nil {
+		return result
+	}
+	result.DocumentTotal = snapshot.DocumentTotal
+	result.IndexedTotal = snapshot.IndexedTotal
+	result.ProcessingTotal = snapshot.ProcessingTotal
+	result.FailedTotal = snapshot.FailedTotal
+	result.HighestActiveIndexVersion = snapshot.HighestActiveIndexVersion
+	healthy := snapshot.IndexedTotal - snapshot.FailedTotal
+	if healthy < 0 {
+		healthy = 0
+	}
+	if snapshot.DocumentTotal == 0 {
+		result.HealthScore = 100
+	} else {
+		result.HealthScore = int((healthy*100 + snapshot.DocumentTotal/2) / snapshot.DocumentTotal)
+	}
+	trendByDate := make(map[string]int64, len(snapshot.ImportTrend))
+	for _, point := range snapshot.ImportTrend {
+		trendByDate[point.Day.UTC().Format("2006-01-02")] = point.Count
+	}
+	for day := today.AddDate(0, 0, -6); !day.After(today); day = day.AddDate(0, 0, 1) {
+		date := day.Format("2006-01-02")
+		result.ImportTrend = append(result.ImportTrend, dto.KnowledgeBaseImportTrendPoint{Date: date, Count: trendByDate[date]})
+	}
+	for _, task := range snapshot.RecentTasks {
+		if task == nil {
+			continue
+		}
+		title := "导入任务已创建"
+		switch task.Status {
+		case "running":
+			title = "文件正在处理"
+		case "succeeded":
+			title = "文件导入完成"
+		case "failed":
+			title = "文件导入失败"
+		case "skipped":
+			title = "重复内容已跳过"
+		}
+		description := "导入任务"
+		if task.FileName != nil && *task.FileName != "" {
+			description = *task.FileName
+		} else if task.SourceURL != nil && *task.SourceURL != "" {
+			description = *task.SourceURL
+		}
+		occurredAt := task.CreatedAt
+		if task.StartedAt != nil {
+			occurredAt = *task.StartedAt
+		}
+		if task.CompletedAt != nil {
+			occurredAt = *task.CompletedAt
+		}
+		result.RecentActivities = append(result.RecentActivities, dto.KnowledgeBaseActivity{
+			ID: task.ID, Title: title, Description: description,
+			Status: task.Status, OccurredAt: occurredAt,
+		})
+	}
+	return result
 }
 
 // searchConfigResponse 将搜索配置实体转换为响应 DTO。

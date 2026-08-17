@@ -2,6 +2,7 @@ import { apiRequest } from '@/api/client';
 import type {
   KnowledgeBase,
   KnowledgeBaseDetail,
+  KnowledgeBaseDashboard,
   KnowledgeBaseInput,
   KnowledgeBaseListParams,
   KnowledgeBaseUpdateInput,
@@ -15,6 +16,9 @@ export const listKnowledgeBases = (params: KnowledgeBaseListParams = {}) =>
 
 export const getKnowledgeBase = (id: string) =>
   apiRequest<KnowledgeBaseDetail>({ url: `/knowledge-bases/${id}` });
+
+export const getKnowledgeBaseDashboard = (id: string) =>
+  apiRequest<KnowledgeBaseDashboard>({ url: `/knowledge-bases/${id}/dashboard` });
 
 export const createKnowledgeBase = (input: KnowledgeBaseInput) =>
   apiRequest<KnowledgeBaseDetail>({ url: '/knowledge-bases', method: 'POST', data: input });
