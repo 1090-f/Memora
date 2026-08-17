@@ -274,7 +274,7 @@ function DocumentList({
 
   const documents = query.data?.items ?? [];
   if (documents.length === 0) {
-    return <EmptyState title="暂无文档" description={keyword || status || sourceType ? '没有符合当前筛选条件的文档。' : '导入 Markdown、TXT、PDF、DOCX 和 URL。'} />;
+    return <EmptyState title="暂无文档" description={keyword || status || sourceType ? '没有符合当前筛选条件的文档。' : '导入 Markdown、TXT、PDF、DOCX 等文档。'} />;
   }
 
   return (
@@ -425,7 +425,7 @@ function ImportTasks({ kbId, onOpenDocument, embedded = false }: {
       {cleanupNotice && <Alert severity="success" sx={{ mb: 1 }} onClose={() => setCleanupNotice('')}>{cleanupNotice}</Alert>}
       {cleanupError && <Alert severity="error" sx={{ mb: 1 }} onClose={() => setCleanupError(null)}>清理失败：{errorMessage(cleanupError)}</Alert>}
       {retry.error && <Alert severity="error" sx={{ mb: 1 }}>{errorMessage(retry.error)}</Alert>}
-      {tasks.length === 0 && <EmptyState title="暂无导入任务" description="通过“导入知识”添加文件或 URL。" />}
+      {tasks.length === 0 && <EmptyState title="暂无导入任务" description="通过“导入知识”添加文件。" />}
       {tasks.length > 0 && (
         <>
       <Box sx={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1.7fr) 100px 80px 90px 150px 110px', alignItems: 'center', py: 1, px: 0.5, color: '#73809a', fontSize: 12, borderBottom: '1px solid #edf0f5' }}>
