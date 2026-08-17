@@ -1,48 +1,77 @@
-// Package events 提供基于 Redis 的 Agent 事件发布与订阅实现。
-// EventPublisher 使用 Redis Pub/Sub 发布事件，EventSubscriber 通过 Redis Pub/Sub 订阅事件。
+// Package events 提供基于 Redis Stream 的 Agent 事件发布与订阅实现。
+// 每个 Agent Run 使用独立 Stream，既可回放历史事件，也可继续等待实时事件。
 package events
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/redis/go-redis/v9"
 )
 
-// EventChannel 是 Agent 事件发布的 Redis Pub/Sub 频道名称。
-const EventChannel = "agent:events"
+const (
+	eventStreamPrefix   = "agent:events:"
+	eventSequenceSuffix = ":sequence"
+	eventStreamMaxLen   = 5000
+	eventStreamTTL      = 7 * 24 * time.Hour
+	eventReadBlock      = 5 * time.Second
+)
 
-// RedisEventPublisher 实现 contracts.EventPublisher 接口，将 Agent 事件发布到 Redis Pub/Sub。
-// 每条事件被序列化为 JSON 后发送到 agent:events 频道。
+var appendEventScript = redis.NewScript(`
+local sequence = redis.call("INCR", KEYS[2])
+local event = cjson.decode(ARGV[1])
+event["sequence"] = sequence
+local encoded = cjson.encode(event)
+redis.call("XADD", KEYS[1], "MAXLEN", "~", ARGV[2], "*", "event", encoded)
+redis.call("EXPIRE", KEYS[1], ARGV[3])
+redis.call("EXPIRE", KEYS[2], ARGV[3])
+return sequence
+`)
+
+func eventStreamKey(runID contracts.ID) string {
+	return eventStreamPrefix + string(runID)
+}
+
+func eventSequenceKey(runID contracts.ID) string {
+	return eventStreamKey(runID) + eventSequenceSuffix
+}
+
+// RedisEventPublisher 实现 contracts.EventPublisher 接口，将 Agent 事件追加到按 Run 隔离的 Redis Stream。
 type RedisEventPublisher struct {
 	redis *redis.Client // Redis 客户端连接
 }
 
 // NewRedisEventPublisher 创建基于 Redis 的 EventPublisher 实例。
-// redisClient 是已连接的 Redis 客户端，用于执行 PUBLISH 命令。
+// redisClient 是已连接的 Redis 客户端，用于执行 XADD 命令。
 func NewRedisEventPublisher(redisClient *redis.Client) *RedisEventPublisher {
 	return &RedisEventPublisher{redis: redisClient}
 }
 
-// Publish 将 Agent 事件序列化为 JSON 并发布到 Redis Pub/Sub 频道。
-// 如果序列化失败或 Redis 发布失败，返回错误。
+// Publish 将 Agent 事件序列化后追加到 Redis Stream，并刷新事件历史的保留期限。
 func (p *RedisEventPublisher) Publish(ctx context.Context, event contracts.AgentEvent) error {
 	data, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("序列化 Agent 事件失败: %w", err)
 	}
 
-	err = p.redis.Publish(ctx, EventChannel, data).Err()
+	_, err = appendEventScript.Run(
+		ctx,
+		p.redis,
+		[]string{eventStreamKey(event.RunID), eventSequenceKey(event.RunID)},
+		data,
+		eventStreamMaxLen,
+		int64(eventStreamTTL/time.Second),
+	).Result()
 	if err != nil {
-		return fmt.Errorf("发布 Agent 事件到 Redis 失败: %w", err)
+		return fmt.Errorf("写入 Agent 事件到 Redis Stream 失败: %w", err)
 	}
 	return nil
 }
 
-// RedisEventSubscriber 实现 contracts.EventSubscriber 接口，通过 Redis Pub/Sub 订阅 Agent 事件。
-// 订阅者按 runID 过滤事件，支持断线重连和指定起始序列号的回放。
+// RedisEventSubscriber 实现 contracts.EventSubscriber 接口，从 Redis Stream 回放并持续读取 Agent 事件。
 type RedisEventSubscriber struct {
 	redis *redis.Client // Redis 客户端连接
 }
@@ -52,63 +81,60 @@ func NewRedisEventSubscriber(redisClient *redis.Client) *RedisEventSubscriber {
 	return &RedisEventSubscriber{redis: redisClient}
 }
 
-// Subscribe 返回一个通道，用于接收指定运行 RunID 在 afterSequence 之后的事件。
-// 客户端通过该通道持续接收实时事件，直到上下文被取消。
-// afterSequence 参数用于断线重连时跳过已处理的事件。
+// Subscribe 从 Stream 起点开始读取，以 sequence 过滤已消费事件；读完历史后 XREAD 会继续阻塞等待新事件。
+// 历史读取与实时等待共享同一个 Stream cursor，因此两者之间不存在丢事件窗口。
 func (s *RedisEventSubscriber) Subscribe(ctx context.Context, runID contracts.ID, afterSequence int64) (<-chan contracts.AgentEvent, error) {
-	// 订阅 Redis Pub/Sub 频道
-	pubSub := s.redis.Subscribe(ctx, EventChannel)
-
-	// 等待订阅确认，确保通道就绪后才开始消费
-	_, err := pubSub.Receive(ctx)
-	if err != nil {
-		// 订阅失败，关闭连接并返回错误
-		pubSub.Close()
-		return nil, fmt.Errorf("订阅 Redis 频道失败: %w", err)
+	if err := s.redis.Ping(ctx).Err(); err != nil {
+		return nil, fmt.Errorf("连接 Redis 事件流失败: %w", err)
 	}
 
-	// 创建带缓冲的事件通道，防止发布者因订阅者消费慢而阻塞
 	ch := make(chan contracts.AgentEvent, 128)
+	key := eventStreamKey(runID)
 
-	// 启动后台 goroutine 持续消费 Redis 消息
 	go func() {
-		defer close(ch)      // 退出时关闭事件通道，通知消费者结束
-		defer pubSub.Close() // 退出时关闭 Redis 订阅连接
-
-		// Channel() 返回一个 channel，当 Redis 收到消息时会投递过来
-		redisCh := pubSub.Channel()
+		defer close(ch)
+		cursor := "0-0"
 		for {
-			select {
-			case <-ctx.Done():
-				// 客户端取消订阅，正常退出
+			streams, err := s.redis.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{key, cursor},
+				Count:   128,
+				Block:   eventReadBlock,
+			}).Result()
+			if err != nil {
+				if err == redis.Nil {
+					continue
+				}
+				if ctx.Err() != nil {
+					return
+				}
 				return
-			case msg, ok := <-redisCh:
-				if !ok {
-					// Redis 订阅通道已关闭（连接断开），退出
-					return
-				}
+			}
 
-				var event contracts.AgentEvent
-				if err := json.Unmarshal([]byte(msg.Payload), &event); err != nil {
-					// 反序列化失败，跳过该消息（不影响其他消息的消费）
-					continue
-				}
-
-				// 按 runID 过滤：只返回匹配运行的事件
-				if event.RunID != runID {
-					continue
-				}
-
-				// 按起始序列号过滤：跳过客户端已处理的事件
-				if event.Sequence <= afterSequence {
-					continue
-				}
-
-				select {
-				case ch <- event:
-				case <-ctx.Done():
-					// 取消时不再尝试发送
-					return
+			for _, stream := range streams {
+				for _, message := range stream.Messages {
+					cursor = message.ID
+					raw, ok := message.Values["event"]
+					if !ok {
+						continue
+					}
+					var data []byte
+					switch value := raw.(type) {
+					case string:
+						data = []byte(value)
+					case []byte:
+						data = value
+					default:
+						continue
+					}
+					var event contracts.AgentEvent
+					if err := json.Unmarshal(data, &event); err != nil || event.RunID != runID || event.Sequence <= afterSequence {
+						continue
+					}
+					select {
+					case ch <- event:
+					case <-ctx.Done():
+						return
+					}
 				}
 			}
 		}
