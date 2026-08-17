@@ -67,6 +67,7 @@ func (s *PlannerService) Plan(ctx context.Context, request contracts.AgentRunReq
 	plan.MaxSteps = request.Config.MaxPlanSteps
 	plan.MaxReplans = request.Config.MaxReplans
 	plan.Status = contracts.PlanStatusPending
+	plan.FinalAnswer = "" // 清空：实际答案由步骤执行后生成
 	plan.CreatedAt = time.Now()
 	plan.UpdatedAt = time.Now()
 
@@ -209,7 +210,7 @@ func (s *PlannerService) buildPrompt(request contracts.AgentRunRequest) string {
 	sb.WriteString("- step_number 是整数，从 1 开始\n")
 	sb.WriteString("- tool_name 和 arguments 可选，不调用工具时 tool_name 设为空字符串 \"\"\n")
 	sb.WriteString("- depends_on 是字符串数组，元素为依赖步骤的 step_number（用字符串表示，如 [\"1\", \"2\"]），无依赖则为空数组 []\n")
-	sb.WriteString("- final_answer 是字符串，不是数组\n")
+	sb.WriteString("- final_answer 必须设为空字符串 \"\"，实际答案由步骤执行后自动生成，不要在此处填写任何内容\n")
 
 	return sb.String()
 }

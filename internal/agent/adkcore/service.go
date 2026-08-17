@@ -161,7 +161,7 @@ func (s *Service) runPlanExecute(ctx context.Context, request contracts.AgentRun
 	// 发布运行开始事件
 	_ = s.eventPublisher.PublishRunStarted(ctx, request.RunID, contracts.ExecutionPlanExecute)
 
-	result, err := s.planGraph.Run(runCtx, request)
+	result, err := s.planGraph.Run(ctx, request)
 	if err != nil {
 		if ctx.Err() != nil {
 			_ = s.eventPublisher.PublishRunCancelled(ctx, request.RunID)
