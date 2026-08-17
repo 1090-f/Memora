@@ -95,6 +95,7 @@ export interface KnowledgeBaseListParams {
 export interface SearchConfig {
   keyword_top_k: number;
   vector_top_k: number;
+  min_vector_score: number;
   rrf_k: number;
   rrf_top_k: number;
   reranker_top_k: number;
@@ -106,6 +107,7 @@ export interface SearchConfig {
 export interface SearchConfigUpdateInput {
   keyword_top_k?: number;
   vector_top_k?: number;
+  min_vector_score?: number;
   rrf_k?: number;
   rrf_top_k?: number;
   reranker_top_k?: number;

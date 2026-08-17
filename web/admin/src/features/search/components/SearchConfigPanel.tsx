@@ -41,6 +41,7 @@ export function SearchConfigPanel({ kbId }: { kbId: string }) {
     mutationFn: () => updateSearchConfig(kbId, {
       keyword_top_k: intField(values.keyword_top_k),
       vector_top_k: intField(values.vector_top_k),
+      min_vector_score: values.min_vector_score === '' ? undefined : Number(values.min_vector_score),
       rrf_k: intField(values.rrf_k),
       rrf_top_k: intField(values.rrf_top_k),
       reranker_top_k: intField(values.reranker_top_k),
@@ -60,6 +61,7 @@ export function SearchConfigPanel({ kbId }: { kbId: string }) {
     setValues({
       keyword_top_k: String(config.keyword_top_k),
       vector_top_k: String(config.vector_top_k),
+      min_vector_score: config.min_vector_score === null ? '' : String(config.min_vector_score),
       rrf_k: String(config.rrf_k),
       rrf_top_k: String(config.rrf_top_k),
       reranker_top_k: String(config.reranker_top_k),
@@ -95,6 +97,7 @@ export function SearchConfigPanel({ kbId }: { kbId: string }) {
             <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(2, minmax(0, 1fr))' }, gap: 2 }}>
               <TextField label="关键词候选数" type="number" value={values.keyword_top_k ?? ''} onChange={(event) => setField('keyword_top_k', event.target.value)} helperText="关键词检索最多召回 1～200 条" />
               <TextField label="向量候选数" type="number" value={values.vector_top_k ?? ''} onChange={(event) => setField('vector_top_k', event.target.value)} helperText="向量检索最多召回 1～200 条" />
+              <TextField label="最低向量相似度" type="number" inputProps={{ step: 0.05, min: 0, max: 1 }} value={values.min_vector_score ?? ''} onChange={(event) => setField('min_vector_score', event.target.value)} helperText="0～1，低于该分数的向量结果被过滤；0 表示不启用" />
               <TextField label="RRF 融合常数" type="number" value={values.rrf_k ?? ''} onChange={(event) => setField('rrf_k', event.target.value)} helperText="用于平衡不同召回通道，通常为 60" />
               <TextField label="融合结果数" type="number" value={values.rrf_top_k ?? ''} onChange={(event) => setField('rrf_top_k', event.target.value)} helperText="融合阶段保留 1～100 条" />
               <TextField label="重排序结果数" type="number" value={values.reranker_top_k ?? ''} onChange={(event) => setField('reranker_top_k', event.target.value)} helperText="重排序后最多保留 1～20 条" />
