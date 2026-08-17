@@ -44,7 +44,7 @@ func TestValidateURLPortWhitelist(t *testing.T) {
 
 func TestIsForbiddenIPIPv6(t *testing.T) {
 	cases := []struct {
-		ip      string
+		ip        string
 		forbidden bool
 	}{
 		{"8.8.8.8", false},
@@ -54,9 +54,9 @@ func TestIsForbiddenIPIPv6(t *testing.T) {
 		{"169.254.169.254", true},
 		{"::1", true},
 		{"fe80::1", true},
-		{"fd12:3456::1", true},  // IPv6 ULA
-		{"fc00::1", true},       // IPv6 ULA 边界
-		{"fec0::1", true},       // 站点本地（已废弃）
+		{"fd12:3456::1", true},          // IPv6 ULA
+		{"fc00::1", true},               // IPv6 ULA 边界
+		{"fec0::1", true},               // 站点本地（已废弃）
 		{"2606:4700:4700::1111", false}, // 公网 IPv6
 		{"2001:4860:4860::8888", false}, // 公网 IPv6
 	}
