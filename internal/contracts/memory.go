@@ -59,8 +59,10 @@ type MemoryRetriever interface {
 
 // EmbeddingService 定义将文本转换为向量的服务接口。
 type EmbeddingService interface {
-	// Embed 将文本转换为向量。
-	Embed(ctx context.Context, text string) ([]float64, error)
+	// Embed 将文本转换为向量，userID 用于获取用户配置的 embedding 模型。
+	Embed(ctx context.Context, userID string, text string) ([]float64, error)
+	// EmbedWithModelID 将文本转换为向量，并返回使用的模型ID。
+	EmbedWithModelID(ctx context.Context, userID string, text string) ([]float64, string, error)
 }
 
 // MemoryItem 表示提取后的候选记忆条目。

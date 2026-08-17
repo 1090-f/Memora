@@ -17,8 +17,6 @@ type AgentRunResponse struct {
 	RouterReason    string     `json:"router_reason,omitempty"`    // RouterReason Router 选择原因摘要
 	KnowledgeStatus *string    `json:"knowledge_status,omitempty"` // KnowledgeStatus 知识充分性状态
 	Status          string     `json:"status"`                     // Status 运行状态
-	ReplanCount     int        `json:"replan_count"`               // ReplanCount 重新规划次数
-	ReviewerResult  *string    `json:"reviewer_result,omitempty"`  // ReviewerResult 评审结果
 	MemoryUsedCount int        `json:"memory_used_count"`          // MemoryUsedCount 使用的记忆条数
 	InputTokens     int        `json:"input_tokens"`               // InputTokens 输入 Token 数
 	OutputTokens    int        `json:"output_tokens"`              // OutputTokens 输出 Token 数

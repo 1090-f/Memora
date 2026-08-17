@@ -43,5 +43,5 @@ user: |
 
   请返回 JSON 格式：
   ```json
-  {"mode": "react 或 plan_execute", "confidence": 0.0-1.0, "reason": "决策理由"}
+  {"mode": "react", "confidence": 0.0-1.0, "reason": "决策理由"}
   ```

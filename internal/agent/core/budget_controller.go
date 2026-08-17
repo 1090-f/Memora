@@ -9,19 +9,20 @@ import (
 
 const (
 	maxReactRoundsLimit        = 32
-	maxPlanStepsLimit          = 20
-	maxReplansLimit            = 3
 	maxToolCallsLimit          = 100
 	maxDocumentReadTokensLimit = 20000
 	maxToolResultBytesLimit    = 4 * 1024 * 1024
 	maxRunSecondsLimit         = 900
 	maxMemoryTopKLimit         = 50
+	// Plan-Execute 限制
+	maxPlanStepsLimit = 10 // 最大步骤数
+	maxReplansLimit   = 5  // 最大重规划次数
+	maxReviewerRuns   = 3  // 最大审查次数
 )
 
-// BudgetController 统一限制 Agent 的轮次、步骤、工具调用、时长和 Token 用量。
+// BudgetController 统一限制 Agent 的轮次、工具调用、时长和 Token 用量。
 type BudgetController interface {
 	CheckReactRounds(rounds int) error
-	CheckPlanSteps(steps int) error
 	CheckToolCalls(calls int) error
 	CheckRunDuration(startedAt time.Time) error
 	CheckTokenUsage(usage contracts.TokenUsage) error
@@ -33,13 +34,6 @@ type DefaultBudgetController struct{ Config contracts.AgentConfig }
 func (b DefaultBudgetController) CheckReactRounds(rounds int) error {
 	if rounds <= 0 || rounds > b.Config.MaxReactRounds {
 		return fmt.Errorf("%w: react rounds %d/%d", ErrBudgetExceeded, rounds, b.Config.MaxReactRounds)
-	}
-	return nil
-}
-
-func (b DefaultBudgetController) CheckPlanSteps(steps int) error {
-	if steps <= 0 || steps > b.Config.MaxPlanSteps {
-		return fmt.Errorf("%w: plan steps %d/%d", ErrBudgetExceeded, steps, b.Config.MaxPlanSteps)
 	}
 	return nil
 }

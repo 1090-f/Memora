@@ -406,9 +406,15 @@ func buildConfigFromContext(ctx contracts.AgentContext) contracts.AgentConfig {
 		config.MaxReactRounds = ctx.MaxReactRounds
 	}
 
-	// 覆盖 Plan-Execute 模式最大计划步数（若上下文中有显式配置）
+	// Plan-Execute 模式配置
 	if ctx.MaxPlanSteps > 0 {
 		config.MaxPlanSteps = ctx.MaxPlanSteps
+	}
+	if ctx.MaxReplans >= 0 {
+		config.MaxReplans = ctx.MaxReplans
+	}
+	if ctx.ReviewerRuns > 0 {
+		config.ReviewerRuns = ctx.ReviewerRuns
 	}
 
 	return config
@@ -444,7 +450,6 @@ func toRunResponse(run *entity.AgentRun) *respdto.AgentRunResponse {
 		Query:           run.Query,
 		RouterReason:    run.RouterReasonSummary,
 		Status:          run.Status,
-		ReplanCount:     run.ReplanCount,
 		MemoryUsedCount: run.MemoryUsedCount,
 		InputTokens:     run.InputTokens,
 		OutputTokens:    run.OutputTokens,
@@ -465,9 +470,6 @@ func toRunResponse(run *entity.AgentRun) *respdto.AgentRunResponse {
 	}
 	if run.KnowledgeStatus != nil {
 		resp.KnowledgeStatus = run.KnowledgeStatus
-	}
-	if run.ReviewerResult != nil {
-		resp.ReviewerResult = run.ReviewerResult
 	}
 	if run.FinalResult != nil {
 		resp.FinalResult = run.FinalResult

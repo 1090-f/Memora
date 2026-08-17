@@ -17,14 +17,6 @@ const (
 	EventRunStarted EventType = "agent.run.started"
 	// EventRouterCompleted 表示路由器已完成执行模式的确定。
 	EventRouterCompleted EventType = "agent.router.completed"
-	// EventStepStarted 表示计划步骤已开始执行。
-	EventStepStarted EventType = "agent.step.started"
-	// EventStepCompleted 表示计划步骤已完成执行。
-	EventStepCompleted EventType = "agent.step.completed"
-	// EventPlanCreated 表示计划已创建（包含所有步骤信息）。
-	EventPlanCreated EventType = "agent.plan.created"
-	// EventPlanReplanned 表示计划已重新规划（版本递增）。
-	EventPlanReplanned EventType = "agent.plan.replanned"
 	// EventToolStarted 表示工具调用已开始。
 	EventToolStarted EventType = "agent.tool.started"
 	// EventToolCompleted 表示工具调用已完成。
@@ -43,6 +35,18 @@ const (
 	EventReactRoundCompleted EventType = "agent.react.round.completed"
 	// EventToolCallFailed 表示工具调用失败（区别于 EventToolCompleted 的完整生命周期）。
 	EventToolCallFailed EventType = "agent.tool.call.failed"
+
+	// Plan-Execute 模式事件（Phase 2 需前端更新）
+	// EventPlanCreated 表示计划已创建。
+	EventPlanCreated EventType = "agent.plan.created"
+	// EventPlanStepStarted 表示计划步骤开始执行。
+	EventPlanStepStarted EventType = "agent.plan.step.started"
+	// EventPlanStepCompleted 表示计划步骤执行完成。
+	EventPlanStepCompleted EventType = "agent.plan.step.completed"
+	// EventPlanReplanned 表示计划已重新规划。
+	EventPlanReplanned EventType = "agent.plan.replanned"
+	// EventReviewCompleted 表示审查已完成。
+	EventReviewCompleted EventType = "agent.review.completed"
 )
 
 // AgentEvent 表示在 Agent 执行运行期间发出的事件。

@@ -156,8 +156,14 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
         signal: controller.signal,
         onEvent: dispatchRun,
       });
-      const completedRun = await getAgentRun(response.run_id);
-      const answer = completedRun.final_result || runStateRef.current.answer;
+        const completedRun = await getAgentRun(response.run_id);
+      // Plan-Execute: SSE 完成事件可能先于 DB 写入，短暂延时后重试
+      let answer = completedRun.final_result || runStateRef.current.answer;
+      if (!answer) {
+        await new Promise(r => setTimeout(r, 500));
+        const retried = await getAgentRun(response.run_id);
+        answer = retried.final_result || runStateRef.current.answer;
+      }
       if (answer) {
         setMessages((current) => [...current, {
           id: crypto.randomUUID(), role: 'assistant', content: answer, agent_run_id: response.run_id,

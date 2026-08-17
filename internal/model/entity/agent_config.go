@@ -13,9 +13,9 @@ type AgentConfig struct {
 	SystemPrompt          *string   `gorm:"column:system_prompt" json:"system_prompt,omitempty"`                // SystemPrompt 系统提示词，可选
 	ChatModelID           string    `gorm:"column:chat_model_id" json:"chat_model_id"`                          // ChatModelID 关联的对话模型配置 ID
 	MaxReactRounds        int       `gorm:"column:max_react_rounds" json:"max_react_rounds"`                    // MaxReactRounds ReAct 模式最大轮数
-	MaxPlanSteps          int       `gorm:"column:max_plan_steps" json:"max_plan_steps"`                        // MaxPlanSteps Plan-Execute 最大规划步数
-	MaxReplans            int       `gorm:"column:max_replans" json:"max_replans"`                              // MaxReplans 最大重新规划次数
-	ReviewerRuns          int       `gorm:"column:reviewer_runs" json:"reviewer_runs"`                          // ReviewerRuns 评审执行次数
+	MaxPlanSteps          int       `gorm:"column:max_plan_steps" json:"max_plan_steps"`                        // MaxPlanSteps Plan-Execute 最大步骤数
+	MaxReplans            int       `gorm:"column:max_replans" json:"max_replans"`                              // MaxReplans Plan-Execute 最大重规划次数
+	ReviewerRuns          int       `gorm:"column:reviewer_runs" json:"reviewer_runs"`                          // ReviewerRuns Plan-Execute 审查次数
 	MaxToolCalls          int       `gorm:"column:max_tool_calls" json:"max_tool_calls"`                        // MaxToolCalls 单次运行最大工具调用次数
 	MaxDocumentReadTokens int       `gorm:"column:max_document_read_tokens" json:"max_document_read_tokens"`    // MaxDocumentReadTokens 读取文档的最大 token 数
 	MaxToolResultBytes    int       `gorm:"column:max_tool_result_bytes" json:"max_tool_result_bytes"`          // MaxToolResultBytes 工具返回结果的最大字节数

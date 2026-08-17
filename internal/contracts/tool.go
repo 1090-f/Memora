@@ -8,14 +8,14 @@ import (
 
 // ToolContext 提供工具调用的执行上下文。
 type ToolContext struct {
-	UserID           ID       `json:"user_id"`                // 发起工具调用的用户
-	KnowledgeBaseID  ID       `json:"knowledge_base_id"`      // 关联的知识库
-	AgentRunID       ID       `json:"agent_run_id"`           // 所属的 Agent 运行 ID
-	PlanStepID       ID       `json:"plan_step_id,omitempty"` // 可选：执行的计划步骤（plan 模式下）
-	ReactRound       int      `json:"react_round,omitempty"`  // 可选：ReAct 当前轮次
-	AllowedToolNames []string `json:"allowed_tool_names"`     // 允许调用的工具名白名单
-	NetworkEnabled   bool     `json:"network_enabled"`        // 是否允许联网工具
-	MaxResultBytes   int      `json:"max_result_bytes"`       // 工具结果最大字节数限制
+	UserID           ID       `json:"user_id"`               // 发起工具调用的用户
+	KnowledgeBaseID  ID       `json:"knowledge_base_id"`     // 关联的知识库
+	AgentRunID       ID       `json:"agent_run_id"`          // 所属的 Agent 运行 ID
+	ReactRound       int      `json:"react_round,omitempty"` // 可选：ReAct 当前轮次
+	AllowedToolNames []string `json:"allowed_tool_names"`    // 允许调用的工具名白名单
+	NetworkEnabled   bool     `json:"network_enabled"`       // 是否允许联网工具
+	MaxResultBytes   int      `json:"max_result_bytes"`      // 工具结果最大字节数限制
+	ChatModelID      string   `json:"chat_model_id"`         // 用于无工具步骤的 LLM 推理
 }
 
 // ToolCall 表示使用参数调用特定工具的请求。

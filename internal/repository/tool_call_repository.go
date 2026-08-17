@@ -54,16 +54,6 @@ func (r *toolCallRepository) ListByRunID(ctx context.Context, runID uuid.UUID) (
 	return calls, err
 }
 
-// ListByPlanStepID 按计划步骤 ID 查询该步骤的所有工具调用。
-func (r *toolCallRepository) ListByPlanStepID(ctx context.Context, stepID uuid.UUID) ([]entity.ToolCall, error) {
-	var calls []entity.ToolCall
-	err := r.db.WithContext(ctx).
-		Where("plan_step_id = ?", stepID).
-		Order("started_at ASC").
-		Find(&calls).Error
-	return calls, err
-}
-
 // CountByRunID 统计指定运行的工具调用总数。
 func (r *toolCallRepository) CountByRunID(ctx context.Context, runID uuid.UUID) (int64, error) {
 	var count int64

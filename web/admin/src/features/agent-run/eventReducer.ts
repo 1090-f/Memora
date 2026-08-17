@@ -66,8 +66,8 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
         ...next,
         status: 'completed',
         resumable: false,
-        rounds: state.rounds.map((round) => round.status === 'running' ? { ...round, status: 'completed' } : round),
-        tools: state.tools.map((tool) => tool.status === 'running' ? { ...tool, status: 'completed' } : tool),
+        // Plan-Execute 模式没有 agent.answer.delta 事件，需从 final_result 填充 answer
+        answer: next.answer || stringValue(payload.final_result),
       };
     case 'agent.run.cancelled':
       return { ...next, status: 'cancelled', resumable: true };

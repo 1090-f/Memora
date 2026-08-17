@@ -120,27 +120,17 @@ func (r *HybridRouter) Route(ctx context.Context, agentCtx contracts.AgentContex
 func (r *HybridRouter) routeByRules(agentCtx contracts.AgentContext) (contracts.ExecutionMode, float64, bool) {
 	query := strings.ToLower(agentCtx.Query)
 
-	// 规则 1: 包含明确的计划类关键词 → Plan-Execute
-	if containsPlanKeywords(query) {
-		return contracts.ExecutionPlanExecute, 0.9, true
-	}
-
-	// 规则 2: 包含多个问号 → Plan-Execute（复合问题）
-	if hasMultipleQuestions(query) {
-		return contracts.ExecutionPlanExecute, 0.8, true
-	}
-
-	// 规则 3: 包含多个连接词 → Plan-Execute（复合任务）
-	if hasMultipleConjunctions(query) {
-		return contracts.ExecutionPlanExecute, 0.75, true
-	}
-
-	// 规则 4: 包含明确的简单查询关键词 → React
+	// 规则 1: 包含明确的简单查询关键词 → React
 	if containsSimpleKeywords(query) {
 		return contracts.ExecutionReact, 0.85, true
 	}
 
-	// 规则 5: 包含工具调用关键词 → React（可能需要工具）
+	// 规则 2: 包含计划类关键词 → Plan-Execute（优先于工具关键词，因为计划模式会自主调用工具）
+	if containsPlanKeywords(query) {
+		return contracts.ExecutionPlanExecute, 0.8, true
+	}
+
+	// 规则 3: 包含工具调用关键词 → React（可能需要工具）
 	if containsToolKeywords(query) {
 		return contracts.ExecutionReact, 0.7, true
 	}
