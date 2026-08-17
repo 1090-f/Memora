@@ -35,6 +35,7 @@ type Controller struct {
 	agentConfigRepo repository.AgentConfigRepository // Agent 配置查询仓库
 	contextBuilder  contracts.ContextBuilder         // 上下文构建器（组装 AgentContext）
 	eventSub        contracts.EventSubscriber        // Agent 事件订阅器（用于 SSE 流式推送）
+	agentEventRepo  repository.AgentEventRepository  // Agent 事件持久化仓库（用于断线重连时的历史回放）
 }
 
 // NewController 创建 Agent 运行管理的 HTTP 控制器实例。
@@ -46,6 +47,7 @@ func NewController(
 	agentConfigRepo repository.AgentConfigRepository,
 	contextBuilder contracts.ContextBuilder,
 	eventSub contracts.EventSubscriber,
+	agentEventRepo repository.AgentEventRepository,
 ) *Controller {
 	return &Controller{
 		agentService:    agentService,
@@ -55,6 +57,7 @@ func NewController(
 		agentConfigRepo: agentConfigRepo,
 		contextBuilder:  contextBuilder,
 		eventSub:        eventSub,
+		agentEventRepo:  agentEventRepo,
 	}
 }
 
@@ -335,7 +338,56 @@ func (ctrl *Controller) SubscribeEvents(c *gin.Context) {
 		rc.SetWriteDeadline(time.Time{}) // zero value = no deadline
 	}
 
-	// 3. 订阅事件通道
+	// 3. 从 DB 回放历史事件（用于断线重连时恢复到最新状态）
+	// 在连接 Redis 实时流之前，先将 DB 中已持久化的未读事件通过 SSE 推送。
+	if ctrl.agentEventRepo != nil {
+		dbEvents, err := ctrl.agentEventRepo.ListAfterSequence(c.Request.Context(), string(runID), afterSeq)
+		if err != nil {
+			logger.Warn("读取 Agent 历史事件失败，跳过 DB 回放",
+				zap.String("run_id", string(runID)),
+				zap.Error(err),
+			)
+		} else if len(dbEvents) > 0 {
+			logger.Info("回放 Agent 历史事件",
+				zap.String("run_id", string(runID)),
+				zap.Int("event_count", len(dbEvents)),
+			)
+			for _, dbEv := range dbEvents {
+				// 将 entity.AgentEvent 转换为 contracts.AgentEvent 以保持 SSE 格式一致
+				var rawData json.RawMessage
+				if dbEv.Data != nil {
+					rawData = json.RawMessage(dbEv.Data)
+				} else {
+					rawData = json.RawMessage("{}")
+				}
+				event := contracts.AgentEvent{
+					EventID:   contracts.ID(""),
+					RunID:     contracts.ID(dbEv.RunID),
+					EventType: contracts.EventType(dbEv.EventType),
+					Sequence:  dbEv.Sequence,
+					Timestamp: dbEv.Timestamp,
+					Data:      rawData,
+				}
+				eventData, _ := json.Marshal(event)
+				fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event.EventType, eventData)
+				c.Writer.Flush()
+
+				// 更新 afterSeq 为已推送的最大序号，避免后续实时流重复推送
+				if event.Sequence > afterSeq {
+					afterSeq = event.Sequence
+				}
+
+				// 如果历史事件中包含终端事件，则提前结束
+				if event.EventType == contracts.EventRunCompleted ||
+					event.EventType == contracts.EventRunFailed ||
+					event.EventType == contracts.EventRunCancelled {
+					return
+				}
+			}
+		}
+	}
+
+	// 4. 订阅实时事件通道（Redis Stream）
 	eventCh, err := ctrl.eventSub.Subscribe(c.Request.Context(), runID, afterSeq)
 	if err != nil {
 		// SSE 场景下无法返回 JSON（响应头已设为 text/event-stream），直接写入错误事件行
@@ -349,7 +401,7 @@ func (ctrl *Controller) SubscribeEvents(c *gin.Context) {
 	flushTicker := time.NewTicker(10 * time.Second)
 	defer flushTicker.Stop()
 
-	// 4. 持续消费事件并通过 SSE 协议推送
+	// 5. 持续消费实时事件并通过 SSE 协议推送
 	for {
 		select {
 		case <-c.Request.Context().Done():

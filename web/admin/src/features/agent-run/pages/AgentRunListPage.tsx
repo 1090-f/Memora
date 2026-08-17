@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import ArrowBackOutlined from '@mui/icons-material/ArrowBackOutlined';
 import RefreshOutlined from '@mui/icons-material/RefreshOutlined';
-import ReplayOutlined from '@mui/icons-material/ReplayOutlined';
+
 import {
   Alert,
   Button,
@@ -25,7 +25,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { listKnowledgeBases } from '@/features/knowledge-base/api';
 import { listConversations } from '@/features/conversation/api';
-import { getAgentRun, listAgentRuns, retryAgentRun } from '../api';
+import { getAgentRun, listAgentRuns } from '../api';
 import type { AgentRun } from '../types';
 
 const statusLabel: Record<string, string> = {
@@ -41,14 +41,13 @@ function StatusChip({ status }: { status: string }) {
   return <Chip size="small" color={color} label={statusLabel[status] || status} />;
 }
 
-function RunDetail({ run, onRetry }: { run: AgentRun; onRetry: () => void }) {
+function RunDetail({ run }: { run: AgentRun }) {
   return (
     <Stack spacing={2}>
       <Stack direction="row" alignItems="center" spacing={1}>
         <Button component={Link} to="/runs" startIcon={<ArrowBackOutlined />}>返回列表</Button>
         <Typography component="h2" variant="h5" fontWeight={750} sx={{ flexGrow: 1 }}>运行详情</Typography>
         <StatusChip status={run.status} />
-        {run.status === 'failed' && <Button variant="outlined" startIcon={<ReplayOutlined />} onClick={onRetry}>重试</Button>}
       </Stack>
       <Paper variant="outlined" sx={{ p: 3 }}>
         <Stack spacing={2}>
@@ -110,15 +109,10 @@ export function AgentRunListPage() {
     enabled: Boolean(runId),
   });
 
-  const retry = async (id: string) => {
-    const response = await retryAgentRun(id);
-    navigate(`/runs/${response.new_run_id}`);
-  };
-
   if (runId) {
     if (detailQuery.isPending) return <Typography>正在加载运行详情...</Typography>;
     if (detailQuery.error) return <Alert severity="error">运行详情加载失败，请刷新重试。</Alert>;
-    if (detailQuery.data) return <RunDetail run={detailQuery.data} onRetry={() => void retry(detailQuery.data.id)} />;
+    if (detailQuery.data) return <RunDetail run={detailQuery.data} />;
   }
 
   return (
