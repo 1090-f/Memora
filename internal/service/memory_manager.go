@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"text/template"
 
 	"github.com/1090-f/Memora/internal/contracts"
@@ -94,25 +95,50 @@ func readFile(path string) ([]byte, error) {
 
 // Process 处理候选记忆列表，自动去重、合并后存储。
 func (m *memoryManager) Process(ctx context.Context, userID string, items []contracts.MemoryItem) error {
-	for _, item := range items {
+	logger.Info("[记忆处理-Process] 开始处理候选记忆",
+		zap.String("user_id", userID),
+		zap.Int("items_count", len(items)),
+	)
+
+	for i, item := range items {
+		logger.Info("[记忆处理-Process] 处理第"+fmt.Sprintf("%d", i+1)+"条记忆",
+			zap.String("type", string(item.Type)),
+			zap.String("content", item.Content),
+			zap.Float64("importance", item.Importance),
+		)
 		if err := m.processOne(ctx, userID, item); err != nil {
-			logger.Error("处理记忆失败",
+			logger.Error("[记忆处理-Process] 处理记忆失败",
 				zap.String("content", item.Content),
 				zap.Error(err),
 			)
 			// 单条失败不影响其他记忆
 			continue
 		}
+		logger.Info("[记忆处理-Process] 处理记忆成功",
+			zap.String("content", item.Content),
+		)
 	}
+
+	logger.Info("[记忆处理-Process] 所有记忆处理完成")
 	return nil
 }
 
 // processOne 处理单条记忆。
 func (m *memoryManager) processOne(ctx context.Context, userID string, item contracts.MemoryItem) error {
+	logger.Info("[记忆处理-processOne] 开始处理单条记忆",
+		zap.String("user_id", userID),
+		zap.String("type", string(item.Type)),
+		zap.String("content", item.Content),
+	)
+
 	// 1. 计算内容哈希
 	contentHash := computeContentHash(item.Content)
+	logger.Info("[记忆处理-processOne] 步骤1: 计算内容哈希",
+		zap.String("content_hash", contentHash),
+	)
 
 	// 2. 精确去重：通过content_hash查找
+	logger.Info("[记忆处理-processOne] 步骤2: 精确去重检查")
 	var scopeID *string
 	if item.ScopeID != nil {
 		id := string(*item.ScopeID)
@@ -121,36 +147,54 @@ func (m *memoryManager) processOne(ctx context.Context, userID string, item cont
 
 	existing, err := m.memoryRepo.FindByContentHash(ctx, userID, contentHash, string(item.Scope), scopeID)
 	if err != nil {
+		logger.Error("[记忆处理-processOne] 精确去重检查失败", zap.Error(err))
 		return fmt.Errorf("find by content hash: %w", err)
 	}
 
 	// 如果已存在完全相同的内容，更新重要性
 	if existing != nil {
+		logger.Info("[记忆处理-processOne] 发现重复记忆，更新重要性",
+			zap.String("existing_id", existing.ID),
+		)
 		return m.updateImportance(ctx, existing, item.Importance)
 	}
+	logger.Info("[记忆处理-processOne] 未发现重复记忆")
 
 	// 3. 向量检索相似记忆
+	logger.Info("[记忆处理-processOne] 步骤3: 向量检索相似记忆")
 	similar, err := m.findSimilarMemories(ctx, userID, item)
 	if err != nil {
-		logger.Warn("检索相似记忆失败，降级为直接创建", zap.Error(err))
+		logger.Warn("[记忆处理-processOne] 检索相似记忆失败，降级为直接创建", zap.Error(err))
 		// 降级：直接创建
 		return m.createMemory(ctx, userID, item)
 	}
 
 	// 4. 如果没有相似记忆，直接创建
 	if len(similar) == 0 {
+		logger.Info("[记忆处理-processOne] 未找到相似记忆，直接创建")
 		return m.createMemory(ctx, userID, item)
 	}
 
+	logger.Info("[记忆处理-processOne] 找到相似记忆",
+		zap.Int("similar_count", len(similar)),
+	)
+
 	// 5. LLM判断去重方式
+	logger.Info("[记忆处理-processOne] 步骤5: LLM判断去重方式")
 	decision, err := m.llmJudgeDedup(ctx, item, similar)
 	if err != nil {
-		logger.Warn("LLM去重判断失败，降级为直接创建", zap.Error(err))
+		logger.Warn("[记忆处理-processOne] LLM去重判断失败，降级为直接创建", zap.Error(err))
 		// 降级：直接创建
 		return m.createMemory(ctx, userID, item)
 	}
 
+	logger.Info("[记忆处理-processOne] LLM去重判断完成",
+		zap.String("action", decision.Action),
+		zap.String("reason", decision.Reason),
+	)
+
 	// 6. 根据判断结果执行
+	logger.Info("[记忆处理-processOne] 步骤6: 执行去重决策")
 	return m.executeDecision(ctx, userID, item, decision, similar)
 }
 
@@ -160,11 +204,21 @@ func (m *memoryManager) findSimilarMemories(
 	userID string,
 	item contracts.MemoryItem,
 ) ([]contracts.MemoryQueryResult, error) {
+	logger.Info("[记忆处理-findSimilarMemories] 开始查找相似记忆",
+		zap.String("user_id", userID),
+		zap.String("content", item.Content),
+	)
+
 	// 向量化新记忆内容
-	queryVector, err := m.embeddingSvc.Embed(ctx, item.Content)
+	logger.Info("[记忆处理-findSimilarMemories] 步骤1: 向量化查询内容")
+	queryVector, err := m.embeddingSvc.Embed(ctx, userID, item.Content)
 	if err != nil {
+		logger.Error("[记忆处理-findSimilarMemories] 向量化查询内容失败", zap.Error(err))
 		return nil, fmt.Errorf("embed content: %w", err)
 	}
+	logger.Info("[记忆处理-findSimilarMemories] 向量化查询内容成功",
+		zap.Int("vector_dim", len(queryVector)),
+	)
 
 	// 检索相似记忆
 	var kbID contracts.ID
@@ -179,11 +233,16 @@ func (m *memoryManager) findSimilarMemories(
 	}
 
 	// 使用MemoryRetriever检索
+	logger.Info("[记忆处理-findSimilarMemories] 步骤2: 检索相似记忆")
 	retriever := NewMemoryRetriever(m.memoryRepo, m.embeddingSvc)
 	results, err := retriever.Retrieve(ctx, query)
 	if err != nil {
+		logger.Error("[记忆处理-findSimilarMemories] 检索相似记忆失败", zap.Error(err))
 		return nil, fmt.Errorf("retrieve similar memories: %w", err)
 	}
+	logger.Info("[记忆处理-findSimilarMemories] 检索相似记忆成功",
+		zap.Int("results_count", len(results)),
+	)
 
 	// 过滤：只保留相似度超过阈值的
 	var filtered []contracts.MemoryQueryResult
@@ -193,7 +252,11 @@ func (m *memoryManager) findSimilarMemories(
 		}
 	}
 
-	_ = queryVector // 用于日志或调试
+	logger.Info("[记忆处理-findSimilarMemories] 过滤后相似记忆数量",
+		zap.Int("filtered_count", len(filtered)),
+		zap.Float64("threshold", m.config.SimilarityThreshold),
+	)
+
 	return filtered, nil
 }
 
@@ -298,11 +361,23 @@ func (m *memoryManager) executeDecision(
 
 // createMemory 创建新记忆。
 func (m *memoryManager) createMemory(ctx context.Context, userID string, item contracts.MemoryItem) error {
-	// 向量化
-	vector, err := m.embeddingSvc.Embed(ctx, item.Content)
+	logger.Info("[记忆处理-createMemory] 开始创建新记忆",
+		zap.String("user_id", userID),
+		zap.String("type", string(item.Type)),
+		zap.String("content", item.Content),
+	)
+
+	// 向量化并获取使用的模型ID
+	logger.Info("[记忆处理-createMemory] 步骤1: 向量化内容")
+	vector, modelID, err := m.embeddingSvc.EmbedWithModelID(ctx, userID, item.Content)
 	if err != nil {
+		logger.Error("[记忆处理-createMemory] 向量化失败", zap.Error(err))
 		return fmt.Errorf("embed content: %w", err)
 	}
+	logger.Info("[记忆处理-createMemory] 向量化成功",
+		zap.Int("vector_dim", len(vector)),
+		zap.String("model_id", modelID),
+	)
 
 	// 构建实体
 	memory := &entity.Memory{
@@ -314,17 +389,21 @@ func (m *memoryManager) createMemory(ctx context.Context, userID string, item co
 		Summary:          item.Content, // 简化处理，summary与content相同
 		Importance:       item.Importance,
 		ContentHash:      computeContentHash(item.Content),
-		Embedding:        float64SliceToBytes(vector),
+		Embedding:        formatPgVectorFromFloat64(vector), // 转换为 PostgreSQL 向量格式
 		EmbeddingDim:     len(vector),
-		EmbeddingModelID: "", // 需要从embeddingSvc获取
+		EmbeddingModelID: modelID,
 		Status:           "active",
 	}
 
+	// 存储到数据库
+	logger.Info("[记忆处理-createMemory] 步骤2: 存储到数据库")
 	if err := m.memoryRepo.Create(ctx, memory); err != nil {
+		logger.Error("[记忆处理-createMemory] 存储到数据库失败", zap.Error(err))
 		return fmt.Errorf("create memory: %w", err)
 	}
 
-	logger.Info("创建新记忆",
+	logger.Info("[记忆处理-createMemory] 创建新记忆成功",
+		zap.String("memory_id", memory.ID),
 		zap.String("content", item.Content),
 		zap.String("type", string(item.Type)),
 	)
@@ -345,13 +424,14 @@ func (m *memoryManager) updateMemory(ctx context.Context, userID, memoryID strin
 	existing.Importance = item.Importance
 	existing.MemoryType = string(item.Type)
 
-	// 重新向量化
-	vector, err := m.embeddingSvc.Embed(ctx, item.Content)
+	// 重新向量化并获取模型ID
+	vector, modelID, err := m.embeddingSvc.EmbedWithModelID(ctx, userID, item.Content)
 	if err != nil {
 		return fmt.Errorf("embed content: %w", err)
 	}
-	existing.Embedding = float64SliceToBytes(vector)
+	existing.Embedding = formatPgVectorFromFloat64(vector) // 转换为 PostgreSQL 向量格式
 	existing.EmbeddingDim = len(vector)
+	existing.EmbeddingModelID = modelID
 	existing.ContentHash = computeContentHash(item.Content)
 
 	if err := m.memoryRepo.Update(ctx, existing); err != nil {
@@ -381,13 +461,14 @@ func (m *memoryManager) mergeMemory(ctx context.Context, userID, targetID, merge
 		existing.Importance = item.Importance
 	}
 
-	// 重新向量化
-	vector, err := m.embeddingSvc.Embed(ctx, mergedContent)
+	// 重新向量化并获取模型ID
+	vector, modelID, err := m.embeddingSvc.EmbedWithModelID(ctx, userID, mergedContent)
 	if err != nil {
 		return fmt.Errorf("embed content: %w", err)
 	}
-	existing.Embedding = float64SliceToBytes(vector)
+	existing.Embedding = formatPgVectorFromFloat64(vector) // 转换为 PostgreSQL 向量格式
 	existing.EmbeddingDim = len(vector)
+	existing.EmbeddingModelID = modelID
 	existing.ContentHash = computeContentHash(mergedContent)
 
 	if err := m.memoryRepo.Update(ctx, existing); err != nil {
@@ -448,8 +529,8 @@ func parseDedupDecision(response string) (*DedupDecision, error) {
 	return &decision, nil
 }
 
-// extractJSON 从文本中提取JSON（复用planner_service.go中的函数）。
-func extractJSONFromText(text string) string {
+// extractJSON 从文本中提取JSON。
+func extractJSON(text string) string {
 	// 尝试找到JSON块
 	start := 0
 	for i, ch := range text {
@@ -477,4 +558,13 @@ func extractJSONFromText(text string) string {
 	}
 
 	return ""
+}
+
+// formatPgVectorFromFloat64 将 float64 切片转换为 PostgreSQL 向量格式字符串
+func formatPgVectorFromFloat64(vec []float64) string {
+	strs := make([]string, len(vec))
+	for i, v := range vec {
+		strs[i] = fmt.Sprintf("%f", v)
+	}
+	return "[" + strings.Join(strs, ",") + "]"
 }

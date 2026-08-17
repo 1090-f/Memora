@@ -39,31 +39,35 @@ func DefaultAgentWorkerConfig() AgentWorkerConfig {
 // 它周期性地扫描数据库中状态为 queued 的 agent_runs 记录，
 // 原子性地将其标记为 running 后调用 ContextBuilder 构建上下文并执行。
 type AgentWorker struct {
-	agentService   contracts.AgentRunService     // Agent 核心执行服务（负责路由和执行）
-	runRepo        repository.AgentRunRepository // 运行记录 Repository（用于领取和更新状态）
-	contextBuilder contracts.ContextBuilder      // 上下文构建器（从数据库加载会话、配置等信息）
-	messageRepo    repository.MessageRepository  // 消息 Repository（用于持久化助手消息）
-	config         AgentWorkerConfig             // Worker 配置
-	mu             sync.Mutex                    // 保护 running 状态的互斥锁
-	running        bool                          // 是否正在运行
+	agentService    contracts.AgentRunService     // Agent 核心执行服务（负责路由和执行）
+	runRepo         repository.AgentRunRepository // 运行记录 Repository（用于领取和更新状态）
+	contextBuilder  contracts.ContextBuilder      // 上下文构建器（从数据库加载会话、配置等信息）
+	messageRepo     repository.MessageRepository  // 消息 Repository（用于持久化助手消息）
+	memoryExtractor contracts.MemoryExtractor     // 记忆提取器（从回答中提取长期记忆）
+	config          AgentWorkerConfig             // Worker 配置
+	mu              sync.Mutex                    // 保护 running 状态的互斥锁
+	running         bool                          // 是否正在运行
 }
 
 // NewAgentWorker 创建 Agent Worker 实例。
 // 需要 AgentRunService（执行路由和运行）、AgentRunRepository（领取和状态更新）、
-// MessageRepository（持久化助手消息）和 ContextBuilder（从数据库重建上下文）。
+// MessageRepository（持久化助手消息）、ContextBuilder（从数据库重建上下文）
+// 和 MemoryExtractor（从回答中提取长期记忆）。
 func NewAgentWorker(
 	agentService contracts.AgentRunService,
 	runRepo repository.AgentRunRepository,
 	messageRepo repository.MessageRepository,
 	contextBuilder contracts.ContextBuilder,
+	memoryExtractor contracts.MemoryExtractor,
 	config AgentWorkerConfig,
 ) *AgentWorker {
 	return &AgentWorker{
-		agentService:   agentService,
-		runRepo:        runRepo,
-		messageRepo:    messageRepo,
-		contextBuilder: contextBuilder,
-		config:         config,
+		agentService:    agentService,
+		runRepo:         runRepo,
+		messageRepo:     messageRepo,
+		contextBuilder:  contextBuilder,
+		memoryExtractor: memoryExtractor,
+		config:          config,
 	}
 }
 
@@ -178,11 +182,11 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 		return
 	}
 
-	// 2. 构造运行请求
+	// 2. 构造运行请求（使用从数据库加载的配置）
 	runRequest := contracts.AgentRunRequest{
 		RunID:   runID,
 		Context: agentCtx,
-		Config:  contracts.DefaultAgentConfig(),
+		Config:  buildConfigFromAgentContext(agentCtx),
 	}
 
 	// 3. 调用核心服务执行 Agent 运行
@@ -258,6 +262,36 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 		}
 	}
 
+	// 异步提取长期记忆（不阻塞主流程）
+	if w.memoryExtractor == nil {
+		logger.Info("[记忆提取] 跳过：记忆提取器未初始化",
+			zap.String("run_id", run.ID.String()),
+		)
+	} else if result.FinalResult == "" {
+		logger.Info("[记忆提取] 跳过：最终结果为空",
+			zap.String("run_id", run.ID.String()),
+		)
+	} else {
+		logger.Info("[记忆提取] 开始异步提取长期记忆",
+			zap.String("run_id", run.ID.String()),
+			zap.String("user_id", run.UserID.String()),
+			zap.String("query", run.Query),
+			zap.Int("answer_length", len(result.FinalResult)),
+		)
+		go func() {
+			if err := w.memoryExtractor.Extract(context.Background(), agentCtx, result.FinalResult); err != nil {
+				logger.Error("[记忆提取] 提取长期记忆失败",
+					zap.String("run_id", run.ID.String()),
+					zap.Error(err),
+				)
+			} else {
+				logger.Info("[记忆提取] 提取长期记忆完成",
+					zap.String("run_id", run.ID.String()),
+				)
+			}
+		}()
+	}
+
 	logger.Info("Agent 运行执行完成", zap.String("run_id", run.ID.String()))
 }
 
@@ -293,4 +327,34 @@ func (w *AgentWorker) getFriendlyErrorMessage(err error) string {
 		return "抱歉，AI 暂时无法完成回答，请稍后重试。"
 	}
 	return fmt.Sprintf("抱歉，AI 在处理您的问题时遇到了错误：%s", err.Error())
+}
+
+// buildConfigFromAgentContext 从 AgentContext 构建 AgentConfig。
+// 使用从数据库加载的配置，而不是硬编码的默认值。
+func buildConfigFromAgentContext(ctx contracts.AgentContext) contracts.AgentConfig {
+	config := contracts.DefaultAgentConfig()
+
+	// 使用从数据库加载的 Plan-Execute 配置
+	if ctx.MaxPlanSteps > 0 {
+		config.MaxPlanSteps = ctx.MaxPlanSteps
+	}
+	if ctx.MaxReplans > 0 {
+		config.MaxReplans = ctx.MaxReplans
+	}
+	if ctx.ReviewerRuns > 0 {
+		config.ReviewerRuns = ctx.ReviewerRuns
+	}
+
+	// 使用从数据库加载的其他配置
+	if ctx.MaxReactRounds > 0 {
+		config.MaxReactRounds = ctx.MaxReactRounds
+	}
+
+	logger.Info("Agent 配置加载完成",
+		zap.Int("max_plan_steps", config.MaxPlanSteps),
+		zap.Int("max_replans", config.MaxReplans),
+		zap.Int("reviewer_runs", config.ReviewerRuns),
+	)
+
+	return config
 }

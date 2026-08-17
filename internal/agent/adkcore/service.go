@@ -12,10 +12,10 @@ import (
 )
 
 // Service 是基于 Eino ADK ChatModelAgent 和 Router 的 AgentRunService。
-// 每次 Run() 先由 Router 决定 execution mode，再分发到 ReactRunner 或 PlanRunner。
+// 每次 Run() 先由 Router 决定 execution mode，再分发到 ReactRunner 或 PlanExecuteGraph。
 type Service struct {
 	reactRunner       *ADKReactRunner
-	planRunner        core.PlanRunner
+	planGraph         *PlanExecuteGraph
 	router            contracts.Router
 	eventPublisher    core.EventPublisher
 	citationCollector core.CitationCollector
@@ -28,7 +28,7 @@ type Service struct {
 // NewService 创建带路由功能的 Agent 运行服务。
 func NewService(
 	reactRunner *ADKReactRunner,
-	planRunner core.PlanRunner,
+	planGraph *PlanExecuteGraph,
 	router contracts.Router,
 	eventPublisher core.EventPublisher,
 	citationCollector core.CitationCollector,
@@ -37,9 +37,10 @@ func NewService(
 	if eventPublisher == nil {
 		eventPublisher = core.NoopEventPublisher{}
 	}
+
 	return &Service{
 		reactRunner:       reactRunner,
-		planRunner:        planRunner,
+		planGraph:         planGraph,
 		router:            router,
 		eventPublisher:    eventPublisher,
 		citationCollector: citationCollector,
@@ -105,7 +106,7 @@ func (s *Service) Run(ctx context.Context, request contracts.AgentRunRequest) (c
 	// 3. 按模式分发（使用可取消的 runCtx）
 	switch decision.ExecutionMode {
 	case contracts.ExecutionPlanExecute:
-		return s.runPlan(runCtx, request)
+		return s.runPlanExecute(ctx, request)
 	default:
 		return s.runReact(runCtx, request)
 	}
@@ -142,19 +143,10 @@ func (s *Service) runReact(ctx context.Context, request contracts.AgentRunReques
 	return result, nil
 }
 
-// runPlan 用 PlanRunner 执行 Plan-Execute 模式。
-// ctx 由 Run() 传入，已经是可取消的 context，无需再次创建。
-func (s *Service) runPlan(ctx context.Context, request contracts.AgentRunRequest) (contracts.AgentRunResult, error) {
-	if s.planRunner == nil {
-		// PlanRunner 未注入时降级为 React
-		_ = s.eventPublisher.PublishRouterSelected(ctx, request.RunID, contracts.RouterDecision{
-			ExecutionMode: contracts.ExecutionReact,
-			ReasonSummary: "PlanRunner 未注入，降级为 ReAct",
-			Confidence:    0.0,
-			FallbackUsed:  true,
-			CreatedAt:     time.Now(),
-		})
-		return s.runReact(ctx, request)
+// runPlanExecute 用 PlanExecuteGraph 执行 Plan-Execute 模式。
+func (s *Service) runPlanExecute(ctx context.Context, request contracts.AgentRunRequest) (contracts.AgentRunResult, error) {
+	if s.planGraph == nil {
+		return contracts.AgentRunResult{}, fmt.Errorf("plan execute graph is nil")
 	}
 
 	// 在开始执行前检查 context 是否已被取消
@@ -166,19 +158,18 @@ func (s *Service) runPlan(ctx context.Context, request contracts.AgentRunRequest
 		}
 	}
 
-	startedAt := time.Now().UTC()
-	output, err := s.planRunner.Run(ctx, request.Context, request.Config)
+	// 发布运行开始事件
+	_ = s.eventPublisher.PublishRunStarted(ctx, request.RunID, contracts.ExecutionPlanExecute)
+
+	result, err := s.planGraph.Run(ctx, request)
 	if err != nil {
 		if ctx.Err() != nil {
 			_ = s.eventPublisher.PublishRunCancelled(ctx, request.RunID)
 		} else {
 			_ = s.eventPublisher.PublishRunFailed(ctx, request.RunID, contracts.ExecutionPlanExecute, err)
 		}
-		return output.Result(request.RunID, contracts.ExecutionPlanExecute, startedAt, time.Now().UTC()),
-			&contracts.AgentRunError{ExecutionMode: contracts.ExecutionPlanExecute, Err: err}
+		return result, &contracts.AgentRunError{ExecutionMode: contracts.ExecutionPlanExecute, Err: err}
 	}
-
-	result := output.Result(request.RunID, contracts.ExecutionPlanExecute, startedAt, time.Now().UTC())
 	if err := s.eventPublisher.PublishRunCompleted(ctx, request.RunID, result); err != nil {
 		return contracts.AgentRunResult{}, err
 	}

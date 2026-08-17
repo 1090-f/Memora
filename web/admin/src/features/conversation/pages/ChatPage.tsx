@@ -375,8 +375,33 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
       }
 
       const response = await createAgentRun({ knowledge_base_id: kbId, conversation_id: id, query });
-      conversationRunIdsRef.current[id] = response.run_id;
-      await runAgentStream(response.run_id);
+      replayAbortRef.current?.abort();
+      currentRunId.current = response.run_id;
+      setActiveRunId(response.run_id);
+      hydratedRunIdRef.current = response.run_id;
+      // 重置 reducer 状态，清除上一轮运行的数据（highest_sequence、answer 等）
+      dispatchRun({ type: 'RESET_AGENT_RUN_STATE' });
+      dispatchRun({ type: 'SET_AGENT_RUN_QUEUED' });
+      const controller = new AbortController();
+      abortRef.current = controller;
+      await streamAgentEvents(`${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${response.run_id}/events`, {
+        signal: controller.signal,
+        onEvent: dispatchRun,
+      });
+        const completedRun = await getAgentRun(response.run_id);
+      // Plan-Execute: SSE 完成事件可能先于 DB 写入，短暂延时后重试
+      let answer = completedRun.final_result || runStateRef.current.answer;
+      if (!answer) {
+        await new Promise(r => setTimeout(r, 500));
+        const retried = await getAgentRun(response.run_id);
+        answer = retried.final_result || runStateRef.current.answer;
+      }
+      if (answer) {
+        setMessages((current) => [...current, {
+          id: crypto.randomUUID(), role: 'assistant', content: answer, agent_run_id: response.run_id,
+          status: completedRun.status || 'completed', citations: normalizeCitations(runStateRef.current.citations), created_at: new Date().toISOString(),
+        }]);
+      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '智能问答请求失败');
     } finally {

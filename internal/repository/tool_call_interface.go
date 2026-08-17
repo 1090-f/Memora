@@ -20,9 +20,6 @@ type ToolCallRepository interface {
 	// ListByRunID 按 Agent 运行 ID 查询该运行的所有工具调用，按开始时间升序排列。
 	ListByRunID(ctx context.Context, runID uuid.UUID) ([]entity.ToolCall, error)
 
-	// ListByPlanStepID 按计划步骤 ID 查询该步骤的所有工具调用。
-	ListByPlanStepID(ctx context.Context, stepID uuid.UUID) ([]entity.ToolCall, error)
-
 	// CountByRunID 统计指定运行的工具调用总数。
 	CountByRunID(ctx context.Context, runID uuid.UUID) (int64, error)
 }

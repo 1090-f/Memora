@@ -1,86 +1,108 @@
 package contracts
 
-import "context"
-
-// PlanStatus 表示计划执行的当前状态。
-type PlanStatus string
-
-// PlanStepStatus 表示计划步骤执行的当前状态。
-type PlanStepStatus string
-
-// 计划与步骤的状态常量。
-const (
-	// PlanPending 表示计划已创建但尚未开始。
-	PlanPending PlanStatus = "pending"
-	// PlanExecuting 表示计划正在执行中。
-	PlanExecuting PlanStatus = "executing"
-	// PlanReplanning 表示计划正在被重新评估和修改。
-	PlanReplanning PlanStatus = "replanning"
-	// PlanReviewing 表示计划正在接受质量审查。
-	PlanReviewing PlanStatus = "reviewing"
-	// PlanCompleted 表示计划已全部执行完成。
-	PlanCompleted PlanStatus = "completed"
-	// PlanFailed 表示计划执行失败。
-	PlanFailed PlanStatus = "failed"
-	// PlanCancelled 表示计划执行已取消。
-	PlanCancelled PlanStatus = "cancelled"
-	// StepPending 表示步骤尚未开始。
-	StepPending PlanStepStatus = "pending"
-	// StepRunning 表示步骤正在执行中。
-	StepRunning PlanStepStatus = "running"
-	// StepCompleted 表示步骤已成功执行。
-	StepCompleted PlanStepStatus = "completed"
-	// StepFailed 表示步骤执行失败。
-	StepFailed PlanStepStatus = "failed"
-	// StepSkipped 表示步骤在执行过程中被跳过。
-	StepSkipped PlanStepStatus = "skipped"
-	// StepCancelled 表示步骤执行已取消。
-	StepCancelled PlanStepStatus = "cancelled"
+import (
+	"time"
 )
 
-// Plan 表示 Agent 需要按顺序执行的计划。
+// PlanStatus 计划状态
+type PlanStatus string
+
+const (
+	PlanStatusPending   PlanStatus = "pending"
+	PlanStatusRunning   PlanStatus = "running"
+	PlanStatusCompleted PlanStatus = "completed"
+	PlanStatusFailed    PlanStatus = "failed"
+	PlanStatusCancelled PlanStatus = "cancelled"
+)
+
+// PlanStepStatus 步骤状态
+type PlanStepStatus string
+
+const (
+	PlanStepStatusPending   PlanStepStatus = "pending"
+	PlanStepStatusRunning   PlanStepStatus = "running"
+	PlanStepStatusCompleted PlanStepStatus = "completed"
+	PlanStepStatusFailed    PlanStepStatus = "failed"
+	PlanStepStatusSkipped   PlanStepStatus = "skipped"
+)
+
+// Plan 结构化执行计划
 type Plan struct {
-	ID                 ID         `json:"id"`                  // 计划 ID
-	RunID              ID         `json:"run_id"`              // 关联的运行 ID
-	Version            int        `json:"version"`             // 计划版本（重新规划后递增）
-	Goal               string     `json:"goal"`                // 计划目标
-	CompletionCriteria []string   `json:"completion_criteria"` // 完成判据列表
-	Status             PlanStatus `json:"status"`              // 计划状态
-	Steps              []PlanStep `json:"steps"`               // 步骤列表
+	ID          ID         `json:"id"`
+	RunID       ID         `json:"run_id"`
+	Goal        string     `json:"goal"`         // 用户目标
+	Steps       []PlanStep `json:"steps"`        // 执行步骤
+	MaxSteps    int        `json:"max_steps"`    // 最大步数限制
+	ReplanCount int        `json:"replan_count"` // 重规划次数
+	MaxReplans  int        `json:"max_replans"`  // 最大重规划次数
+	Status      PlanStatus `json:"status"`
+	FinalAnswer string     `json:"final_answer"` // 最终答案
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
-// PlanStep 表示执行计划中的单个步骤。
+// HasFailures 检查计划是否有失败的步骤
+func (p *Plan) HasFailures() bool {
+	for _, step := range p.Steps {
+		if step.Status == PlanStepStatusFailed {
+			return true
+		}
+	}
+	return false
+}
+
+// GetPendingSteps 获取所有待执行的步骤
+func (p *Plan) GetPendingSteps() []PlanStep {
+	var pending []PlanStep
+	for _, step := range p.Steps {
+		if step.Status == PlanStepStatusPending {
+			pending = append(pending, step)
+		}
+	}
+	return pending
+}
+
+// GetCompletedSteps 获取所有已完成的步骤
+func (p *Plan) GetCompletedSteps() []PlanStep {
+	var completed []PlanStep
+	for _, step := range p.Steps {
+		if step.Status == PlanStepStatusCompleted {
+			completed = append(completed, step)
+		}
+	}
+	return completed
+}
+
+// GetFailedSteps 获取所有失败的步骤
+func (p *Plan) GetFailedSteps() []PlanStep {
+	var failed []PlanStep
+	for _, step := range p.Steps {
+		if step.Status == PlanStepStatusFailed {
+			failed = append(failed, step)
+		}
+	}
+	return failed
+}
+
+// PlanStep 单个执行步骤
 type PlanStep struct {
-	ID                 ID             `json:"id"`                            // 步骤 ID
-	StepNo             int            `json:"step_no"`                       // 步骤序号
-	Title              string         `json:"title"`                         // 步骤标题
-	Description        string         `json:"description,omitempty"`         // 可选：步骤描述
-	DependsOn          []int          `json:"depends_on"`                    // 依赖的步骤序号
-	ToolHint           string         `json:"tool_hint,omitempty"`           // 可选：建议使用的工具
-	CompletionCriteria string         `json:"completion_criteria,omitempty"` // 可选：步骤完成判据
-	Status             PlanStepStatus `json:"status"`                        // 步骤状态
+	ID          ID             `json:"id"`
+	StepNumber  int            `json:"step_number"` // 步骤序号
+	Title       string         `json:"title"`       // 步骤标题
+	Description string         `json:"description"` // 步骤描述
+	ToolName    string         `json:"tool_name"`   // 执行工具名（可选）
+	Arguments   map[string]any `json:"arguments"`   // 工具参数（可选）
+	DependsOn   []ID           `json:"depends_on"`  // 依赖的步骤 ID
+	Status      PlanStepStatus `json:"status"`
+	Output      string         `json:"output"` // 步骤输出
+	Error       string         `json:"error"`  // 错误信息
+	StartedAt   *time.Time     `json:"started_at"`
+	CompletedAt *time.Time     `json:"completed_at"`
 }
 
-// ReviewerResult 表示计划审查的结果。
+// ReviewerResult 审查结果
 type ReviewerResult struct {
-	Result  string `json:"result"`  // 评审结论
-	Summary string `json:"summary"` // 评审摘要
-}
-
-// Planner 为 Agent 运行创建执行计划。
-type Planner interface {
-	// Plan 根据 Agent 上下文和配置创建执行计划。
-	Plan(ctx context.Context, agentContext AgentContext, config AgentConfig) (Plan, error)
-}
-
-// PlanExecutor 按顺序执行计划的步骤。
-type PlanExecutor interface {
-	// Execute 运行计划步骤并返回包含执行结果的更新后计划。
-	Execute(ctx context.Context, agentContext AgentContext, plan Plan) (Plan, error)
-}
-
-// PlanReviewer 审查已完成计划的质量和正确性。
-type PlanReviewer interface {
-	// Review 评估计划执行情况并返回审查结果。
-	Review(ctx context.Context, agentContext AgentContext, plan Plan) (ReviewerResult, error)
+	Approved   bool   `json:"approved"`
+	Issues     string `json:"issues"`     // 存在的问题
+	Suggestion string `json:"suggestion"` // 改进建议
 }

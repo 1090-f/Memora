@@ -119,62 +119,31 @@ func (r *conversationRepository) Delete(ctx context.Context, id, userID string) 
 			return fmt.Errorf("解析会话ID失败: %w", err)
 		}
 
-		// 2. 先删除 agent_plan_execution_logs（引用 agent_plans）
-		if err := tx.Exec(`
-			DELETE FROM agent_plan_execution_logs 
-			WHERE plan_id IN (
-				SELECT id FROM agent_plans WHERE agent_run_id IN (
-					SELECT id FROM agent_runs WHERE conversation_id = ?
-				)
-			)`, conversationUUID).Error; err != nil {
-			return fmt.Errorf("删除计划执行日志失败: %w", err)
-		}
-
-		// 3. 删除 agent_plan_steps（引用 agent_plans）
-		if err := tx.Exec(`
-			DELETE FROM agent_plan_steps 
-			WHERE plan_id IN (
-				SELECT id FROM agent_plans WHERE agent_run_id IN (
-					SELECT id FROM agent_runs WHERE conversation_id = ?
-				)
-			)`, conversationUUID).Error; err != nil {
-			return fmt.Errorf("删除计划步骤失败: %w", err)
-		}
-
-		// 4. 删除 agent_plans（引用 agent_runs）
-		if err := tx.Exec(`
-			DELETE FROM agent_plans 
-			WHERE agent_run_id IN (
-				SELECT id FROM agent_runs WHERE conversation_id = ?
-			)`, conversationUUID).Error; err != nil {
-			return fmt.Errorf("删除agent计划失败: %w", err)
-		}
-
-		// 5. 删除 tool_calls（引用 agent_runs 和 agent_plan_steps）
+		// 2. 删除 tool_calls（引用 agent_runs）
 		if err := tx.Where("agent_run_id IN (?)",
 			tx.Model(&entity.AgentRun{}).Select("id").Where("conversation_id = ?", conversationUUID),
 		).Delete(&entity.ToolCall{}).Error; err != nil {
 			return fmt.Errorf("删除工具调用记录失败: %w", err)
 		}
 
-		// 6. 解除 messages 对 agent_runs 的引用（agent_run_id 可以为 NULL）
+		// 3. 解除 messages 对 agent_runs 的引用（agent_run_id 可以为 NULL）
 		if err := tx.Model(&entity.Message{}).
 			Where("conversation_id = ?", id).
 			Update("agent_run_id", nil).Error; err != nil {
 			return fmt.Errorf("解除消息的agent运行引用失败: %w", err)
 		}
 
-		// 7. 删除 agent_runs（此时没有任何表引用它了）
+		// 4. 删除 agent_runs（此时没有任何表引用它了）
 		if err := tx.Where("conversation_id = ?", conversationUUID).Delete(&entity.AgentRun{}).Error; err != nil {
 			return fmt.Errorf("删除关联的agent运行记录失败: %w", err)
 		}
 
-		// 8. 删除 messages（此时 agent_runs 已被删除）
+		// 5. 删除 messages（此时 agent_runs 已被删除）
 		if err := tx.Where("conversation_id = ?", id).Delete(&entity.Message{}).Error; err != nil {
 			return fmt.Errorf("删除关联的消息失败: %w", err)
 		}
 
-		// 9. 软删除会话
+		// 6. 软删除会话
 		result := tx.Model(&entity.Conversation{}).
 			Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, userID).
 			Updates(map[string]interface{}{

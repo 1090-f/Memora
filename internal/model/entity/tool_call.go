@@ -14,7 +14,6 @@ import (
 type ToolCall struct {
 	ID                uuid.UUID      `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
 	AgentRunID        uuid.UUID      `gorm:"type:uuid;not null;index" json:"agent_run_id"`                                                                   // 所属 Agent 运行 ID
-	PlanStepID        *uuid.UUID     `gorm:"type:uuid" json:"plan_step_id,omitempty"`                                                                        // 可选：所属计划步骤 ID（Plan-Execute 模式下）
 	ReactRoundNo      *int           `gorm:"check:react_round_no > 0" json:"react_round_no,omitempty"`                                                       // 可选：ReAct 执行轮次编号
 	ToolName          string         `gorm:"type:varchar(128);not null" json:"tool_name"`                                                                    // 工具名称（如 knowledge_search、document_read、mcp 工具名）
 	ToolType          string         `gorm:"type:varchar(20);not null;check:tool_type IN ('internal','mcp')" json:"tool_type"`                               // 工具类型：internal（内置工具）/ mcp
