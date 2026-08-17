@@ -31,26 +31,6 @@ func NewController(docs service.DocumentService, preview previewservice.Service,
 	return &Controller{docs: docs, preview: preview, reader: reader, assetSignKey: assetSignKey}
 }
 
-// CreateManual 手工创建只读知识文档。
-func (ctrl *Controller) CreateManual(c *gin.Context) {
-	user, ok := middleware.GetUser(c)
-	if !ok {
-		response.Failure(c, apperrors.ErrUnauthorized)
-		return
-	}
-	var req request.CreateDocumentRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Failure(c, apperrors.ErrInvalidArgument)
-		return
-	}
-	result, err := ctrl.docs.CreateManual(c.Request.Context(), user.ID, c.Param("kb_id"), &req)
-	if err != nil {
-		response.Failure(c, err)
-		return
-	}
-	response.Success(c, http.StatusCreated, result)
-}
-
 // List 分页查询知识库文档列表。
 func (ctrl *Controller) List(c *gin.Context) {
 	user, ok := middleware.GetUser(c)

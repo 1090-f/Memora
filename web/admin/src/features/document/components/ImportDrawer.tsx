@@ -3,7 +3,10 @@ import {
   Box,
   Button,
   Chip,
-  Drawer,
+  Dialog,
+  DialogContent,
+  DialogTitle,
+  IconButton,
   LinearProgress,
   MenuItem,
   Stack,
@@ -185,6 +188,7 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
       setSourceURL('');
       if (folderInputRef.current) folderInputRef.current.value = '';
       void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBaseDashboard(kbId) });
       if (sourceMode === 'url') {
         setPendingFiles([]);
         setNotice(`已创建抓取任务：${result.tasks.map((task) => task.file_name).join('、')}`);
@@ -244,6 +248,7 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
       setPendingTasks([]);
       void queryClient.invalidateQueries({ queryKey: queryKeys.documents(kbId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBaseDashboard(kbId) });
     },
   });
 
@@ -418,9 +423,25 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
   });
 
   return (
-    <Drawer anchor="right" open={open} onClose={onClose}>
-      <Stack spacing={2} sx={{ width: 480, p: 3 }}>
-        <Typography variant="h6">导入知识文档</Typography>
+    <Dialog
+      open={open}
+      onClose={onClose}
+      fullWidth
+      maxWidth="md"
+      scroll="paper"
+      slotProps={{ paper: { sx: { borderRadius: 3.5, maxHeight: 'calc(100vh - 64px)' } } }}
+    >
+      <DialogTitle sx={{ px: 3, py: 2, borderBottom: '1px solid', borderColor: 'divider' }}>
+        <Stack direction="row" alignItems="center" spacing={2}>
+          <Box sx={{ flexGrow: 1 }}>
+            <Typography variant="h6" fontWeight={750}>导入知识</Typography>
+            <Typography variant="body2" color="text.secondary">上传本地文件、文件夹或抓取网页内容。</Typography>
+          </Box>
+          <IconButton aria-label="关闭导入知识" onClick={onClose}><CloseOutlined /></IconButton>
+        </Stack>
+      </DialogTitle>
+      <DialogContent sx={{ p: 0 }}>
+        <Stack spacing={2} sx={{ p: 3 }}>
         <ToggleButtonGroup
           exclusive
           fullWidth
@@ -663,7 +684,8 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
             {uploadMutation.isPending ? '正在上传…' : sourceMode === 'url' ? '开始抓取' : '上传并扫描'}
           </Button>
         )}
-      </Stack>
-    </Drawer>
+        </Stack>
+      </DialogContent>
+    </Dialog>
   );
 }

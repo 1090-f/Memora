@@ -1,7 +1,6 @@
 import { apiBlobRequest, apiRequest } from '@/api/client';
 import type {
   CreateDirectoryInput,
-  CreateManualDocumentInput,
   DirectoryNode,
   Document,
   DocumentListItem,
@@ -29,9 +28,6 @@ export const createDirectory = (kbId: string, input: CreateDirectoryInput) =>
 
 export const listDocuments = (kbId: string, params: DocumentListParams = {}) =>
   apiRequest<PageResult<DocumentListItem>>({ url: `/knowledge-bases/${kbId}/documents`, params });
-
-export const createManualDocument = (kbId: string, input: CreateManualDocumentInput) =>
-  apiRequest<Document>({ url: `/knowledge-bases/${kbId}/documents`, method: 'POST', data: input });
 
 export const getDocument = (documentId: string) =>
   apiRequest<Document>({ url: `/documents/${documentId}` });

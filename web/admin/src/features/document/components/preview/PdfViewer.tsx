@@ -28,7 +28,6 @@ export function PdfViewer({ documentId, contentUrl, title }: { documentId: strin
   useEffect(() => {
     if (!blobQuery.data) { setPdf(null); return; }
     let active = true;
-    let loaded: PDFDocumentProxy | null = null;
     let task: PDFDocumentLoadingTask | null = null;
     void blobQuery.data.arrayBuffer().then((buffer) => {
       if (!active) return;
@@ -36,8 +35,7 @@ export function PdfViewer({ documentId, contentUrl, title }: { documentId: strin
       return task.promise;
     }).then((document) => {
       if (!document) return;
-      if (!active) { void document.destroy(); return; }
-      loaded = document;
+      if (!active) return;
       setPdf(document);
       setPageNumber(1);
       setLoadError(null);
@@ -45,7 +43,6 @@ export function PdfViewer({ documentId, contentUrl, title }: { documentId: strin
     return () => {
       active = false;
       if (task) void task.destroy();
-      if (loaded) void loaded.destroy();
     };
   }, [blobQuery.data]);
 

@@ -1,17 +1,13 @@
 import CachedOutlined from '@mui/icons-material/CachedOutlined';
-import CheckCircleOutlined from '@mui/icons-material/CheckCircleOutlined';
+import CheckCircleOutlineRounded from '@mui/icons-material/CheckCircleOutlineRounded';
 import CloseOutlined from '@mui/icons-material/CloseOutlined';
-import CloudUploadOutlined from '@mui/icons-material/CloudUploadOutlined';
-import CreateOutlined from '@mui/icons-material/CreateOutlined';
 import DescriptionOutlined from '@mui/icons-material/DescriptionOutlined';
-import FilterAltOutlined from '@mui/icons-material/FilterAltOutlined';
-import FolderOutlined from '@mui/icons-material/FolderOutlined';
+import ErrorOutlineRounded from '@mui/icons-material/ErrorOutlineRounded';
 import MoreVertOutlined from '@mui/icons-material/MoreVertOutlined';
-import OpenInFullOutlined from '@mui/icons-material/OpenInFullOutlined';
+import PendingActionsOutlined from '@mui/icons-material/PendingActionsOutlined';
 import PictureAsPdfOutlined from '@mui/icons-material/PictureAsPdfOutlined';
 import RefreshOutlined from '@mui/icons-material/RefreshOutlined';
 import SearchOutlined from '@mui/icons-material/SearchOutlined';
-import SmartToyOutlined from '@mui/icons-material/SmartToyOutlined';
 import SettingsOutlined from '@mui/icons-material/SettingsOutlined';
 import UploadFileOutlined from '@mui/icons-material/UploadFileOutlined';
 import VisibilityOutlined from '@mui/icons-material/VisibilityOutlined';
@@ -24,7 +20,6 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  Divider,
   IconButton,
   InputAdornment,
   MenuItem,
@@ -32,12 +27,14 @@ import {
   Paper,
   Select,
   Stack,
+  Tab,
+  Tabs,
   TextField,
   Tooltip,
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { errorMessage } from '@/api/errors';
 import { queryKeys } from '@/api/queryKeys';
@@ -46,7 +43,10 @@ import { EmptyState } from '@/components/shared/EmptyState';
 import { ErrorState } from '@/components/shared/ErrorState';
 import { LoadingState } from '@/components/shared/LoadingState';
 import { UnavailableState } from '@/components/shared/UnavailableState';
-import { getKnowledgeBase } from '@/features/knowledge-base/api';
+import { getKnowledgeBase, getKnowledgeBaseDashboard } from '@/features/knowledge-base/api';
+import type { KnowledgeBaseDashboard } from '@/features/knowledge-base/types';
+import { KnowledgeBaseSettingsContent } from '@/features/knowledge-base/pages/KnowledgeBaseSettingsPage';
+import { SearchTestPageContent } from '@/features/search/pages/SearchTestPage';
 import {
   createDirectory,
   cleanupImportTasks,
@@ -61,7 +61,6 @@ import {
   retryImportTask,
   startImportTask,
 } from '../api';
-import { CreateManualDocumentDialog } from '../components/CreateManualDocumentDialog';
 import { DocumentViewer } from '../components/DocumentViewer';
 import { ImportDrawer } from '../components/ImportDrawer';
 import { KnowledgeTree } from '../components/KnowledgeTree';
@@ -71,16 +70,13 @@ import {
   type DocumentStatusFilter,
 } from '../status';
 import type {
-  Document,
-  DocumentProcessing,
   DocumentListItem,
   DocumentProcessingStatus,
   DocumentSourceType,
   ImportTask,
 } from '../types';
 
-const sourceLabel: Record<DocumentSourceType, string> = {
-  manual: '手工',
+const sourceLabel: Record<Exclude<DocumentSourceType, 'manual'>, string> = {
   file: '文件',
   url: 'URL',
 };
@@ -105,37 +101,121 @@ const activeProcessingStatuses: DocumentProcessingStatus[] = [
 const activeRefreshInterval = 2000;
 const idleRefreshInterval = 5000;
 const pageSize = 10;
+type WorkspaceTab = 'documents' | 'imports';
+
+function WorkspaceFeatureDialog({ open, onClose, icon, title, description, children }: {
+  open: boolean;
+  onClose: () => void;
+  icon: ReactNode;
+  title: string;
+  description: string;
+  children: ReactNode;
+}) {
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      fullWidth
+      maxWidth="xl"
+      scroll="paper"
+      slotProps={{
+        paper: {
+          sx: {
+            width: { xs: 'calc(100% - 24px)', md: 'min(1180px, calc(100% - 96px))' },
+            height: { xs: 'calc(100% - 24px)', md: 'min(82vh, 860px)' },
+            maxHeight: { xs: 'calc(100% - 24px)', md: 'calc(100% - 64px)' },
+            borderRadius: { xs: 2.5, md: 3.5 },
+            border: '1px solid #e1e5ed',
+            boxShadow: '0 24px 72px rgba(25, 38, 82, .24)',
+          },
+        },
+        backdrop: { sx: { bgcolor: 'rgba(29, 42, 76, .32)', backdropFilter: 'blur(1px)' } },
+      }}
+    >
+      <DialogTitle sx={{ px: { xs: 2, md: 3 }, py: 2, borderBottom: '1px solid', borderColor: 'divider' }}>
+        <Stack direction="row" alignItems="center" spacing={1.5}>
+          <Box sx={{ width: 38, height: 38, display: 'grid', placeItems: 'center', borderRadius: '50%', bgcolor: '#eef0ff', color: '#5361ee' }}>{icon}</Box>
+          <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+            <Typography component="h2" variant="h6" fontWeight={750}>{title}</Typography>
+            <Typography variant="body2" color="text.secondary">{description}</Typography>
+          </Box>
+          <IconButton aria-label={`关闭${title}`} onClick={onClose}><CloseOutlined /></IconButton>
+        </Stack>
+      </DialogTitle>
+      <DialogContent sx={{ p: { xs: 2, md: 3 }, bgcolor: '#f8faff' }}>
+        {children}
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 function isProcessing(status?: DocumentProcessingStatus) {
   return status !== undefined && activeProcessingStatuses.includes(status);
 }
 
-function formatBytes(value?: number) {
-  if (value === undefined) return '—';
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+function MetricItem({ label, value, detail, tone = 'default' }: {
+  label: string;
+  value: ReactNode;
+  detail: ReactNode;
+  tone?: 'default' | 'success' | 'warning' | 'error';
+}) {
+  const color = tone === 'success' ? '#229a48' : tone === 'warning' ? '#dc7a19' : tone === 'error' ? '#d84c4c' : '#172343';
+  return (
+    <Box sx={{ minWidth: 0, px: { xs: 1.5, md: 2.25 }, py: 1.7, borderLeft: { xs: 0, sm: '1px solid #e8ebf1' }, '&:first-of-type': { borderLeft: 0 } }}>
+      <Typography sx={{ color: '#68758e', fontSize: 12.5, mb: 0.35 }}>{label}</Typography>
+      <Typography component="div" sx={{ color, fontSize: 24, fontWeight: 750, lineHeight: 1.2 }}>{value}</Typography>
+      <Typography component="div" sx={{ color: '#8390a6', fontSize: 11.5, mt: 0.55 }}>{detail}</Typography>
+    </Box>
+  );
 }
 
-function WorkspaceStat({ icon, iconColor, iconBg, label, value, detail, valueNode }: {
-  icon: ReactNode;
-  iconColor: string;
-  iconBg: string;
-  label: string;
-  value?: number;
-  detail: ReactNode;
-  valueNode?: ReactNode;
-}) {
+function ImportTrendChart({ data }: { data: KnowledgeBaseDashboard['import_trend'] }) {
+  const values = data.map((point) => point.count);
+  const max = Math.max(1, ...values);
+  const points = data.map((point, index) => {
+    const x = data.length <= 1 ? 320 : 20 + (index * 600) / (data.length - 1);
+    const y = 96 - (point.count / max) * 76;
+    return { ...point, x, y };
+  });
   return (
-    <Paper variant="outlined" sx={{ minHeight: 104, px: 2.3, py: 2, borderRadius: 3, borderColor: '#e3e7ef', boxShadow: '0 6px 20px rgba(31,45,90,.025)' }}>
-      <Stack direction="row" alignItems="center" spacing={2}>
-        <Box sx={{ width: 54, height: 54, borderRadius: '50%', display: 'grid', placeItems: 'center', bgcolor: iconBg, color: iconColor }}>{icon}</Box>
-        <Box minWidth={0}>
-          <Typography sx={{ color: '#6e7b94', fontSize: 12 }}>{label}</Typography>
-          {valueNode || <Typography sx={{ color: '#172343', fontSize: 22, fontWeight: 700, lineHeight: 1.25 }}>{value ?? 0}</Typography>}
-          <Typography component="div" sx={{ color: '#71809a', fontSize: 11.5, mt: 0.35 }}>{detail}</Typography>
+    <Paper variant="outlined" sx={{ p: 2.1, borderRadius: 3, borderColor: '#e3e7ef', minHeight: 184 }}>
+      <Typography sx={{ color: '#26324d', fontSize: 13, fontWeight: 700 }}>近 7 天导入趋势</Typography>
+      <Box sx={{ mt: 1.2, width: '100%', overflow: 'hidden' }}>
+        <svg viewBox="0 0 640 122" width="100%" height="122" role="img" aria-label="近 7 天导入任务趋势">
+          {[20, 58, 96].map((y) => <line key={y} x1="20" x2="620" y1={y} y2={y} stroke="#edf0f5" strokeWidth="1" />)}
+          {points.length > 1 && <polyline points={points.map((point) => `${point.x},${point.y}`).join(' ')} fill="none" stroke="#4f67f6" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />}
+          {points.map((point) => <circle key={point.date} cx={point.x} cy={point.y} r="4" fill="#4f67f6" stroke="#fff" strokeWidth="2" />)}
+        </svg>
+        <Box sx={{ display: 'grid', gridTemplateColumns: `repeat(${Math.max(1, data.length)}, 1fr)`, mt: -2.6 }}>
+          {data.map((point) => <Typography key={point.date} align="center" sx={{ color: '#7f8ba1', fontSize: 10.5 }}>{point.date.slice(5)}</Typography>)}
         </Box>
-      </Stack>
+      </Box>
+    </Paper>
+  );
+}
+
+function RecentActivities({ data }: { data: KnowledgeBaseDashboard['recent_activities'] }) {
+  return (
+    <Paper variant="outlined" sx={{ p: 2.1, borderRadius: 3, borderColor: '#e3e7ef', minHeight: 184 }}>
+      <Typography sx={{ color: '#26324d', fontSize: 13, fontWeight: 700, mb: 1.1 }}>近期活动</Typography>
+      {data.length === 0 ? (
+        <Typography sx={{ color: '#8390a6', fontSize: 13, py: 4, textAlign: 'center' }}>暂无导入活动</Typography>
+      ) : (
+        <Stack spacing={0.9}>
+          {data.map((activity) => {
+            const failed = activity.status === 'failed';
+            const running = activity.status === 'running' || activity.status === 'pending';
+            return (
+              <Stack key={activity.id} direction="row" spacing={1.2} alignItems="center" sx={{ minHeight: 28 }}>
+                <Box sx={{ width: 7, height: 7, borderRadius: '50%', bgcolor: failed ? '#e35c5c' : running ? '#4f67f6' : '#35aa59', flexShrink: 0 }} />
+                <Typography sx={{ color: '#33405b', fontSize: 12.5, fontWeight: 600, minWidth: 100 }}>{activity.title}</Typography>
+                <Typography noWrap sx={{ color: '#71809a', fontSize: 12, flexGrow: 1 }}>{activity.description}</Typography>
+                <Typography sx={{ color: '#8b96a9', fontSize: 11.5, flexShrink: 0 }}>{new Date(activity.occurred_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</Typography>
+              </Stack>
+            );
+          })}
+        </Stack>
+      )}
     </Paper>
   );
 }
@@ -163,7 +243,7 @@ function DocumentList({
   onDelete: (document: DocumentListItem) => void;
   onRetry: (document: DocumentListItem) => void;
   onReindex: (document: DocumentListItem) => void;
-  onDocumentsChange: (items: DocumentListItem[], total: number) => void;
+  onDocumentsChange?: (items: DocumentListItem[], total: number) => void;
 }) {
   const [page, setPage] = useState(1);
   const query = useQuery({
@@ -187,7 +267,7 @@ function DocumentList({
   }, [directoryId, keyword, sourceType, status]);
 
   useEffect(() => {
-    if (query.data) onDocumentsChange(query.data.items, query.data.total);
+    if (query.data) onDocumentsChange?.(query.data.items, query.data.total);
   }, [onDocumentsChange, query.data]);
 
   if (query.isPending) return <LoadingState label="正在加载文档" />;
@@ -195,7 +275,7 @@ function DocumentList({
 
   const documents = query.data?.items ?? [];
   if (documents.length === 0) {
-    return <EmptyState title="暂无文档" description={keyword || status || sourceType ? '没有符合当前筛选条件的文档。' : '新建手工文档，或导入 Markdown、TXT、PDF、DOCX 和 URL。'} />;
+    return <EmptyState title="暂无文档" description={keyword || status || sourceType ? '没有符合当前筛选条件的文档。' : '导入 Markdown、TXT、PDF、DOCX 和 URL。'} />;
   }
 
   return (
@@ -212,7 +292,7 @@ function DocumentList({
             role="button"
             tabIndex={0}
             onClick={() => onSelect(document.id)}
-            onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') onSelect(document.id); }}
+            onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(document.id); } }}
             sx={{
               display: 'grid',
               gridTemplateColumns: 'minmax(210px, 1.8fr) 70px 90px 105px 92px',
@@ -239,7 +319,7 @@ function DocumentList({
             />
             <Typography sx={{ fontSize: 12, color: '#65728a' }}>{new Date(document.updated_at).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })}</Typography>
             <Stack direction="row" spacing={0}>
-              <Tooltip title="查看详情"><IconButton size="small" onClick={(event) => { event.stopPropagation(); onSelect(document.id); }}><VisibilityOutlined sx={{ fontSize: 17 }} /></IconButton></Tooltip>
+              <Tooltip title="打开文档"><IconButton size="small" onClick={(event) => { event.stopPropagation(); onSelect(document.id); }}><VisibilityOutlined sx={{ fontSize: 17 }} /></IconButton></Tooltip>
               <Tooltip title={document.processing_status === 'failed' ? '重试处理' : '重新建立索引'}>
                 <IconButton size="small" onClick={(event) => { event.stopPropagation(); if (document.processing_status === 'failed') onRetry(document); else onReindex(document); }} disabled={isProcessing(document.processing_status)}>
                   <CachedOutlined sx={{ fontSize: 17 }} />
@@ -259,10 +339,10 @@ function DocumentList({
   );
 }
 
-function ImportTasks({ kbId, onOpenDocument, onTasksChange }: {
+function ImportTasks({ kbId, onOpenDocument, embedded = false }: {
   kbId: string;
   onOpenDocument: (documentId: string) => void;
-  onTasksChange: (tasks: ImportTask[], total: number) => void;
+  embedded?: boolean;
 }) {
   const queryClient = useQueryClient();
   const previousTaskStates = useRef<Map<string, string>>(new Map());
@@ -282,12 +362,14 @@ function ImportTasks({ kbId, onOpenDocument, onTasksChange }: {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.documents(kbId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBaseDashboard(kbId) });
     },
   });
   const start = useMutation({
     mutationFn: (taskId: string) => startImportTask(taskId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBaseDashboard(kbId) });
     },
   });
   const cleanup = useMutation({
@@ -297,14 +379,11 @@ function ImportTasks({ kbId, onOpenDocument, onTasksChange }: {
       setCleanupError(null);
       setCleanupNotice(`已清理 ${result.deleted} 条已完成导入记录`);
       void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBaseDashboard(kbId) });
     },
     onError: (error) => setCleanupError(error as Error),
   });
   const completedCount = (query.data?.items ?? []).filter((task) => ['succeeded', 'failed', 'skipped'].includes(task.status)).length;
-
-  useEffect(() => {
-    if (query.data) onTasksChange(query.data.items, query.data.total);
-  }, [onTasksChange, query.data]);
 
   useEffect(() => {
     const nextTaskStates = new Map<string, string>();
@@ -325,18 +404,18 @@ function ImportTasks({ kbId, onOpenDocument, onTasksChange }: {
     // Worker 创建文档、推进步骤或完成任务时，把列表和当前文档缓存一起同步。
     if (hasChanges) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.documents(kbId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBaseDashboard(kbId) });
     }
   }, [kbId, query.dataUpdatedAt, query.data?.items, queryClient]);
 
   if (query.isPending) return <LoadingState label="正在加载导入任务" />;
   if (query.error) return <ErrorState error={query.error as Error} onRetry={() => void query.refetch()} />;
   const tasks = query.data?.items ?? [];
-  if (tasks.length === 0) return null;
 
   return (
-    <Paper variant="outlined" sx={{ p: 2.25, borderRadius: 3, borderColor: '#e3e7ef', boxShadow: '0 6px 20px rgba(31,45,90,.025)' }}>
+    <Paper variant={embedded ? undefined : 'outlined'} elevation={0} sx={{ p: 2.25, borderRadius: embedded ? 0 : 3, borderColor: '#e3e7ef', boxShadow: embedded ? 'none' : '0 6px 20px rgba(31,45,90,.025)' }}>
       <Stack direction="row" alignItems="center" mb={1.5}>
-        <Typography sx={{ flexGrow: 1, color: '#182441', fontSize: 16, fontWeight: 650 }}>最近导入任务</Typography>
+        <Typography sx={{ flexGrow: 1, color: '#182441', fontSize: 16, fontWeight: 650 }}>导入任务</Typography>
         {completedCount > 0 && (
           <Button size="small" disabled={cleanup.isPending} onClick={() => setCleanupOpen(true)}>
             {cleanup.isPending ? '正在清理…' : `清理已完成（${completedCount}）`}
@@ -347,11 +426,14 @@ function ImportTasks({ kbId, onOpenDocument, onTasksChange }: {
       {cleanupNotice && <Alert severity="success" sx={{ mb: 1 }} onClose={() => setCleanupNotice('')}>{cleanupNotice}</Alert>}
       {cleanupError && <Alert severity="error" sx={{ mb: 1 }} onClose={() => setCleanupError(null)}>清理失败：{errorMessage(cleanupError)}</Alert>}
       {retry.error && <Alert severity="error" sx={{ mb: 1 }}>{errorMessage(retry.error)}</Alert>}
+      {tasks.length === 0 && <EmptyState title="暂无导入任务" description="通过“导入知识”添加文件或 URL。" />}
+      {tasks.length > 0 && (
+        <>
       <Box sx={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1.7fr) 100px 80px 90px 150px 110px', alignItems: 'center', py: 1, px: 0.5, color: '#73809a', fontSize: 12, borderBottom: '1px solid #edf0f5' }}>
         <span>文件名</span><span>任务类型</span><span>文件数量</span><span>状态</span><span>完成时间</span><span>操作</span>
       </Box>
       <Stack spacing={0}>
-        {tasks.slice(0, 6).map((task) => (
+        {tasks.map((task) => (
           <Box key={task.id} sx={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1.7fr) 100px 80px 90px 150px 110px', alignItems: 'center', minHeight: 46, px: 0.5, borderBottom: '1px solid #f0f2f6' }}>
             <Typography sx={{ fontSize: 13 }} noWrap>{task.source_path || task.file_name || task.source_url || task.id}</Typography>
             <Chip size="small" label={task.source_type === 'url' ? 'URL 导入' : '手动导入'} sx={{ justifySelf: 'start', height: 24, bgcolor: '#eeeaff', color: '#7257d8', fontSize: 11 }} />
@@ -374,6 +456,8 @@ function ImportTasks({ kbId, onOpenDocument, onTasksChange }: {
           </Box>
         ))}
       </Stack>
+        </>
+      )}
       <Dialog open={cleanupOpen} onClose={cleanup.isPending ? undefined : () => setCleanupOpen(false)}>
         <DialogTitle>清理导入记录</DialogTitle>
         <DialogContent>
@@ -392,72 +476,15 @@ function ImportTasks({ kbId, onOpenDocument, onTasksChange }: {
   );
 }
 
-function DocumentSummaryPanel({ document, processing, onClose }: {
-  document: Document;
-  processing?: DocumentProcessing;
-  onClose: () => void;
-}) {
-  const [viewerOpen, setViewerOpen] = useState(false);
-  const effectiveStatus = processing?.processing_status ?? document.processing_status;
-  const steps = [
-    { label: '文件上传', complete: true },
-    { label: '内容解析', complete: !['pending', 'parsing'].includes(effectiveStatus) },
-    { label: '索引构建', complete: effectiveStatus === 'succeeded' },
-    { label: '完成', complete: effectiveStatus === 'succeeded' },
-  ];
-  const sourceText = document.source_type === 'manual' ? '手工新建' : document.source_type === 'url' ? 'URL 导入' : '本地导入';
-
-  return (
-    <Paper variant="outlined" sx={{ height: '100%', minHeight: 466, borderRadius: 3, borderColor: '#e3e7ef', overflow: 'hidden', boxShadow: '0 6px 20px rgba(31,45,90,.025)' }}>
-      <Box sx={{ p: 2.2 }}>
-        <Stack direction="row" alignItems="flex-start" spacing={1.2}>
-          <Box sx={{ width: 32, height: 32, borderRadius: 1.5, display: 'grid', placeItems: 'center', bgcolor: '#fff0f0', color: '#ef4444', flexShrink: 0 }}><PictureAsPdfOutlined sx={{ fontSize: 20 }} /></Box>
-          <Box sx={{ minWidth: 0, flexGrow: 1 }}>
-            <Typography noWrap title={document.title} sx={{ color: '#172343', fontSize: 13.5, fontWeight: 650 }}>{document.title}</Typography>
-            <Typography sx={{ color: '#71809a', fontSize: 11.5, mt: 0.6 }}>{document.mime_type || document.content_format?.toUpperCase() || 'FILE'} · {formatBytes(document.file_size)} · 上传于 {new Date(document.created_at).toLocaleString('zh-CN')}</Typography>
-          </Box>
-          <IconButton size="small" aria-label="全屏查看" onClick={() => setViewerOpen(true)}><OpenInFullOutlined sx={{ fontSize: 18 }} /></IconButton>
-          <IconButton size="small" aria-label="关闭详情" onClick={onClose}><CloseOutlined sx={{ fontSize: 18 }} /></IconButton>
-        </Stack>
-        <Typography sx={{ color: '#67738b', fontSize: 11.5, mt: 1.4 }}>来源：{sourceText}</Typography>
-      </Box>
-      <Divider />
-      <Box sx={{ p: 2.2 }}>
-        <Typography sx={{ color: '#26324d', fontSize: 12, fontWeight: 650, mb: 1.3 }}>处理状态</Typography>
-        <Stack spacing={0.8}>
-          {steps.map((step, index) => (
-            <Stack key={step.label} direction="row" alignItems="center" spacing={1.1} sx={{ position: 'relative', minHeight: 36, px: 1.2, border: '1px solid #e7ebf1', borderRadius: 1.5, bgcolor: '#fbfcfe' }}>
-              <CheckCircleOutlined sx={{ fontSize: 16, color: step.complete ? '#35a253' : '#b7c0d0' }} />
-              <Typography sx={{ color: '#5f6c84', fontSize: 11.5, flexGrow: 1 }}>{step.label}</Typography>
-              <Typography sx={{ color: '#8792a7', fontSize: 10.5 }}>{new Date(document.updated_at).toLocaleString('zh-CN')}</Typography>
-              {index < steps.length - 1 && <Box sx={{ position: 'absolute', width: '1px', height: '8px', bgcolor: step.complete ? '#8fd09e' : '#d9dee7', left: '18px', top: '35px' }} />}
-            </Stack>
-          ))}
-        </Stack>
-        {(document.failure_reason || processing?.failure_reason) && <Alert severity="error" sx={{ mt: 1.2, py: 0 }}>{document.failure_reason || processing?.failure_reason}</Alert>}
-        <Typography sx={{ color: '#26324d', fontSize: 12, fontWeight: 650, mt: 1.8, mb: 1 }}>内容摘要</Typography>
-        <Box sx={{ p: 1.5, minHeight: 76, borderRadius: 1.5, bgcolor: '#f5f6f8' }}>
-          <Typography sx={{ color: '#66728a', fontSize: 11.5, lineHeight: 1.65, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-            {document.content?.trim() || '该文档已完成内容解析与索引构建，可打开完整内容进行预览和检索。'}
-          </Typography>
-        </Box>
-        <Button variant="outlined" size="small" onClick={() => setViewerOpen(true)} sx={{ mt: 1.5, borderRadius: 2 }}>查看完整内容&nbsp; →</Button>
-      </Box>
-
-      <Dialog open={viewerOpen} onClose={() => setViewerOpen(false)} fullWidth maxWidth="lg">
-        <DialogContent sx={{ p: 0 }}><DocumentViewer document={document} processing={processing} /></DialogContent>
-      </Dialog>
-    </Paper>
-  );
-}
-
 export function DocumentWorkspaceContent({ status, kbId, documentId }: {
   status: CapabilityStatus;
   kbId: string;
   documentId?: string;
 }) {
   const [importOpen, setImportOpen] = useState(false);
-  const [manualOpen, setManualOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('documents');
   const [directoryId, setDirectoryId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(documentId ?? null);
   const [keyword, setKeyword] = useState('');
@@ -466,10 +493,6 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
   const [deleteTarget, setDeleteTarget] = useState<DocumentListItem | null>(null);
   const [notice, setNotice] = useState('');
   const [actionError, setActionError] = useState<Error | null>(null);
-  const [documentTotal, setDocumentTotal] = useState(0);
-  const [recentTasks, setRecentTasks] = useState<ImportTask[]>([]);
-  const [taskTotal, setTaskTotal] = useState(0);
-  const hasAutoSelected = useRef(Boolean(documentId));
   const queryClient = useQueryClient();
   const enabled = status === 'available' && kbId !== '';
 
@@ -477,6 +500,12 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
     queryKey: queryKeys.knowledgeBase(kbId),
     queryFn: () => getKnowledgeBase(kbId),
     enabled,
+  });
+  const dashboardQuery = useQuery({
+    queryKey: queryKeys.knowledgeBaseDashboard(kbId),
+    queryFn: () => getKnowledgeBaseDashboard(kbId),
+    enabled,
+    refetchInterval: (result) => (result.state.data?.processing_total ?? 0) > 0 ? 5000 : 30_000,
   });
 
   const treeQuery = useQuery({
@@ -516,6 +545,7 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
       void queryClient.invalidateQueries({ queryKey: queryKeys.document(documentIdValue) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.documentProcessing(documentIdValue) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBaseDashboard(kbId) });
       setNotice('已提交处理重试');
     },
     onError: (error) => setActionError(error as Error),
@@ -529,6 +559,7 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
       void queryClient.invalidateQueries({ queryKey: queryKeys.documentContent(documentIdValue) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.documentIndexVersions(documentIdValue) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBaseDashboard(kbId) });
       setNotice('已提交重新索引');
     },
     onError: (error) => setActionError(error as Error),
@@ -538,6 +569,7 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
     onSuccess: (_, documentIdValue) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.documents(kbId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBaseDashboard(kbId) });
       if (selectedId === documentIdValue) setSelectedId(null);
       setDeleteTarget(null);
       setNotice('文档已删除');
@@ -545,40 +577,34 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
     onError: (error) => setActionError(error as Error),
   });
 
-  const handleDocumentsChange = useCallback((items: DocumentListItem[], total: number) => {
-    setDocumentTotal(total);
-    if (!hasAutoSelected.current && items.length > 0) {
-      hasAutoSelected.current = true;
-      setSelectedId(items[0].id);
-    }
-  }, []);
-
-  const handleTasksChange = useCallback((tasks: ImportTask[], total: number) => {
-    setRecentTasks(tasks);
-    setTaskTotal(total);
-  }, []);
-
   const directoryCount = treeQuery.data?.reduce((count, node) => {
     const countNode = (current: typeof node): number => 1 + current.children.reduce((sum, child) => sum + countNode(child), 0);
     return count + countNode(node);
   }, 0) ?? 0;
-  const activeTaskCount = recentTasks.filter((task) => task.status === 'pending' || task.status === 'running').length;
+  const knowledgeBaseName = knowledgeBaseQuery.data?.name || '知识库';
+  const dashboard = dashboardQuery.data;
+  const healthLabel = (dashboard?.failed_total ?? 0) > 0
+    ? '存在异常'
+    : (dashboard?.processing_total ?? 0) > 0 ? '处理中' : '运行正常';
+  const healthColor = (dashboard?.failed_total ?? 0) > 0 ? 'error' : (dashboard?.processing_total ?? 0) > 0 ? 'info' : 'success';
 
   return (
-    <Stack spacing={2.1} sx={{ width: '100%', maxWidth: 1600, mx: 'auto' }}>
+    <Stack spacing={1.7} sx={{ width: '100%', maxWidth: 1600, mx: 'auto' }}>
       <Stack direction="row" spacing={1} alignItems="center" sx={{ color: '#71809a', fontSize: 13 }}>
-        <Typography component={Link} to="/knowledge-bases" sx={{ color: '#71809a', textDecoration: 'none', fontSize: 13 }}>‹‹&nbsp; 知识库</Typography>
+        <Typography component={Link} to="/knowledge-bases" sx={{ color: '#71809a', textDecoration: 'none', fontSize: 13 }}>知识库</Typography>
         <span>/</span>
-        <Typography sx={{ color: '#26324d', fontSize: 13 }}>{knowledgeBaseQuery.data?.name || '文档工作区'}</Typography>
+        <Typography sx={{ color: '#26324d', fontSize: 13 }}>{knowledgeBaseName}</Typography>
       </Stack>
       <Stack direction={{ xs: 'column', md: 'row' }} alignItems={{ md: 'center' }} gap={1.2}>
         <Box sx={{ flexGrow: 1 }}>
-          <Typography component="h2" sx={{ color: '#111c3a', fontSize: { xs: 25, md: 28 }, fontWeight: 700, lineHeight: 1.2 }}>文档工作区</Typography>
-          <Typography sx={{ color: '#66728c', fontSize: 14, mt: 0.5 }}>管理目录、手工文档、文件导入任务与索引处理状态。</Typography>
+          <Stack direction="row" spacing={1.2} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Typography component="h1" sx={{ color: '#111c3a', fontSize: { xs: 26, md: 30 }, fontWeight: 750, lineHeight: 1.2 }}>{knowledgeBaseName}</Typography>
+            <Chip size="small" color={healthColor} icon={healthColor === 'error' ? <ErrorOutlineRounded /> : healthColor === 'info' ? <PendingActionsOutlined /> : <CheckCircleOutlineRounded />} label={healthLabel} sx={{ height: 25, fontWeight: 650 }} />
+          </Stack>
+          <Typography sx={{ color: '#66728c', fontSize: 14, mt: 0.55 }}>{knowledgeBaseQuery.data?.description || '管理知识、数据源与检索质量。'}</Typography>
         </Box>
-        <Button component={Link} to={`/kb/${kbId}/search-test`} startIcon={<SearchOutlined />} variant="outlined" disabled={!enabled} sx={{ borderRadius: 2.5, height: 42 }}>检索测试</Button>
-        <Button component={Link} to={`/kb/${kbId}/settings`} startIcon={<SettingsOutlined />} variant="outlined" disabled={!enabled} sx={{ borderRadius: 2.5, height: 42 }}>知识库设置</Button>
-        <Button startIcon={<CreateOutlined />} variant="outlined" disabled={!enabled} onClick={() => setManualOpen(true)} sx={{ borderRadius: 2.5, height: 42 }}>手工新建</Button>
+        <Button onClick={() => setSearchOpen(true)} startIcon={<SearchOutlined />} variant="outlined" disabled={!enabled} sx={{ borderRadius: 2.5, height: 42 }}>检索测试</Button>
+        <Button onClick={() => setSettingsOpen(true)} startIcon={<SettingsOutlined />} variant="outlined" disabled={!enabled} sx={{ borderRadius: 2.5, height: 42 }}>知识库设置</Button>
         <Button startIcon={<UploadFileOutlined />} variant="contained" disabled={!enabled} onClick={() => setImportOpen(true)} sx={{ borderRadius: 2.5, height: 42, px: 2.2, background: 'linear-gradient(135deg, #3e65f3, #5546e8)', boxShadow: '0 8px 20px rgba(72,82,224,.2)' }}>导入知识</Button>
       </Stack>
 
@@ -588,103 +614,117 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
       {!enabled && (
         <UnavailableState title="文档后端待接入" description="当前不会加载目录、文档或导入任务。" capability="document" />
       )}
-      {enabled && treeQuery.isPending && <LoadingState label="正在加载目录" />}
-      {enabled && treeQuery.error && <ErrorState error={treeQuery.error as Error} onRetry={() => void treeQuery.refetch()} />}
-      {enabled && treeQuery.data && (
+      {enabled && dashboardQuery.isPending && <LoadingState label="正在加载知识库概览" />}
+      {enabled && dashboardQuery.error && <Alert severity="warning" action={<Button color="inherit" size="small" onClick={() => void dashboardQuery.refetch()}>重试</Button>}>知识库概览加载失败：{errorMessage(dashboardQuery.error)}</Alert>}
+      {enabled && dashboard && (
         <>
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)', xl: 'repeat(4, 1fr)' }, gap: 1.5 }}>
-            <WorkspaceStat icon={<DescriptionOutlined />} iconColor="#4b65f6" iconBg="#edf1ff" label="文档总数" value={documentTotal} detail={<span>较昨日 <Box component="span" sx={{ color: '#35a35a' }}>+{Math.min(documentTotal, 8)}</Box></span>} />
-            <WorkspaceStat icon={<FolderOutlined />} iconColor="#9a52e7" iconBg="#f5ebff" label="目录数" value={directoryCount} detail="全部目录" />
-            <WorkspaceStat icon={<CloudUploadOutlined />} iconColor="#36a255" iconBg="#eaf8ed" label="导入任务" value={taskTotal} detail="近期完成" />
-            <WorkspaceStat icon={<SmartToyOutlined />} iconColor="#ed861f" iconBg="#fff1e3" label="Agent 状态" valueNode={<Stack direction="row" alignItems="center" spacing={0.8}><Box sx={{ width: 7, height: 7, borderRadius: '50%', bgcolor: '#35a253' }} /><Typography sx={{ color: '#172343', fontSize: 16, fontWeight: 650 }}>运行中</Typography></Stack>} detail={activeTaskCount > 0 ? `${activeTaskCount} 个任务处理中` : '索引与检索正常'} />
+          <Paper variant="outlined" sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, minmax(0, 1fr))' }, borderRadius: 3, borderColor: '#e3e7ef', overflow: 'hidden' }}>
+            <MetricItem label="文档总数" value={dashboard.document_total} detail={`${directoryCount} 个目录`} />
+            <MetricItem label="处理成功" value={dashboard.indexed_total} detail="已完成处理" tone="success" />
+            <MetricItem label="处理失败" value={dashboard.failed_total} detail={dashboard.failed_total > 0 ? '需要人工处理' : '当前无失败'} tone={dashboard.failed_total > 0 ? 'error' : 'default'} />
+          </Paper>
+
+          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: 'minmax(0, 1.25fr) minmax(360px, .9fr)' }, gap: 1.5 }}>
+            <ImportTrendChart data={dashboard.import_trend} />
+            <RecentActivities data={dashboard.recent_activities} />
           </Box>
 
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: '232px minmax(560px, 1fr)', xl: '232px minmax(560px, 1fr) 360px' }, gap: 1.5, alignItems: 'stretch' }}>
-            <Paper component="aside" variant="outlined" sx={{ minHeight: 466, borderRadius: 3, borderColor: '#e3e7ef', overflow: 'hidden', boxShadow: '0 6px 20px rgba(31,45,90,.025)' }}>
-              <KnowledgeTree
-                nodes={treeQuery.data}
-                selectedId={directoryId}
-                onSelect={setDirectoryId}
-                onCreateDirectory={(name, parentId) => createDir.mutate({ name, parentId })}
-                totalDocuments={documentTotal}
-              />
-            </Paper>
-            <Paper variant="outlined" sx={{ minHeight: 466, overflow: 'hidden', borderRadius: 3, borderColor: '#e3e7ef', boxShadow: '0 6px 20px rgba(31,45,90,.025)' }}>
-              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} p={1.3}>
-                <TextField
-                  size="small"
-                  placeholder="搜索文件名、内容或关键词..."
-                  value={keyword}
-                  onChange={(event) => setKeyword(event.target.value)}
-                  InputProps={{ startAdornment: <InputAdornment position="start"><SearchOutlined fontSize="small" /></InputAdornment> }}
-                  sx={{ flexGrow: 1, '& .MuiOutlinedInput-root': { height: 42, borderRadius: 2.2 } }}
-                />
-                <TextField
-                  select
-                  size="small"
-                  label="状态"
-                  value={processingStatus}
-                  onChange={(event) => setProcessingStatus(event.target.value as DocumentStatusFilter)}
-                  slotProps={{ inputLabel: { shrink: true }, select: { displayEmpty: true } }}
-                  sx={{ minWidth: 112, '& .MuiOutlinedInput-root': { height: 42, borderRadius: 2.2 } }}
-                >
-                  <MenuItem value="">全部状态</MenuItem>
-                  {documentStatusOptions.map(({ value, label }) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
-                </TextField>
-                <TextField
-                  select
-                  size="small"
-                  label="来源"
-                  value={sourceType}
-                  onChange={(event) => setSourceType(event.target.value as '' | DocumentSourceType)}
-                  slotProps={{ inputLabel: { shrink: true }, select: { displayEmpty: true } }}
-                  sx={{ minWidth: 112, '& .MuiOutlinedInput-root': { height: 42, borderRadius: 2.2 } }}
-                >
-                  <MenuItem value="">全部来源</MenuItem>
-                  {Object.entries(sourceLabel).map(([value, label]) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
-                </TextField>
-                <IconButton aria-label="更多筛选" sx={{ width: 42, height: 42, border: '1px solid #dfe3eb', borderRadius: 2.2 }}><FilterAltOutlined fontSize="small" /></IconButton>
-              </Stack>
-              <Box sx={{ overflowX: 'auto', borderTop: 1, borderColor: 'divider' }}>
-                <Box sx={{ minWidth: 640 }}>
-                <DocumentList
-                  kbId={kbId}
-                  directoryId={directoryId}
-                  keyword={keyword}
-                  status={processingStatus}
-                  sourceType={sourceType}
-                  selectedId={selectedId}
-                  onSelect={setSelectedId}
-                  onDelete={setDeleteTarget}
-                  onRetry={(document) => retryDoc.mutate(document.id)}
-                  onReindex={(document) => reindex.mutate(document.id)}
-                  onDocumentsChange={handleDocumentsChange}
-                />
+          <Paper variant="outlined" sx={{ borderRadius: 3, borderColor: '#e3e7ef', overflow: 'hidden', minHeight: 500 }}>
+            <Tabs value={workspaceTab} onChange={(_, value: WorkspaceTab) => setWorkspaceTab(value)} sx={{ px: 1.5, minHeight: 48, borderBottom: '1px solid #e8ebf1', '& .MuiTab-root': { minHeight: 48, fontWeight: 650 } }}>
+              <Tab value="documents" label={`文档库 ${dashboard.document_total}`} />
+              <Tab value="imports" label="导入任务" />
+            </Tabs>
+
+            {workspaceTab === 'documents' && (
+              <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: '248px minmax(560px, 1fr)' }, alignItems: 'stretch' }}>
+                <Box component="aside" sx={{ minHeight: 446, borderRight: { lg: '1px solid #e8ebf1' }, borderBottom: { xs: '1px solid #e8ebf1', lg: 0 } }}>
+                  {treeQuery.isPending && <LoadingState label="正在加载目录" />}
+                  {treeQuery.error && <ErrorState error={treeQuery.error as Error} onRetry={() => void treeQuery.refetch()} />}
+                  {treeQuery.data && (
+                    <KnowledgeTree
+                      nodes={treeQuery.data}
+                      selectedId={directoryId}
+                      onSelect={setDirectoryId}
+                      onCreateDirectory={(name, parentId) => createDir.mutate({ name, parentId })}
+                      totalDocuments={dashboard.document_total}
+                    />
+                  )}
+                </Box>
+                <Box sx={{ minWidth: 0 }}>
+                  <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} p={1.3}>
+                    <TextField
+                      size="small"
+                      placeholder="搜索文件名、内容或关键词..."
+                      value={keyword}
+                      onChange={(event) => setKeyword(event.target.value)}
+                      InputProps={{ startAdornment: <InputAdornment position="start"><SearchOutlined fontSize="small" /></InputAdornment> }}
+                      sx={{ flexGrow: 1, '& .MuiOutlinedInput-root': { height: 40, borderRadius: 2.2 } }}
+                    />
+                    <TextField select size="small" label="状态" value={processingStatus} onChange={(event) => setProcessingStatus(event.target.value as DocumentStatusFilter)} slotProps={{ inputLabel: { shrink: true }, select: { displayEmpty: true } }} sx={{ minWidth: 118, '& .MuiOutlinedInput-root': { height: 40, borderRadius: 2.2 } }}>
+                      <MenuItem value="">全部状态</MenuItem>
+                      {documentStatusOptions.map(({ value, label }) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
+                    </TextField>
+                    <TextField select size="small" label="来源" value={sourceType} onChange={(event) => setSourceType(event.target.value as '' | DocumentSourceType)} slotProps={{ inputLabel: { shrink: true }, select: { displayEmpty: true } }} sx={{ minWidth: 118, '& .MuiOutlinedInput-root': { height: 40, borderRadius: 2.2 } }}>
+                      <MenuItem value="">全部来源</MenuItem>
+                      {Object.entries(sourceLabel).map(([value, label]) => <MenuItem key={value} value={value}>{label}</MenuItem>)}
+                    </TextField>
+                  </Stack>
+                  <Box sx={{ overflowX: 'auto', borderTop: 1, borderColor: 'divider' }}>
+                    <Box sx={{ minWidth: 640 }}>
+                      <DocumentList
+                        kbId={kbId}
+                        directoryId={directoryId}
+                        keyword={keyword}
+                        status={processingStatus}
+                        sourceType={sourceType}
+                        selectedId={selectedId}
+                        onSelect={setSelectedId}
+                        onDelete={setDeleteTarget}
+                        onRetry={(document) => retryDoc.mutate(document.id)}
+                        onReindex={(document) => reindex.mutate(document.id)}
+                      />
+                    </Box>
+                  </Box>
                 </Box>
               </Box>
-            </Paper>
+            )}
 
-            <Box sx={{ display: { xs: 'block', lg: 'none', xl: 'block' } }}>
-              {!selectedId && <Paper variant="outlined" sx={{ height: '100%', minHeight: 466, borderRadius: 3, borderColor: '#e3e7ef', display: 'grid', placeItems: 'center' }}><EmptyState title="选择一篇文档" description="从文档列表选择文档，查看处理详情。" /></Paper>}
-              {selectedId && (documentQuery.isPending || processingQuery.isPending) && <LoadingState label="正在加载文档" />}
-              {selectedId && documentQuery.error && <ErrorState error={documentQuery.error as Error} onRetry={() => void documentQuery.refetch()} />}
-              {selectedId && processingQuery.error && <ErrorState error={processingQuery.error as Error} onRetry={() => void processingQuery.refetch()} />}
-              {documentQuery.data && <DocumentSummaryPanel document={documentQuery.data} processing={processingQuery.data} onClose={() => setSelectedId(null)} />}
-            </Box>
-          </Box>
-          <ImportTasks kbId={kbId} onOpenDocument={setSelectedId} onTasksChange={handleTasksChange} />
+            {workspaceTab === 'imports' && <ImportTasks kbId={kbId} onOpenDocument={setSelectedId} embedded />}
+          </Paper>
         </>
       )}
 
+      <WorkspaceFeatureDialog
+        open={selectedId !== null}
+        onClose={() => setSelectedId(null)}
+        icon={<DescriptionOutlined />}
+        title={documentQuery.data?.title || '文档详情'}
+        description="查看文档内容、来源与处理状态。"
+      >
+        {documentQuery.isPending && <LoadingState label="正在加载文档" />}
+        {documentQuery.error && <ErrorState error={documentQuery.error as Error} onRetry={() => void documentQuery.refetch()} />}
+        {processingQuery.error && <Alert severity="warning">处理状态加载失败：{errorMessage(processingQuery.error)}</Alert>}
+        {documentQuery.data && <DocumentViewer document={documentQuery.data} processing={processingQuery.data} />}
+      </WorkspaceFeatureDialog>
+      <WorkspaceFeatureDialog
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        icon={<SearchOutlined />}
+        title="检索测试"
+        description="验证关键词、向量、融合排序与引用结果。"
+      >
+        <SearchTestPageContent status={capabilities.search} kbId={kbId} embedded />
+      </WorkspaceFeatureDialog>
+      <WorkspaceFeatureDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        icon={<SettingsOutlined />}
+        title="知识库设置"
+        description="管理基础信息、默认模型与检索参数。"
+      >
+        <KnowledgeBaseSettingsContent status={capabilities.knowledgeBase} kbId={kbId} embedded />
+      </WorkspaceFeatureDialog>
       <ImportDrawer open={importOpen} onClose={() => setImportOpen(false)} disabled={!enabled} kbId={kbId} directories={treeQuery.data ?? []} />
-      <CreateManualDocumentDialog
-        open={manualOpen}
-        onClose={() => setManualOpen(false)}
-        kbId={kbId}
-        directories={treeQuery.data ?? []}
-        initialDirectoryId={directoryId}
-        onCreated={(createdDocumentId) => { setSelectedId(createdDocumentId); setNotice('手工文档已创建'); }}
-      />
       <Dialog open={deleteTarget !== null} onClose={removeDoc.isPending ? undefined : () => setDeleteTarget(null)}>
         <DialogTitle>删除文档</DialogTitle>
         <DialogContent><Typography>确定删除“{deleteTarget?.title}”吗？文档将被软删除。</Typography></DialogContent>
