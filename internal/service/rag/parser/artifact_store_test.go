@@ -15,6 +15,7 @@ import (
 // memoryObjectStore 是 ObjectStore 的内存实现，用于 ArtifactStore 单测。
 type memoryObjectStore struct {
 	objects map[string][]byte
+	mu      sync.RWMutex
 }
 
 func newMemoryObjectStore() *memoryObjectStore {
@@ -26,11 +27,15 @@ func (m *memoryObjectStore) PutObject(_ context.Context, key string, reader io.R
 	if err != nil {
 		return err
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.objects[key] = data
 	return nil
 }
 
 func (m *memoryObjectStore) OpenObject(_ context.Context, key string) (io.ReadCloser, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	data, ok := m.objects[key]
 	if !ok {
 		return nil, ErrObjectNotFound
@@ -39,6 +44,8 @@ func (m *memoryObjectStore) OpenObject(_ context.Context, key string) (io.ReadCl
 }
 
 func (m *memoryObjectStore) StatObject(_ context.Context, key string) (*ObjectInfo, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	data, ok := m.objects[key]
 	if !ok {
 		return nil, ErrObjectNotFound
@@ -47,6 +54,8 @@ func (m *memoryObjectStore) StatObject(_ context.Context, key string) (*ObjectIn
 }
 
 func (m *memoryObjectStore) RemoveObject(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	delete(m.objects, key)
 	return nil
 }
