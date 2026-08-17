@@ -47,4 +47,6 @@ type UpdateKnowledgeBaseRequest struct {
 	DefaultEmbeddingModelID *string `json:"default_embedding_model_id" binding:"omitempty"`
 	// DefaultRerankerModelID 默认重排序模型 ID。
 	DefaultRerankerModelID *string `json:"default_reranker_model_id" binding:"omitempty"`
+	// DuplicatePolicy 文档导入重复处理策略（skip/create_new）。
+	DuplicatePolicy *string `json:"duplicate_policy" binding:"omitempty,oneof=skip create_new"`
 }

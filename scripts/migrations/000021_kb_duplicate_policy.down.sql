@@ -1,0 +1,2 @@
+ALTER TABLE knowledge_bases
+    DROP COLUMN IF EXISTS duplicate_policy;

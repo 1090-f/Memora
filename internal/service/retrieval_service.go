@@ -67,7 +67,7 @@ func (s *retrievalService) Retrieve(ctx context.Context, request contracts.Retri
 	request.Config = contracts.SearchConfig{
 		KeywordTopK: cfg.KeywordTopK, VectorTopK: cfg.VectorTopK, RRFK: cfg.RRFK, RRFTopK: cfg.RRFTopK,
 		RerankerTopK: cfg.RerankerTopK, RerankerThreshold: cfg.RerankerThreshold,
-		MinimumEffectiveResult: cfg.MinimumEffectiveRate,
+		MinimumEffectiveResult: cfg.MinimumEffectiveRate, MinVectorScore: cfg.MinVectorScore,
 	}
 	rerankerModelID := cfg.RerankerModelID
 	if rerankerModelID == nil {
@@ -78,12 +78,12 @@ func (s *retrievalService) Retrieve(ctx context.Context, request contracts.Retri
 	}
 
 	var embedder embedding.Embedder
+	var modelCfgID string
 	if request.Mode == contracts.RetrievalVector || request.Mode == contracts.RetrievalHybrid {
 		var modelID string
 		if kb.DefaultEmbeddingModelID != nil {
 			modelID = *kb.DefaultEmbeddingModelID
 		}
-		var modelCfgID string
 		if modelID != "" {
 			modelCfg, modelErr := s.models.FindByIDForUserAndType(ctx, string(request.UserID), modelID, "embedding")
 			if modelErr != nil {
@@ -114,7 +114,7 @@ func (s *retrievalService) Retrieve(ctx context.Context, request contracts.Retri
 		}
 		// 冻结降级策略：Reranker 配置/创建失败时继续使用 RRF。
 	}
-	result, err := s.pipeline.Run(ctx, pipeline.RetrievalInput{Request: request, Embedder: embedder, Reranker: reranker})
+	result, err := s.pipeline.Run(ctx, pipeline.RetrievalInput{Request: request, Embedder: embedder, Reranker: reranker, EmbeddingModelID: modelCfgID})
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return contracts.RetrievalResult{}, apperrors.New(contracts.ErrUpstreamTimeout, err)

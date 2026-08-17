@@ -278,8 +278,9 @@ func (ctrl *Controller) Delete(c *gin.Context) {
 }
 
 // UploadFiles 文件导入，支持多文件上传到指定知识库。
-// 请求格式：multipart/form-data，字段 "files" 为文件列表，可选字段 "directory_id"、"duplicate_policy" 和 "import_mode"。
+// 请求格式：multipart/form-data，字段 "files" 为文件列表，可选字段 "directory_id" 和 "import_mode"。
 // import_mode=folder_archive 时，单个 ZIP 是文件夹传输容器，ZIP 内每个文档会创建独立 ImportTask。
+// 重复处理策略读取知识库设置（knowledge_bases.duplicate_policy）。
 func (ctrl *Controller) UploadFiles(c *gin.Context) {
 	// 1. 从认证中间件获取当前用户
 	user, ok := middleware.GetUser(c)
@@ -306,12 +307,11 @@ func (ctrl *Controller) UploadFiles(c *gin.Context) {
 		return
 	}
 
-	// 4. 读取可选表单字段：目标目录 ID、重复策略和导入模式。
+	// 4. 读取可选表单字段：目标目录 ID 和导入模式。
 	var directoryID *string
 	if value := c.PostForm("directory_id"); value != "" {
 		directoryID = &value
 	}
-	duplicatePolicy := c.PostForm("duplicate_policy")
 	importMode := c.PostForm("import_mode")
 
 	// 5. 逐个打开文件，校验单文件大小，构建 UploadFileInput 列表
@@ -342,7 +342,7 @@ func (ctrl *Controller) UploadFiles(c *gin.Context) {
 	}
 
 	// 6. 调用 Service 执行上传：创建 ImportTask → 流式上传 MinIO → 回写元信息
-	result, err := ctrl.docs.UploadFiles(c.Request.Context(), user.ID, c.Param("kb_id"), directoryID, duplicatePolicy, files)
+	result, err := ctrl.docs.UploadFiles(c.Request.Context(), user.ID, c.Param("kb_id"), directoryID, files)
 	if err != nil {
 		response.Failure(c, err)
 		return

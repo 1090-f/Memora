@@ -37,11 +37,14 @@ type SearchConfig struct {
 	RerankerThreshold      *float64 `json:"reranker_threshold,omitempty"`
 	RerankerModelID        ID       `json:"reranker_model_id,omitempty"`
 	MinimumEffectiveResult int      `json:"minimum_effective_results"`
+	// MinVectorScore 向量相似度最低阈值（0~1），召回层过滤低于该分数的结果，
+	// 0 表示不启用过滤。
+	MinVectorScore float64 `json:"min_vector_score"`
 }
 
 // DefaultSearchConfig 返回具有合理默认值的 SearchConfig。
 func DefaultSearchConfig() SearchConfig {
-	return SearchConfig{KeywordTopK: 30, VectorTopK: 30, RRFK: 60, RRFTopK: 20, RerankerTopK: 8, MinimumEffectiveResult: 1}
+	return SearchConfig{KeywordTopK: 30, VectorTopK: 30, RRFK: 60, RRFTopK: 20, RerankerTopK: 8, MinimumEffectiveResult: 1, MinVectorScore: 0.3}
 }
 
 // RetrievalRequest 表示检索相关文档的请求。

@@ -29,6 +29,7 @@ export interface KnowledgeBaseDetail {
   default_chat_model_id: string | null;
   default_embedding_model_id: string | null;
   default_reranker_model_id: string | null;
+  duplicate_policy: 'skip' | 'create_new';
   created_at: string;
   updated_at: string;
 }
@@ -81,6 +82,7 @@ export interface KnowledgeBaseUpdateInput {
   default_chat_model_id?: string;
   default_embedding_model_id?: string;
   default_reranker_model_id?: string;
+  duplicate_policy?: 'skip' | 'create_new';
 }
 
 export interface KnowledgeBaseListParams {
@@ -93,6 +95,7 @@ export interface KnowledgeBaseListParams {
 export interface SearchConfig {
   keyword_top_k: number;
   vector_top_k: number;
+  min_vector_score: number;
   rrf_k: number;
   rrf_top_k: number;
   reranker_top_k: number;
@@ -104,6 +107,7 @@ export interface SearchConfig {
 export interface SearchConfigUpdateInput {
   keyword_top_k?: number;
   vector_top_k?: number;
+  min_vector_score?: number;
   rrf_k?: number;
   rrf_top_k?: number;
   reranker_top_k?: number;

@@ -1,7 +1,9 @@
 import RefreshOutlined from '@mui/icons-material/RefreshOutlined';
+import TuneOutlined from '@mui/icons-material/TuneOutlined';
 import { Alert, Box, Button, Stack, Typography } from '@mui/material';
 import { useQuery } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 import { errorMessage } from '@/api/errors';
 import { getDocumentTextPreview } from '../../api';
 import type { DocumentPreview, PreviewFallback, PreviewStatus, PreviewType } from '../../types';
@@ -23,11 +25,14 @@ const label: Record<PreviewType, string> = {
   pdf: '原始版式', image: '原图', table: '表格', markdown: '解析正文', text: '解析正文', download: '下载', none: '不可预览',
 };
 
-export function PreviewHost({ descriptor, title, onRetry, retrying }: {
+const PROCESSING_KEY = '__processing';
+
+export function PreviewHost({ descriptor, title, onRetry, retrying, processingContent }: {
   descriptor: DocumentPreview;
   title: string;
   onRetry: () => void;
   retrying: boolean;
+  processingContent: ReactNode;
 }) {
   const modes = useMemo(() => {
     const result: PreviewMode[] = [{
@@ -49,19 +54,48 @@ export function PreviewHost({ descriptor, title, onRetry, retrying }: {
   const [selectedKey, setSelectedKey] = useState(preferred?.key ?? '');
   useEffect(() => setSelectedKey(preferred?.key ?? ''), [descriptor.document_id, descriptor.content_version, descriptor.status, preferred?.key]);
   const selected = modes.find((mode) => mode.key === selectedKey) ?? preferred;
+  const showProcessing = selectedKey === PROCESSING_KEY;
+  // 处理详情固定在最后一个「解析正文」Tab 的右边（其余回退模式排在其后）。
+  const lastTextIndex = modes.reduce((acc, mode, index) =>
+    (mode.type === 'markdown' || mode.type === 'text') ? index : acc, -1);
 
   return (
     <Stack spacing={2}>
-      {modes.length > 1 && (
-        <Stack direction="row" spacing={1} flexWrap="wrap">
-          {modes.map((mode) => (
-            <Button key={mode.key} size="small" variant={selected?.key === mode.key ? 'contained' : 'outlined'} onClick={() => setSelectedKey(mode.key)}>
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={1}
+        flexWrap="wrap"
+        sx={{
+          position: 'sticky',
+          top: 0,
+          zIndex: 10,
+          bgcolor: 'background.paper',
+          py: 1,
+          borderRadius: 1,
+        }}
+      >
+        {modes.map((mode, index) => (
+          <Fragment key={mode.key}>
+            <Button size="small" variant={selected?.key === mode.key && !showProcessing ? 'contained' : 'outlined'} onClick={() => setSelectedKey(mode.key)}>
               {label[mode.type]}{mode.status === 'processing' || mode.status === 'pending' ? '（生成中）' : mode.status === 'failed' ? '（失败）' : ''}
             </Button>
-          ))}
-        </Stack>
-      )}
-      {selected && <ModeContent documentId={descriptor.document_id} mode={selected} title={title} error={selected.primary ? descriptor.error?.message : undefined} onRetry={onRetry} retrying={retrying} />}
+            {index === lastTextIndex && (
+              <>
+                <Button size="small" variant={showProcessing ? 'contained' : 'outlined'} startIcon={<TuneOutlined />} onClick={() => setSelectedKey(PROCESSING_KEY)}>处理详情</Button>
+                {index < modes.length - 1 && <Box aria-hidden sx={{ width: 1, height: 18, bgcolor: 'divider', mx: 0.25 }} />}
+              </>
+            )}
+          </Fragment>
+        ))}
+        {lastTextIndex === -1 && (
+          <>
+            {modes.length > 1 && <Box aria-hidden sx={{ width: 1, height: 18, bgcolor: 'divider', mx: 0.25 }} />}
+            <Button size="small" variant={showProcessing ? 'contained' : 'outlined'} startIcon={<TuneOutlined />} onClick={() => setSelectedKey(PROCESSING_KEY)}>处理详情</Button>
+          </>
+        )}
+      </Stack>
+      {showProcessing ? processingContent : (selected && <ModeContent documentId={descriptor.document_id} mode={selected} title={title} error={selected.primary ? descriptor.error?.message : undefined} onRetry={onRetry} retrying={retrying} />)}
     </Stack>
   );
 }

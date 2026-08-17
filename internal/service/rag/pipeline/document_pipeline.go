@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 
@@ -316,6 +317,12 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 				asset.Metadata = make(map[string]any)
 			}
 			asset.Metadata["ocr_text"] = text
+			// caption 为空或仅通用编号（如 "图 1"）时用 OCR 文字回填，
+			// 提升图片 alt 展示与检索文本质量。
+			caption := strings.TrimSpace(asset.Caption)
+			if caption == "" || genericFigureCaption(caption) {
+				asset.Caption = text
+			}
 		}
 		return state, nil
 	})
@@ -688,6 +695,14 @@ func indexDocumentFromChunk(chunk *chunking.ParsedChunk, chunkID string, meta tr
 // isArtifactNotFound 判断 Artifact 查找结果。
 func isArtifactNotFound(err error) bool {
 	return err == parser.ErrArtifactNotFound
+}
+
+// genericFigureCaptionRe 匹配仅含通用编号的图片 caption（如 "图 1"、"图片"）。
+var genericFigureCaptionRe = regexp.MustCompile(`^(图|图片)\s*\d*$`)
+
+// genericFigureCaption 判断 caption 是否仅通用编号、不含描述性文字。
+func genericFigureCaption(caption string) bool {
+	return genericFigureCaptionRe.MatchString(strings.TrimSpace(caption))
 }
 
 // stringPtrOrNil 将空串转换为 nil 指针。

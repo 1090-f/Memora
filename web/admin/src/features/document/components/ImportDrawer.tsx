@@ -11,8 +11,6 @@ import {
   MenuItem,
   Stack,
   TextField,
-  ToggleButton,
-  ToggleButtonGroup,
   Typography,
 } from '@mui/material';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -29,7 +27,7 @@ import ReplayOutlined from '@mui/icons-material/ReplayOutlined';
 import clsx from 'clsx';
 import { queryKeys } from '@/api/queryKeys';
 import { errorMessage } from '@/api/errors';
-import { importFiles, importURL, scanImportTask, startImportTask, uploadTaskAttachments } from '../api';
+import { importFiles, scanImportTask, startImportTask, uploadTaskAttachments } from '../api';
 import { flattenDirectories } from '../directoryOptions';
 import type { DirectoryNode, ImageScanResult, ImageRefStatus, ImportUploadResponse } from '../types';
 
@@ -122,13 +120,10 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
   const imageInputRef = useRef<HTMLInputElement>(null);
   const uploadControllerRef = useRef<AbortController | null>(null);
   const filesStateRef = useRef<{ files: PendingFile[] }>({ files: [] });
-  const [sourceMode, setSourceMode] = useState<'file' | 'url'>('file');
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [fileImportMode, setFileImportMode] = useState<'files' | 'folder_archive'>('files');
   const [packing, setPacking] = useState(false);
-  const [sourceURL, setSourceURL] = useState('');
   const [directoryId, setDirectoryId] = useState('');
-  const [duplicatePolicy, setDuplicatePolicy] = useState<'create_new' | 'skip'>('skip');
   const [notice, setNotice] = useState('');
   const [validationError, setValidationError] = useState('');
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -151,23 +146,9 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
 
   const uploadMutation = useMutation({
     mutationFn: async (): Promise<ImportUploadResponse> => {
-      if (sourceMode === 'url') {
-        const task = await importURL(kbId, {
-          url: sourceURL.trim(),
-          directory_id: directoryId || undefined,
-          duplicate_policy: duplicatePolicy,
-        });
-        return {
-          batch_id: task.batch_id ?? '',
-          summary: { total: 1, accepted: 1, rejected: 0 },
-          tasks: [task],
-          rejected: [],
-        };
-      }
       const formData = new FormData();
       queuedFiles.forEach((item) => formData.append('files', item.file));
       if (directoryId) formData.append('directory_id', directoryId);
-      formData.append('duplicate_policy', duplicatePolicy);
       if (fileImportMode === 'folder_archive') formData.append('import_mode', 'folder_archive');
       const controller = new AbortController();
       uploadControllerRef.current = controller;
@@ -185,15 +166,9 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
       setCancelled(false);
       setUploadProgress(100);
       setFileImportMode('files');
-      setSourceURL('');
       if (folderInputRef.current) folderInputRef.current.value = '';
       void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBaseDashboard(kbId) });
-      if (sourceMode === 'url') {
-        setPendingFiles([]);
-        setNotice(`已创建抓取任务：${result.tasks.map((task) => task.file_name).join('、')}`);
-        return;
-      }
       const rejectedByPath = new Map(result.rejected.map((item) => [item.source_path, item.message]));
       setPendingFiles((prev) => prev.map((item) => {
         if (item.status !== 'uploading') return item;
@@ -409,7 +384,7 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
   const pendingCount = pendingTasks.filter((task) => !task.started).length;
   const busy = uploadMutation.isPending || startMutation.isPending || attachmentMutation.isPending || packing;
   const selectionLocked = disabled || busy || pendingCount > 0;
-  const canUpload = sourceMode === 'file' ? queuedFiles.length > 0 : /^https?:\/\//i.test(sourceURL.trim());
+  const canUpload = queuedFiles.length > 0;
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop: onDropFiles,
@@ -435,23 +410,13 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
         <Stack direction="row" alignItems="center" spacing={2}>
           <Box sx={{ flexGrow: 1 }}>
             <Typography variant="h6" fontWeight={750}>导入知识</Typography>
-            <Typography variant="body2" color="text.secondary">上传本地文件、文件夹或抓取网页内容。</Typography>
+            <Typography variant="body2" color="text.secondary">上传本地文件或文件夹。</Typography>
           </Box>
           <IconButton aria-label="关闭导入知识" onClick={onClose}><CloseOutlined /></IconButton>
         </Stack>
       </DialogTitle>
       <DialogContent sx={{ p: 0 }}>
         <Stack spacing={2} sx={{ p: 3 }}>
-        <ToggleButtonGroup
-          exclusive
-          fullWidth
-          value={sourceMode}
-          onChange={(_, value: 'file' | 'url' | null) => value && setSourceMode(value)}
-          disabled={disabled || busy}
-        >
-          <ToggleButton value="file">文件上传</ToggleButton>
-          <ToggleButton value="url">URL 抓取</ToggleButton>
-        </ToggleButtonGroup>
         {notice && <Alert severity="success" onClose={() => setNotice('')}>{notice}</Alert>}
         {validationError && <Alert severity="warning" onClose={() => setValidationError('')}>{validationError}</Alert>}
         {uploadMutation.error && !cancelled && <Alert severity="error">{errorMessage(uploadMutation.error)}</Alert>}
@@ -459,10 +424,8 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
         {attachmentMutation.error && <Alert severity="error">图片补传失败：{errorMessage(attachmentMutation.error)}</Alert>}
         {(startMutation.isPending || attachmentMutation.isPending || packing) && <LinearProgress />}
 
-        {sourceMode === 'file' ? (
           <>
-            <div
-              {...getRootProps()}
+            <div {...getRootProps()}
               role="button"
               tabIndex={0}
               aria-label="拖放文件上传"
@@ -648,28 +611,10 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
               </Stack>
             )}
           </>
-        ) : (
-          <>
-            <Typography color="text.secondary">网页由 Worker 异步抓取；服务端会执行 SSRF、重定向、内容类型、大小和超时校验。</Typography>
-            <TextField
-              label="网页 URL"
-              value={sourceURL}
-              onChange={(event) => setSourceURL(event.target.value)}
-              placeholder="https://example.com/article"
-              error={sourceURL !== '' && !/^https?:\/\//i.test(sourceURL.trim())}
-              helperText="仅支持 HTTP/HTTPS 公网地址"
-              disabled={disabled || busy}
-            />
-          </>
-        )}
 
         <TextField select label="目标目录" value={directoryId} onChange={(event) => setDirectoryId(event.target.value)} disabled={disabled || busy}>
           <MenuItem value="">（不归入目录）</MenuItem>
           {options.map((option) => <MenuItem key={option.id} value={option.id}>{'　'.repeat(option.depth)}{option.name}</MenuItem>)}
-        </TextField>
-        <TextField select label="重复策略" value={duplicatePolicy} onChange={(event) => setDuplicatePolicy(event.target.value as 'create_new' | 'skip')} disabled={disabled || busy}>
-          <MenuItem value="skip">重复内容跳过（推荐）</MenuItem>
-          <MenuItem value="create_new">重复内容创建新文档</MenuItem>
         </TextField>
         {pendingTasks.length > 0 ? (
           <Button
@@ -681,7 +626,7 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
           </Button>
         ) : (
           <Button variant="contained" disabled={disabled || !canUpload || busy} onClick={() => uploadMutation.mutate()}>
-            {uploadMutation.isPending ? '正在上传…' : sourceMode === 'url' ? '开始抓取' : '上传并扫描'}
+            {uploadMutation.isPending ? '正在上传…' : '上传并扫描'}
           </Button>
         )}
         </Stack>
