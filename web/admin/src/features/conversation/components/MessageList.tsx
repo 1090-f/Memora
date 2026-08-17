@@ -3,7 +3,7 @@ import ContentCopyOutlined from '@mui/icons-material/ContentCopyOutlined';
 import CheckOutlined from '@mui/icons-material/CheckOutlined';
 import ReplayOutlined from '@mui/icons-material/ReplayOutlined';
 import SmartToyOutlined from '@mui/icons-material/SmartToyOutlined';
-import { Box, Button, IconButton, Paper, Stack, Typography } from '@mui/material';
+import { Box, Button, IconButton, Paper, Stack, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
 import type { ReactNode } from 'react';
 import { useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
@@ -47,14 +47,28 @@ function MarkdownContent({ content }: { content: string }) {
   );
 }
 
-export function MessageList({ messages, streamingAnswer, agentRunState, agentRunId, emptyComposer, onSuggestion, onRetry }: {
+/**
+ * Determine the effective content of a message considering version switching.
+ */
+function getEffectiveContent(message: Message): string {
+  if (message.versions && message.versions.length > 0 && message.current_version_index !== undefined && message.current_version_index >= 0) {
+    const version = message.versions[message.current_version_index];
+    if (version) return version.content;
+  }
+  return message.content;
+}
+
+export function MessageList({ messages, streamingAnswer, agentRunState, agentRunId, retryingMessageId, resumingRun, emptyComposer, onSuggestion, onRetry, onSwitchVersion }: {
   messages: Message[];
   streamingAnswer: string;
   agentRunState: AgentRunViewState;
   agentRunId: string | null;
+  retryingMessageId: string | null;
+  resumingRun: boolean;
   emptyComposer?: ReactNode;
   onSuggestion: (suggestion: string) => void;
   onRetry?: (agentRunId: string) => void;
+  onSwitchVersion?: (messageId: string, versionIdx: number) => void;
 }) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -68,8 +82,13 @@ export function MessageList({ messages, streamingAnswer, agentRunState, agentRun
     }
   }, []);
 
-  // Find the last assistant message with an agent_run_id
+  // Find the last assistant message with an agent_run_id and the latest user question.
   const lastAssistantMsg = [...messages].reverse().find((m) => m.role === 'assistant' && m.agent_run_id);
+  const lastUserMessage = [...messages].reverse().find((m) => m.role === 'user');
+  const shouldShowRunUnderUser = agentRunState.status !== 'idle'
+    && !retryingMessageId
+    && !messages.some((message) => message.role === 'assistant' && message.agent_run_id === agentRunId);
+  const hidePreviousAssistantReply = shouldShowRunUnderUser && resumingRun && Boolean(lastAssistantMsg);
 
   if (messages.length === 0 && !streamingAnswer) {
     return (
@@ -88,25 +107,62 @@ export function MessageList({ messages, streamingAnswer, agentRunState, agentRun
       <Stack spacing={2.2} sx={{ width: '100%', maxWidth: 980, flexShrink: 0 }}>
       {messages.map((message, idx) => (
         <Box key={message.id}>
-        {message.role === 'assistant' && message.agent_run_id === agentRunId && <InlineAgentRun state={agentRunState} />}
-        <Stack direction={message.role === 'user' ? 'row-reverse' : 'row'} spacing={1.2} alignItems="flex-start" sx={{ mt: message.role === 'assistant' && message.agent_run_id === agentRunId ? 1.2 : 0, width: message.role === 'assistant' ? '100%' : 'fit-content', ml: message.role === 'user' ? 'auto' : 0, maxWidth: message.role === 'user' ? '78%' : '100%' }}>
+        {message.role === 'assistant' && message.id === retryingMessageId && <InlineAgentRun state={agentRunState} />}
+        {message.id !== retryingMessageId && !(hidePreviousAssistantReply && message.id === lastAssistantMsg?.id) && <Stack direction={message.role === 'user' ? 'row-reverse' : 'row'} spacing={1.2} alignItems="flex-start" sx={{ mt: message.role === 'assistant' && message.id === retryingMessageId ? 1.2 : 0, width: message.role === 'assistant' ? '100%' : 'fit-content', ml: message.role === 'user' ? 'auto' : 0, maxWidth: message.role === 'user' ? '78%' : '100%' }}> 
           <Box sx={{ width: 34, height: 34, flexShrink: 0, borderRadius: message.role === 'user' ? '50%' : 2, display: 'grid', placeItems: 'center', color: '#fff', background: message.role === 'user' ? 'linear-gradient(145deg,#5683f7,#5862e9)' : 'linear-gradient(145deg,#697af6,#704de5)', boxShadow: '0 7px 16px rgba(75,74,220,.2)', fontSize: 12 }}>
             {message.role === 'user' ? 'A' : <SmartToyOutlined sx={{ fontSize: 20 }} />}
           </Box>
           <Box minWidth={0} sx={{ flex: message.role === 'assistant' ? 1 : 'initial' }}>
             <Paper variant="outlined" sx={{ p: message.role === 'user' ? '13px 16px' : 2, borderRadius: message.role === 'user' ? '14px 4px 14px 14px' : '4px 14px 14px 14px', borderColor: message.role === 'user' ? 'transparent' : '#e1e5ed', bgcolor: message.role === 'user' ? '#efefff' : '#fff', boxShadow: message.role === 'user' ? 'none' : '0 5px 18px rgba(31,45,90,.035)' }}>
               <Box sx={{ color: '#25314c', fontSize: 14, lineHeight: 1.75 }}>
-                <MarkdownContent content={message.content} />
+                <MarkdownContent content={getEffectiveContent(message)} />
               </Box>
               {message.citations && message.citations.length > 0 && (
                 <Stack direction="row" useFlexGap flexWrap="wrap" spacing={0.8} sx={{ mt: 1.2 }}>
                   {message.citations.slice(0, 3).map((citation, index) => <Button key={`${message.id}-${index}`} size="small" variant="outlined" sx={{ fontSize: 11, borderRadius: 1.5 }}>{citation.document_title || citation.title || `引用 ${index + 1}`}</Button>)}
                 </Stack>
               )}
+              {/* Version switcher — only for assistant messages with versions */}
+              {message.role === 'assistant' && message.versions && message.versions.length > 0 && (
+                <Stack direction="row" alignItems="center" spacing={0.8} sx={{ mt: 1, mb: 0.5 }}>
+                  <Typography sx={{ color: '#8c97aa', fontSize: 11 }}>版本：</Typography>
+                  <ToggleButtonGroup
+                    size="small"
+                    value={message.current_version_index ?? -1}
+                    exclusive
+                    onChange={(_, newValue) => {
+                      if (newValue !== null && onSwitchVersion) {
+                        onSwitchVersion(message.id, newValue);
+                      }
+                    }}
+                    sx={{
+                      '& .MuiToggleButton-root': {
+                        fontSize: 11,
+                        px: 1.2,
+                        py: 0.2,
+                        borderRadius: 1,
+                        border: '1px solid',
+                        borderColor: '#e1e5ed',
+                        color: '#6d788a',
+                        '&.Mui-selected': {
+                          bgcolor: '#eef2ff',
+                          color: '#4f63e5',
+                          borderColor: '#c5d0ff',
+                        },
+                      },
+                    }}
+                  >
+                    <ToggleButton value={-1}>最新</ToggleButton>
+                    {message.versions.map((_, vi) => (
+                      <ToggleButton key={vi} value={vi}>V{vi + 1}</ToggleButton>
+                    ))}
+                  </ToggleButtonGroup>
+                </Stack>
+              )}
               {/* Bottom action bar for both user and assistant messages */}
               <Stack direction="row" justifyContent={message.role === 'user' ? 'flex-start' : 'space-between'} alignItems="center" sx={{ mt: 0.7, mb: -0.8, mr: -0.8 }}>
                 <Stack direction="row" spacing={0.2}>
-                  <IconButton size="small" aria-label="复制" onClick={() => void handleCopy(message.content, message.id)}>
+                  <IconButton size="small" aria-label="复制" onClick={() => void handleCopy(getEffectiveContent(message), message.id)}>
                     {copiedId === message.id ? <CheckOutlined sx={{ fontSize: 16, color: '#4caf50' }} /> : <ContentCopyOutlined sx={{ fontSize: 16 }} />}
                   </IconButton>
                   {message.role === 'assistant' && message.agent_run_id && message.id === lastAssistantMsg?.id && onRetry && (
@@ -119,11 +175,10 @@ export function MessageList({ messages, streamingAnswer, agentRunState, agentRun
             </Paper>
             <Typography sx={{ color: '#8c97aa', fontSize: 10.5, mt: 0.5, textAlign: message.role === 'user' ? 'right' : 'left' }}>{new Date(message.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</Typography>
           </Box>
-        </Stack></Box>
-      ))}
-      {agentRunState.status !== 'idle' && !messages.some((message) => message.role === 'assistant' && message.agent_run_id === agentRunId) && (
-        <InlineAgentRun state={agentRunState} />
-      )}
+        </Stack>}
+        {message.id === lastUserMessage?.id && shouldShowRunUnderUser && <InlineAgentRun state={agentRunState} />}
+        </Box>
+       ))}
       {streamingAnswer && (
         <Stack direction="row" spacing={1.2} alignItems="flex-start" sx={{ width: '100%' }}>
           <Box sx={{ width: 34, height: 34, flexShrink: 0, borderRadius: 2, display: 'grid', placeItems: 'center', color: '#fff', background: 'linear-gradient(145deg,#697af6,#704de5)' }}><SmartToyOutlined sx={{ fontSize: 20 }} /></Box>
