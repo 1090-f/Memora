@@ -194,8 +194,8 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
         // add the assistant message if it hasn't been added yet
         if (!terminal && !controller.signal.aborted && activeConversationIdRef.current === replayConversationId) {
           const completedRun = await getAgentRun(latestRunId);
-          const answer = completedRun.final_result || runStateRef.current.answer;
-          if (answer) {
+          const answer = completedRun.final_result ?? runStateRef.current.answer ?? '';
+          if (answer !== undefined && answer !== null && activeConversationIdRef.current === replayConversationId) {
             updateMessages((current) => {
               if (current.some((m) => m.agent_run_id === latestRunId && m.role === 'assistant')) return current;
               return [...current, {
@@ -316,8 +316,8 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
       },
     });
     const completedRun = await getAgentRun(runId);
-    const answer = completedRun.final_result || runStateRef.current.answer;
-    if (answer && activeConversationIdRef.current === streamConversationId) {
+    const answer = completedRun.final_result ?? runStateRef.current.answer ?? '';
+    if (answer !== undefined && answer !== null && activeConversationIdRef.current === streamConversationId) {
       updateMessages((current) => {
         const newMessage: Message = {
           id: crypto.randomUUID(),
@@ -423,7 +423,11 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
 
   const stop = () => {
     abortRef.current?.abort();
-    if (currentRunId.current) void cancelAgentRun(currentRunId.current);
+    if (currentRunId.current) {
+      void cancelAgentRun(currentRunId.current).then(() => {
+        dispatchRun({ type: 'SET_AGENT_RUN_CANCELLED' });
+      });
+    }
   };
 
   const composer = (
@@ -439,13 +443,19 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
       onStop={stop}
     />
   );
+  // 合并活跃运行状态和历史运行状态，确保切换版本时能找到对应 agent_run_id 的运行记录。
+  const allRunStates = {
+    ...(activeRunId && runState.status !== 'idle' ? { [activeRunId]: runState } : {}),
+    ...historicalRunStates,
+  };
+
   const empty = messages.length === 0 && !submitting;
   const messageArea = (
     <Stack sx={{ flex: 1, minHeight: 0 }}>
       {!enabled && <Alert severity="info" sx={{ m: 2, mb: 0 }}>智能问答后端未启用，请检查服务配置。</Alert>}
       {errorMessage && <Alert severity="error" sx={{ m: 2, mb: 0 }}>{errorMessage}</Alert>}
       {messagesQuery.error && <Alert severity="warning" sx={{ m: 2, mb: 0 }}>历史消息加载失败，请稍后重试。</Alert>}
-      <MessageList messages={messages} streamingAnswer={submitting && !resumingRun ? runState.answer : ''} agentRunState={runState} agentRunId={activeRunId} agentRunStates={historicalRunStates} retryingMessageId={retryingMessageId} resumingRun={resumingRun} emptyComposer={empty ? composer : undefined} onSuggestion={setDraft} onRetry={retry} onSwitchVersion={switchVersion} />
+      <MessageList messages={messages} streamingAnswer={submitting && !resumingRun ? runState.answer : ''} agentRunState={runState} agentRunId={activeRunId} agentRunStates={allRunStates} retryingMessageId={retryingMessageId} resumingRun={resumingRun} emptyComposer={empty ? composer : undefined} onSuggestion={setDraft} onRetry={retry} onSwitchVersion={switchVersion} />
     </Stack>
   );
 

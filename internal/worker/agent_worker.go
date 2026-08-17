@@ -188,6 +188,12 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 	// 3. 调用核心服务执行 Agent 运行
 	result, err := w.agentService.Run(execCtx, runRequest)
 	if err != nil {
+		// 如果错误是 context 取消导致的（用户主动停止），不应覆盖 DB 中已被 Cancel 设为 cancelled 的状态。
+		if errors.Is(err, context.Canceled) {
+			logger.Info("Agent 运行已被用户取消", zap.String("run_id", run.ID.String()))
+			return
+		}
+
 		// 执行失败时显式落库，避免运行记录一直停留在 running 状态。
 		executionMode := ""
 		var runErr *contracts.AgentRunError

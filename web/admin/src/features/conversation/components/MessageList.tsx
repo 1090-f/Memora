@@ -30,6 +30,13 @@ const markdownSx = {
 } as const;
 
 function MarkdownContent({ content }: { content: string }) {
+  if (!content) {
+    return (
+      <Typography sx={{ color: '#8c97aa', fontSize: 13, fontStyle: 'italic' }}>
+        （空回复）
+      </Typography>
+    );
+  }
   return (
     <Box sx={markdownSx}>
       <ReactMarkdown
@@ -56,6 +63,18 @@ function getEffectiveContent(message: Message): string {
     if (version) return version.content;
   }
   return message.content;
+}
+
+/**
+ * Determine the effective agent_run_id considering version switching.
+ * When viewing a historical version, returns that version's agent_run_id.
+ */
+function getEffectiveAgentRunId(message: Message): string | null {
+  if (message.versions && message.versions.length > 0 && message.current_version_index !== undefined && message.current_version_index >= 0) {
+    const version = message.versions[message.current_version_index];
+    if (version && version.agent_run_id) return version.agent_run_id;
+  }
+  return message.agent_run_id;
 }
 
 export function MessageList({ messages, streamingAnswer, agentRunState, agentRunId, agentRunStates, retryingMessageId, resumingRun, emptyComposer, onSuggestion, onRetry, onSwitchVersion }: {
@@ -111,8 +130,9 @@ export function MessageList({ messages, streamingAnswer, agentRunState, agentRun
         <Box key={message.id}>
         {/* Historical agent run process — shown above completed assistant messages */}
         {(() => {
-          const runState = agentRunStates?.[message.agent_run_id ?? ''];
-          return message.role === 'assistant' && message.agent_run_id && message.id !== retryingMessageId
+          const effectiveRunId = getEffectiveAgentRunId(message);
+          const runState = effectiveRunId ? agentRunStates?.[effectiveRunId] : undefined;
+          return message.role === 'assistant' && effectiveRunId && message.id !== retryingMessageId
             && runState && runState.status !== 'idle' && (
             <Box sx={{ mb: 1.5 }}>
               <InlineAgentRun state={runState} />

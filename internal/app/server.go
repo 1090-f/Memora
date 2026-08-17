@@ -325,6 +325,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 			MaxRunSeconds:      cfg.Agent.MaxRunSeconds,
 		},
 	)
+	adkRunner.ToolCallRepo = toolCallRepo
 	adkService := adkcore.NewService(adkRunner, planRunner, routerService, sequencedEvents, core.NewCitationCollector(), &agentRunRepoAdapter{repo: agentRunRepo})
 	var agentCoreService contracts.AgentRunService = adkService
 

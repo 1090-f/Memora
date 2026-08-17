@@ -19,8 +19,9 @@ const numberValue = (value: unknown, fallback = 0) => typeof value === 'number' 
 
 export type ResetAction = { type: 'RESET_AGENT_RUN_STATE' };
 export type QueueAction = { type: 'SET_AGENT_RUN_QUEUED' };
+export type CancelledAction = { type: 'SET_AGENT_RUN_CANCELLED' };
 export type HydrateAction = { type: 'HYDRATE_AGENT_RUN_STATE'; run: AgentRun };
-export type AgentRunAction = AgentEvent | ResetAction | QueueAction | HydrateAction;
+export type AgentRunAction = AgentEvent | ResetAction | QueueAction | CancelledAction | HydrateAction;
 
 export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction): AgentRunViewState {
   if (event.type === 'RESET_AGENT_RUN_STATE') {
@@ -28,6 +29,9 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
   }
   if (event.type === 'SET_AGENT_RUN_QUEUED') {
     return { ...initialAgentRunState, status: 'queued' };
+  }
+  if (event.type === 'SET_AGENT_RUN_CANCELLED') {
+    return { ...initialAgentRunState, status: 'cancelled', resumable: true };
   }
   if (event.type === 'HYDRATE_AGENT_RUN_STATE') {
     const run = event.run;
