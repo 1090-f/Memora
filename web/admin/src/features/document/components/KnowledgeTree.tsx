@@ -1,7 +1,6 @@
 import AddOutlined from '@mui/icons-material/AddOutlined';
 import FolderOutlined from '@mui/icons-material/FolderOutlined';
-import SettingsOutlined from '@mui/icons-material/SettingsOutlined';
-import { Box, Button, IconButton, List, ListItemIcon, ListItemText, ListItemButton, Stack, TextField, Typography } from '@mui/material';
+import { Box, Button, List, ListItemIcon, ListItemText, ListItemButton, Stack, TextField, Typography } from '@mui/material';
 import { useState } from 'react';
 import type { DirectoryNode } from '../types';
 
@@ -86,7 +85,6 @@ export function KnowledgeTree({ nodes, selectedId, onSelect, onCreateDirectory, 
       <TreeNodes nodes={nodes} selectedId={selectedId} onSelect={onSelect} />
       <Stack direction="row" alignItems="center" sx={{ mt: 'auto', px: 1.5, py: 1.2, borderTop: '1px solid #e8ebf1' }}>
         <Typography sx={{ color: '#66728b', fontSize: 12, flexGrow: 1 }}>共 {nodes.length} 个目录</Typography>
-        <IconButton size="small" aria-label="目录设置"><SettingsOutlined sx={{ fontSize: 17 }} /></IconButton>
       </Stack>
     </Box>
   );
