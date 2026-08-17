@@ -51,6 +51,7 @@ type KeywordSearchRepository interface {
 
 // keywordSearchRepository 是基于 ParadeDB pg_search 的 GORM 实现。
 // SQL 过滤：user_id + knowledge_base_id + 可选 document_ids + 软删除 + active 索引版本。
+// 可见性完全由 active 索引版本控制，不依赖 processing_status，重建失败不影响旧版本。
 type keywordSearchRepository struct {
 	db *gorm.DB
 }
@@ -69,7 +70,10 @@ func (r *keywordSearchRepository) Search(ctx context.Context, params KeywordSear
 	operator := paradeDBKeywordOperator(params.Mode)
 	args := []any{params.UserID, params.KnowledgeBaseID, query}
 	// 归属过滤(user_id + knowledge_base_id) + 文档软删除过滤，防止跨库/跨用户泄漏已删内容。
-	where := `dc.user_id = ? AND dc.knowledge_base_id = ? AND d.deleted_at IS NULL AND d.processing_status = 'succeeded'`
+	// 可检索性由索引版本控制：dc.index_version = d.active_index_version 决定发布内容；
+	// active_index_version 仅在加工全部成功后原子写入，为 NULL 时自然无结果，
+	// 重建失败保留旧 active 版本，旧索引继续对外可用。
+	where := `dc.user_id = ? AND dc.knowledge_base_id = ? AND d.deleted_at IS NULL`
 	// 左侧 content 使用迁移中配置的 ParadeDB bigram tokenizer；数据库统一完成分词。
 	where += fmt.Sprintf(` AND dc.content %s CAST(? AS text)`, operator)
 

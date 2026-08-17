@@ -1,5 +1,4 @@
 import CachedOutlined from '@mui/icons-material/CachedOutlined';
-import CloseOutlined from '@mui/icons-material/CloseOutlined';
 import RefreshOutlined from '@mui/icons-material/RefreshOutlined';
 import {
   Alert,
@@ -7,8 +6,6 @@ import {
   Button,
   Chip,
   Divider,
-  Drawer,
-  IconButton,
   List,
   ListItem,
   ListItemText,
@@ -35,10 +32,8 @@ function formatTime(value?: string) {
 }
 
 // 技术信息面板：原文件信息、解析/分块/索引状态与版本统一放在这里，
-// 不在正文展示 Chunk 边界或 token 信息。
-export function DocumentProcessingDrawer({ open, onClose, document, processing }: {
-  open: boolean;
-  onClose: () => void;
+// 作为「处理详情」Tab 内容在正文区域展示，不再使用侧边抽屉。
+export function DocumentProcessingPanel({ document, processing }: {
   document: Document;
   processing?: DocumentProcessing;
 }) {
@@ -51,7 +46,6 @@ export function DocumentProcessingDrawer({ open, onClose, document, processing }
   const versionsQuery = useQuery({
     queryKey: queryKeys.documentIndexVersions(document.id),
     queryFn: () => listDocumentIndexVersions(document.id),
-    enabled: open,
   });
   const activeVersion = versionsQuery.data?.items.find((version) => version.version === activeIndexVersion);
   const allChunkCount = (versionsQuery.data?.items ?? []).reduce((sum, version) => sum + version.chunk_count, 0);
@@ -91,94 +85,82 @@ export function DocumentProcessingDrawer({ open, onClose, document, processing }
   ];
 
   return (
-    <Drawer
-      anchor="right"
-      open={open}
-      onClose={onClose}
-      sx={(theme) => ({ zIndex: theme.zIndex.modal + 1 })}
-    >
-      <Stack spacing={2} sx={{ width: 440, p: 3 }}>
-        <Stack direction="row" alignItems="center" spacing={1}>
-          <Typography variant="h6" sx={{ flexGrow: 1 }}>处理详情</Typography>
-          <IconButton size="small" onClick={onClose}><CloseOutlined fontSize="small" /></IconButton>
-        </Stack>
+    <Stack spacing={2}>
+      {retryMutation.error && <Alert severity="error">重新解析失败：{errorMessage(retryMutation.error)}</Alert>}
+      {reindexMutation.error && <Alert severity="error">重新索引失败：{errorMessage(reindexMutation.error)}</Alert>}
 
-        {retryMutation.error && <Alert severity="error">重新解析失败：{errorMessage(retryMutation.error)}</Alert>}
-        {reindexMutation.error && <Alert severity="error">重新索引失败：{errorMessage(reindexMutation.error)}</Alert>}
+      <List disablePadding dense>
+        {rows.map((row) => (
+          <ListItem key={row.label} disableGutters sx={{ py: 0.5 }}>
+            <ListItemText
+              primary={row.label}
+              primaryTypographyProps={{ variant: 'caption', color: 'text.secondary' }}
+              secondary={row.value ?? '—'}
+              secondaryTypographyProps={{
+                variant: 'body2',
+                color: row.danger ? 'error' : 'text.primary',
+                sx: { wordBreak: 'break-all' },
+              }}
+            />
+          </ListItem>
+        ))}
+      </List>
 
-        <List disablePadding dense>
-          {rows.map((row) => (
-            <ListItem key={row.label} disableGutters sx={{ py: 0.5 }}>
-              <ListItemText
-                primary={row.label}
-                primaryTypographyProps={{ variant: 'caption', color: 'text.secondary' }}
-                secondary={row.value ?? '—'}
-                secondaryTypographyProps={{
-                  variant: 'body2',
-                  color: row.danger ? 'error' : 'text.primary',
-                  sx: { wordBreak: 'break-all' },
-                }}
-              />
-            </ListItem>
-          ))}
-        </List>
-
-        {document.parse_warnings && document.parse_warnings.length > 0 && (
-          <>
-            <Divider />
-            <Typography variant="subtitle2" color="text.secondary">解析警告</Typography>
-            <Stack spacing={0.5}>
-              {document.parse_warnings.map((warning) => (
-                <Alert key={warning} severity="warning" sx={{ py: 0.5 }}>{warning}</Alert>
-              ))}
-            </Stack>
-          </>
-        )}
-
-        {versionsQuery.data && versionsQuery.data.items.length > 0 && (
-          <>
-            <Divider />
-            <Typography variant="subtitle2" color="text.secondary">索引版本</Typography>
-            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-              {versionsQuery.data.items.map((version) => (
-                <Chip
-                  key={version.version}
-                  size="small"
-                  color={version.version === activeIndexVersion ? 'primary' : 'default'}
-                  variant={version.version === activeIndexVersion ? 'filled' : 'outlined'}
-                  label={`v${version.version} · ${version.chunk_count} chunks · ${version.vector_count} vectors · ${version.status}`}
-                />
-              ))}
-            </Stack>
-          </>
-        )}
-        {versionsQuery.error && <Alert severity="warning">索引版本加载失败：{errorMessage(versionsQuery.error)}</Alert>}
-
-        <Divider />
-        <Box>
-          <Typography variant="subtitle2" color="text.secondary" mb={1}>操作</Typography>
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<RefreshOutlined />}
-              disabled={effectiveStatus !== 'failed' || retryMutation.isPending}
-              onClick={() => retryMutation.mutate(document.id)}
-            >
-              {retryMutation.isPending ? '正在重新解析…' : '重新解析'}
-            </Button>
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<CachedOutlined />}
-              disabled={effectiveStatus !== 'succeeded' || reindexMutation.isPending}
-              onClick={() => reindexMutation.mutate(document.id)}
-            >
-              {reindexMutation.isPending ? '正在重新索引…' : '重新索引'}
-            </Button>
+      {document.parse_warnings && document.parse_warnings.length > 0 && (
+        <>
+          <Divider />
+          <Typography variant="subtitle2" color="text.secondary">解析警告</Typography>
+          <Stack spacing={0.5}>
+            {document.parse_warnings.map((warning) => (
+              <Alert key={warning} severity="warning" sx={{ py: 0.5 }}>{warning}</Alert>
+            ))}
           </Stack>
-        </Box>
-      </Stack>
-    </Drawer>
+        </>
+      )}
+
+      {versionsQuery.data && versionsQuery.data.items.length > 0 && (
+        <>
+          <Divider />
+          <Typography variant="subtitle2" color="text.secondary">索引版本</Typography>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            {versionsQuery.data.items.map((version) => (
+              <Chip
+                key={version.version}
+                size="small"
+                color={version.version === activeIndexVersion ? 'primary' : 'default'}
+                variant={version.version === activeIndexVersion ? 'filled' : 'outlined'}
+                label={`v${version.version} · ${version.chunk_count} chunks · ${version.vector_count} vectors · ${version.status}`}
+              />
+            ))}
+          </Stack>
+        </>
+      )}
+      {versionsQuery.error && <Alert severity="warning">索引版本加载失败：{errorMessage(versionsQuery.error)}</Alert>}
+
+      <Divider />
+      <Box>
+        <Typography variant="subtitle2" color="text.secondary" mb={1}>操作</Typography>
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<RefreshOutlined />}
+            disabled={effectiveStatus !== 'failed' || retryMutation.isPending}
+            onClick={() => retryMutation.mutate(document.id)}
+          >
+            {retryMutation.isPending ? '正在重新解析…' : '重新解析'}
+          </Button>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<CachedOutlined />}
+            disabled={effectiveStatus !== 'succeeded' || reindexMutation.isPending}
+            onClick={() => reindexMutation.mutate(document.id)}
+          >
+            {reindexMutation.isPending ? '正在重新索引…' : '重新索引'}
+          </Button>
+        </Stack>
+      </Box>
+    </Stack>
   );
 }

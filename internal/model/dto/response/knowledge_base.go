@@ -15,6 +15,7 @@ type KnowledgeBaseResponse struct {
 	DefaultChatModelID      *string   `json:"default_chat_model_id,omitempty"`      // DefaultChatModelID 默认对话模型配置 ID，可选
 	DefaultEmbeddingModelID *string   `json:"default_embedding_model_id,omitempty"` // DefaultEmbeddingModelID 默认向量化模型配置 ID，可选
 	DefaultRerankerModelID  *string   `json:"default_reranker_model_id,omitempty"`  // DefaultRerankerModelID 默认重排序模型配置 ID，可选
+	DuplicatePolicy         string    `json:"duplicate_policy"`                     // DuplicatePolicy 文档导入重复处理策略（skip/create_new）
 	CreatedAt               time.Time `json:"created_at"`                           // CreatedAt 创建时间
 	UpdatedAt               time.Time `json:"updated_at"`                           // UpdatedAt 更新时间
 }
@@ -76,5 +77,6 @@ type SearchConfigResponse struct {
 	RerankerTopK           int      `json:"reranker_top_k"`               // RerankerTopK 重排序后返回的条数
 	RerankerThreshold      *float64 `json:"reranker_threshold,omitempty"` // RerankerThreshold 重排序分数阈值，低于该分数的结果被过滤，可选
 	MinimumEffectiveResult int      `json:"minimum_effective_results"`    // MinimumEffectiveResult 最低有效结果数，防止检索结果过少
+	MinVectorScore         float64  `json:"min_vector_score"`             // MinVectorScore 向量相似度最低阈值（0~1），0 表示不启用过滤
 	RerankerModelID        *string  `json:"reranker_model_id,omitempty"`  // RerankerModelID 重排序模型配置 ID，可选
 }

@@ -76,9 +76,8 @@ import type {
   ImportTask,
 } from '../types';
 
-const sourceLabel: Record<Exclude<DocumentSourceType, 'manual'>, string> = {
+const sourceLabel: Record<Exclude<DocumentSourceType, 'manual' | 'url'>, string> = {
   file: '文件',
-  url: 'URL',
 };
 
 const taskLabel: Record<ImportTask['status'], string> = {
@@ -275,7 +274,7 @@ function DocumentList({
 
   const documents = query.data?.items ?? [];
   if (documents.length === 0) {
-    return <EmptyState title="暂无文档" description={keyword || status || sourceType ? '没有符合当前筛选条件的文档。' : '导入 Markdown、TXT、PDF、DOCX 和 URL。'} />;
+    return <EmptyState title="暂无文档" description={keyword || status || sourceType ? '没有符合当前筛选条件的文档。' : '导入 Markdown、TXT、PDF、DOCX 等文档。'} />;
   }
 
   return (
@@ -426,7 +425,7 @@ function ImportTasks({ kbId, onOpenDocument, embedded = false }: {
       {cleanupNotice && <Alert severity="success" sx={{ mb: 1 }} onClose={() => setCleanupNotice('')}>{cleanupNotice}</Alert>}
       {cleanupError && <Alert severity="error" sx={{ mb: 1 }} onClose={() => setCleanupError(null)}>清理失败：{errorMessage(cleanupError)}</Alert>}
       {retry.error && <Alert severity="error" sx={{ mb: 1 }}>{errorMessage(retry.error)}</Alert>}
-      {tasks.length === 0 && <EmptyState title="暂无导入任务" description="通过“导入知识”添加文件或 URL。" />}
+      {tasks.length === 0 && <EmptyState title="暂无导入任务" description="通过“导入知识”添加文件。" />}
       {tasks.length > 0 && (
         <>
       <Box sx={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1.7fr) 100px 80px 90px 150px 110px', alignItems: 'center', py: 1, px: 0.5, color: '#73809a', fontSize: 12, borderBottom: '1px solid #edf0f5' }}>
@@ -491,6 +490,7 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
   const [processingStatus, setProcessingStatus] = useState<DocumentStatusFilter>('');
   const [sourceType, setSourceType] = useState<'' | DocumentSourceType>('');
   const [deleteTarget, setDeleteTarget] = useState<DocumentListItem | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [notice, setNotice] = useState('');
   const [actionError, setActionError] = useState<Error | null>(null);
   const queryClient = useQueryClient();
@@ -571,7 +571,7 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
       void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBaseDashboard(kbId) });
       if (selectedId === documentIdValue) setSelectedId(null);
-      setDeleteTarget(null);
+      setDeleteOpen(false);
       setNotice('文档已删除');
     },
     onError: (error) => setActionError(error as Error),
@@ -679,7 +679,10 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
                         sourceType={sourceType}
                         selectedId={selectedId}
                         onSelect={setSelectedId}
-                        onDelete={setDeleteTarget}
+                        onDelete={(document) => {
+                          setDeleteTarget(document);
+                          setDeleteOpen(true);
+                        }}
                         onRetry={(document) => retryDoc.mutate(document.id)}
                         onReindex={(document) => reindex.mutate(document.id)}
                       />
@@ -725,11 +728,15 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
         <KnowledgeBaseSettingsContent status={capabilities.knowledgeBase} kbId={kbId} embedded />
       </WorkspaceFeatureDialog>
       <ImportDrawer open={importOpen} onClose={() => setImportOpen(false)} disabled={!enabled} kbId={kbId} directories={treeQuery.data ?? []} />
-      <Dialog open={deleteTarget !== null} onClose={removeDoc.isPending ? undefined : () => setDeleteTarget(null)}>
+      <Dialog
+        open={deleteOpen}
+        onClose={removeDoc.isPending ? undefined : () => setDeleteOpen(false)}
+        slotProps={{ transition: { onExited: () => setDeleteTarget(null) } }}
+      >
         <DialogTitle>删除文档</DialogTitle>
         <DialogContent><Typography>确定删除“{deleteTarget?.title}”吗？文档将被软删除。</Typography></DialogContent>
         <DialogActions>
-          <Button onClick={() => setDeleteTarget(null)} disabled={removeDoc.isPending}>取消</Button>
+          <Button onClick={() => setDeleteOpen(false)} disabled={removeDoc.isPending}>取消</Button>
           <Button color="error" variant="contained" disabled={removeDoc.isPending} onClick={() => deleteTarget && removeDoc.mutate(deleteTarget.id)}>删除</Button>
         </DialogActions>
       </Dialog>

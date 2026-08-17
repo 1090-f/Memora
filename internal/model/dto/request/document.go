@@ -10,8 +10,8 @@ type DocumentListFilter struct {
 }
 
 // ImportURLRequest 是静态网页异步导入请求；抓取由 Worker 执行。
+// 重复处理策略读取知识库级配置，请求不再携带。
 type ImportURLRequest struct {
-	URL             string  `json:"url" binding:"required,max=4096"`
-	DirectoryID     *string `json:"directory_id" binding:"omitempty"`
-	DuplicatePolicy string  `json:"duplicate_policy" binding:"omitempty,oneof=skip create_new"`
+	URL         string  `json:"url" binding:"required,max=4096"`
+	DirectoryID *string `json:"directory_id" binding:"omitempty"`
 }

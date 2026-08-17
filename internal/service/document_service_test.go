@@ -3,6 +3,9 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -412,5 +415,106 @@ func TestIsOfficeRenderableExt(t *testing.T) {
 		if got := isOfficeRenderableExt(tt.ext); got != tt.want {
 			t.Errorf("isOfficeRenderableExt(%q) = %v, want %v", tt.ext, got, tt.want)
 		}
+	}
+}
+
+// flakyUploadStore 对指定 key 前 N 次 PutObject 注入失败，用于重试测试。
+type flakyUploadStore struct {
+	mu       sync.Mutex
+	inner    ObjectStore
+	failures map[string]int
+	attempts map[string]int
+}
+
+func (f *flakyUploadStore) Bucket() string { return f.inner.Bucket() }
+
+func (f *flakyUploadStore) PutObject(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
+	f.mu.Lock()
+	f.attempts[key]++
+	attempt := f.attempts[key]
+	failed := f.failures[key]
+	f.mu.Unlock()
+	if attempt <= failed {
+		return errors.New("注入的上传失败")
+	}
+	return f.inner.PutObject(ctx, key, reader, size, contentType)
+}
+
+func (f *flakyUploadStore) OpenObject(ctx context.Context, key string) (io.ReadCloser, error) {
+	return f.inner.OpenObject(ctx, key)
+}
+
+func (f *flakyUploadStore) StatObject(ctx context.Context, key string) (*objectstore.ObjectInfo, error) {
+	return f.inner.StatObject(ctx, key)
+}
+
+func (f *flakyUploadStore) RemoveObject(ctx context.Context, key string) error {
+	return f.inner.RemoveObject(ctx, key)
+}
+
+// seekableBuffer 是可回退的 ReadCloser（模拟 multipart.File）。
+type seekableBuffer struct{ *bytes.Reader }
+
+func (s *seekableBuffer) Close() error { return nil }
+
+func newSeekableBuffer(data string) *seekableBuffer {
+	return &seekableBuffer{Reader: bytes.NewReader([]byte(data))}
+}
+
+// TestPutObjectWithHashRetrySucceedsAfterFailures 验证上传失败后指数退避重试，
+// 重试成功时返回正确哈希。
+func TestPutObjectWithHashRetrySucceedsAfterFailures(t *testing.T) {
+	inner := newMemoryObjectStore()
+	flaky := &flakyUploadStore{inner: inner, failures: map[string]int{}, attempts: map[string]int{}}
+	flaky.failures["documents/k"] = 2
+	svc := &documentService{store: flaky}
+
+	payload := "hello memora"
+	hash, err := svc.putObjectWithHashRetry(context.Background(), "documents/k", func() (io.ReadCloser, error) {
+		return newSeekableBuffer(payload), nil
+	}, int64(len(payload)), "text/plain")
+	if err != nil {
+		t.Fatalf("重试后应成功: %v", err)
+	}
+	if flaky.attempts["documents/k"] != 3 {
+		t.Errorf("尝试次数 = %d, 期望 3", flaky.attempts["documents/k"])
+	}
+	expected := sha256.Sum256([]byte(payload))
+	if hash != hex.EncodeToString(expected[:]) {
+		t.Errorf("哈希不匹配: %q", hash)
+	}
+	if data, ok := inner.objects["documents/k"]; !ok || string(data) != payload {
+		t.Errorf("对象内容错误: %q", string(data))
+	}
+}
+
+// TestReopenUploadReaderRewindsSeekable 验证可回退流每次重试从头读取。
+func TestReopenUploadReaderRewindsSeekable(t *testing.T) {
+	opener := reopenUploadReader(newSeekableBuffer("abcdef"))
+	first, err := opener()
+	if err != nil {
+		t.Fatalf("第一次打开失败: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, first)
+	_ = first.Close()
+	second, err := opener()
+	if err != nil {
+		t.Fatalf("第二次打开失败: %v", err)
+	}
+	data, _ := io.ReadAll(second)
+	_ = second.Close()
+	if string(data) != "abcdef" {
+		t.Errorf("重试读取内容 = %q, 期望 abcdef", string(data))
+	}
+}
+
+// TestReopenUploadReaderBlocksNonSeekableRetry 验证不可回退流禁止二次读取。
+func TestReopenUploadReaderBlocksNonSeekableRetry(t *testing.T) {
+	opener := reopenUploadReader(bytes.NewBufferString("abc"))
+	if _, err := opener(); err != nil {
+		t.Fatalf("首次打开失败: %v", err)
+	}
+	if _, err := opener(); err == nil {
+		t.Fatal("不可回退流的第二次打开应报错")
 	}
 }

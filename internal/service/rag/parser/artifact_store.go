@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -11,9 +12,20 @@ import (
 	"io"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+)
+
+// 资产上传并发与重试策略。
+const (
+	// maxConcurrentAssetUploads 是 Artifact 资产并发上传上限。
+	maxConcurrentAssetUploads = 4
+	// assetUploadMaxAttempts 是单资产上传最大尝试次数（含首次）。
+	assetUploadMaxAttempts = 3
+	// assetUploadRetryDelay 是单资产上传重试的基础退避间隔（线性递增）。
+	assetUploadRetryDelay = 1 * time.Second
 )
 
 // 确定性 Artifact key 前缀：
@@ -62,44 +74,64 @@ func NewArtifactStore(store ObjectStore, limits ValidateLimits) *ArtifactStore {
 }
 
 // Save 保存 ParsedDocument 为 Artifact：
-//  1. 解码并保存 assets（data_base64 → object_key）；
-//  2. 保存压缩后的 parsed-document.json.zst；
-//  3. 最后保存 manifest.json。
+//  1. 预清洗资产（超限/类型不支持的降级为 Omitted + warning）；
+//  2. 解码并保存 assets（data_base64 → object_key），并发上传 + 单资产重试；
+//  3. 保存压缩后的 parsed-document.json.zst；
+//  4. 最后保存 manifest.json。
 //
 // 保存成功后 doc.Assets 中的 data_base64 已被替换为 object_key，
 // 同一份内存对象可继续用于后续分块，无需重新读取。
 func (s *ArtifactStore) Save(ctx context.Context, prefix string, doc *ParsedDocument, parseConfigHash string) (*ArtifactRef, error) {
+	// 0. 预清洗：单图超限、总量超预算或 MIME 类型不支持的资产降级为 Omitted + warning，
+	//    不阻断整篇文档导入；解码前按 base64 长度预检，超大图不进入内存解码。
+	s.sanitizeAssets(doc)
 	if err := ValidateParsedDocument(doc, "", s.limits); err != nil {
 		return nil, fmt.Errorf("保存 Artifact 前校验失败: %w", err)
 	}
 
-	// 1. 资产：解码 → 校验单图限制 → 上传 → 替换引用。
-	assetInfos := make([]AssetInfo, 0, len(doc.Assets))
+	// 1. 资产：解码 → 上传 → 替换引用（sanitize 与校验通过后每张图均合法且不超限）。
+	//    并发上传（限流 semaphore）保持 manifest 顺序确定；单资产失败重试，最终失败
+	//    时整体 Save 失败（与顺序实现语义一致：manifest 未写入，Artifact 不生效）。
+	assetInfos := make([]AssetInfo, len(doc.Assets))
+	results := make([]error, len(doc.Assets))
+	sem := make(chan struct{}, maxConcurrentAssetUploads)
+	var wg sync.WaitGroup
 	for i := range doc.Assets {
 		asset := &doc.Assets[i]
 		if asset.Omitted || asset.DataBase64 == "" {
 			if asset.Omitted {
-				assetInfos = append(assetInfos, AssetInfo{ID: asset.ID})
+				assetInfos[i] = AssetInfo{ID: asset.ID}
 			}
 			continue
 		}
-		data, err := base64.StdEncoding.DecodeString(asset.DataBase64)
-		if err != nil {
-			return nil, fmt.Errorf("Asset %q base64 解码失败: %w", asset.ID, err)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx int, asset *Asset) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			data, err := base64.StdEncoding.DecodeString(asset.DataBase64)
+			if err != nil {
+				results[idx] = fmt.Errorf("Asset %q base64 解码失败: %w", asset.ID, err)
+				return
+			}
+			digest := sha256.Sum256(data)
+			assetSHA := hex.EncodeToString(digest[:])
+			objectKey := path.Join(prefix, ArtifactAssetsDir, asset.ID+extensionForMIME(asset.MIMEType))
+			if err := putAssetWithRetry(ctx, s.store, objectKey, data, asset.MIMEType); err != nil {
+				results[idx] = fmt.Errorf("保存 Asset %q 失败: %w", asset.ID, err)
+				return
+			}
+			asset.SHA256 = assetSHA
+			asset.ObjectKey = objectKey
+			asset.DataBase64 = ""
+			assetInfos[idx] = AssetInfo{ID: asset.ID, ObjectKey: objectKey, SHA256: assetSHA, Size: int64(len(data))}
+		}(i, asset)
+	}
+	wg.Wait()
+	for _, resultErr := range results {
+		if resultErr != nil {
+			return nil, resultErr
 		}
-		if s.limits.MaxAssets > 0 && int64(len(data)) > 32*1024*1024 {
-			return nil, fmt.Errorf("Asset %q 超过单图大小限制 32MB（实际 %d 字节）", asset.ID, len(data))
-		}
-		digest := sha256.Sum256(data)
-		assetSHA := hex.EncodeToString(digest[:])
-		objectKey := path.Join(prefix, ArtifactAssetsDir, asset.ID+extensionForMIME(asset.MIMEType))
-		if err := s.store.PutObject(ctx, objectKey, strings.NewReader(string(data)), int64(len(data)), asset.MIMEType); err != nil {
-			return nil, fmt.Errorf("保存 Asset %q 失败: %w", asset.ID, err)
-		}
-		asset.SHA256 = assetSHA
-		asset.ObjectKey = objectKey
-		asset.DataBase64 = ""
-		assetInfos = append(assetInfos, AssetInfo{ID: asset.ID, ObjectKey: objectKey, SHA256: assetSHA, Size: int64(len(data))})
 	}
 
 	// 2. 文档：序列化 → zstd 压缩 → 上传。
@@ -109,7 +141,7 @@ func (s *ArtifactStore) Save(ctx context.Context, prefix string, doc *ParsedDocu
 	}
 	docSHA := sha256.Sum256(docBytes)
 	compressed := zstdCompress(docBytes)
-	if err := s.store.PutObject(ctx, path.Join(prefix, ArtifactDocumentFile), strings.NewReader(string(compressed)), int64(len(compressed)), "application/octet-stream"); err != nil {
+	if err := s.store.PutObject(ctx, path.Join(prefix, ArtifactDocumentFile), bytes.NewReader(compressed), int64(len(compressed)), "application/octet-stream"); err != nil {
 		return nil, fmt.Errorf("保存 ParsedDocument 失败: %w", err)
 	}
 
@@ -130,10 +162,105 @@ func (s *ArtifactStore) Save(ctx context.Context, prefix string, doc *ParsedDocu
 	if err != nil {
 		return nil, fmt.Errorf("序列化 manifest 失败: %w", err)
 	}
-	if err := s.store.PutObject(ctx, path.Join(prefix, ArtifactManifestFile), strings.NewReader(string(manifestBytes)), int64(len(manifestBytes)), "application/json"); err != nil {
+	if err := s.store.PutObject(ctx, path.Join(prefix, ArtifactManifestFile), bytes.NewReader(manifestBytes), int64(len(manifestBytes)), "application/json"); err != nil {
 		return nil, fmt.Errorf("保存 manifest 失败: %w", err)
 	}
 	return &ArtifactRef{Prefix: prefix, Manifest: manifest}, nil
+}
+
+// sanitizeAssets 预清洗资产：超过单图大小限制、总量预算或 MIME 类型不受支持的资产
+// 标记为 Omitted 并追加 warning，避免个别图片问题阻断整篇文档导入。
+// 解码前先用 DecodedLen 预检长度，超大 base64 不进入内存解码。
+func (s *ArtifactStore) sanitizeAssets(doc *ParsedDocument) {
+	omit := func(asset *Asset, reason string) {
+		doc.Warnings = append(doc.Warnings, fmt.Sprintf("Asset %q %s，已跳过", asset.ID, reason))
+		asset.Omitted = true
+		asset.DataBase64 = ""
+	}
+	for i := range doc.Assets {
+		asset := &doc.Assets[i]
+		if asset.Omitted || asset.DataBase64 == "" {
+			continue
+		}
+		decodedLen := base64.StdEncoding.DecodedLen(len(asset.DataBase64))
+		if s.limits.MaxAssetBytes > 0 && int64(decodedLen) > s.limits.MaxAssetBytes {
+			omit(asset, fmt.Sprintf("大小 %d 字节超过单图限制 %d", decodedLen, s.limits.MaxAssetBytes))
+			continue
+		}
+		if !isAllowedAssetMIME(asset.MIMEType) {
+			omit(asset, fmt.Sprintf("类型 %q 不受支持", asset.MIMEType))
+		}
+	}
+
+	// 总量预算：超出的资产降级为 Omitted，优先丢弃未被任何 Block 引用的资产，
+	// 仍超预算时按列表顺序丢弃，保证总量校验可通过。
+	if s.limits.MaxTotalAssetBytes > 0 {
+		referenced := make(map[string]struct{})
+		for _, block := range doc.Blocks {
+			for _, ref := range block.AssetRefs {
+				referenced[ref] = struct{}{}
+			}
+		}
+		var total int64
+		var over []*Asset
+		for i := range doc.Assets {
+			asset := &doc.Assets[i]
+			if asset.Omitted || asset.DataBase64 == "" {
+				continue
+			}
+			l := int64(base64.StdEncoding.DecodedLen(len(asset.DataBase64)))
+			if total+l > s.limits.MaxTotalAssetBytes {
+				over = append(over, asset)
+				continue
+			}
+			total += l
+		}
+		for _, asset := range over {
+			if _, used := referenced[asset.ID]; used {
+				continue
+			}
+			omit(asset, "超出资产总量预算")
+		}
+		for _, asset := range over {
+			if asset.Omitted {
+				continue
+			}
+			omit(asset, "超出资产总量预算")
+		}
+	}
+
+	// 截断超限 warning，保证 Artifact 重新加载时仍能通过 MaxWarnings 校验。
+	if s.limits.MaxWarnings > 0 && len(doc.Warnings) > s.limits.MaxWarnings {
+		doc.Warnings = doc.Warnings[:s.limits.MaxWarnings]
+	}
+}
+
+// isAllowedAssetMIME 判断资产 MIME 是否允许入库：
+// 仅接受位图类图片（image/*），SVG 可内嵌脚本（stored XSS 风险）与非图片类型一律拒绝。
+func isAllowedAssetMIME(mime string) bool {
+	m := strings.ToLower(strings.TrimSpace(mime))
+	return strings.HasPrefix(m, "image/") && m != "image/svg+xml"
+}
+
+// putAssetWithRetry 上传单个资产，失败时线性退避重试；上下文取消时立即返回。
+func putAssetWithRetry(ctx context.Context, store ObjectStore, objectKey string, data []byte, mimeType string) error {
+	var lastErr error
+	for attempt := 1; attempt <= assetUploadMaxAttempts; attempt++ {
+		if err := store.PutObject(ctx, objectKey, bytes.NewReader(data), int64(len(data)), mimeType); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if attempt >= assetUploadMaxAttempts || ctx.Err() != nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(assetUploadRetryDelay * time.Duration(attempt)):
+		}
+	}
+	return lastErr
 }
 
 // Resolve 查找兼容 Artifact：

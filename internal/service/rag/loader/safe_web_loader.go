@@ -153,6 +153,10 @@ func (l *SafeWebLoader) validateURL(ctx context.Context, target *url.URL) error 
 	if target == nil || (target.Scheme != "http" && target.Scheme != "https") || target.Hostname() == "" || target.User != nil {
 		return fmt.Errorf("仅允许不含用户信息的 HTTP/HTTPS URL")
 	}
+	// 端口白名单：仅允许标准 80/443，阻断公网任意端口探测。
+	if port := target.Port(); port != "" && port != "80" && port != "443" {
+		return fmt.Errorf("仅允许 80/443 端口，当前端口 %q", port)
+	}
 	host := strings.TrimSuffix(strings.ToLower(target.Hostname()), ".")
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.Contains(host, "metadata.google.internal") || strings.Contains(host, "metadata.azure.internal") {
 		return fmt.Errorf("目标主机不允许访问")
@@ -182,7 +186,17 @@ func isForbiddenIP(ip net.IP) bool {
 	if ip == nil || ip.IsUnspecified() || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
 		return true
 	}
-	return ip.IsInterfaceLocalMulticast()
+	if ip.IsInterfaceLocalMulticast() {
+		return true
+	}
+	// IPv6 特殊地址：Go 的 IsPrivate 仅覆盖 IPv4 RFC1918，
+	// ULA（fc00::/7）与站点本地（fec0::/10）需显式拒绝。
+	if ip4 := ip.To4(); ip4 == nil && len(ip) == net.IPv6len {
+		if ip[0]&0xfe == 0xfc || ip[0] == 0xfe && ip[1]&0xc0 == 0xc0 {
+			return true
+		}
+	}
+	return false
 }
 
 func extractHTML(body []byte) (string, string, error) {

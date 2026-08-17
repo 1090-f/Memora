@@ -1,5 +1,12 @@
 .worktrees/
 
+# Local AI tooling and development artifacts
+.claude/
+.superpowers/
+server.exe
+web/admin/.vite/
+web/admin/dev-server.log
+
 .env
 .idea/
 configs/config.yaml

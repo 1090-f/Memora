@@ -181,6 +181,10 @@ func (l *MarkdownAssetLoader) validateURL(ctx context.Context, target *url.URL) 
 	if target == nil || (target.Scheme != "http" && target.Scheme != "https") || target.Hostname() == "" || target.User != nil {
 		return fmt.Errorf("仅允许不含用户信息的 HTTP/HTTPS URL")
 	}
+	// 端口白名单：仅允许标准 80/443。
+	if port := target.Port(); port != "" && port != "80" && port != "443" {
+		return fmt.Errorf("仅允许 80/443 端口，当前端口 %q", port)
+	}
 	host := strings.TrimSuffix(strings.ToLower(target.Hostname()), ".")
 	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.Contains(host, "metadata.google.internal") || strings.Contains(host, "metadata.azure.internal") {
 		return fmt.Errorf("目标主机不允许访问")

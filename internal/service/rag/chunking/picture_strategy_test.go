@@ -139,3 +139,49 @@ func TestPictureStandsAloneWhenOverLimit(t *testing.T) {
 		t.Fatalf("图片与超长正文应分别成块，实际 %d", len(chunks))
 	}
 }
+
+// TestPictureTextDedupesOCRAndCaption 验证 caption 与 OCR 文字相同时只保留一份，
+// 不同时则依次保留，避免重复文本进入 Chunk。
+func TestPictureTextDedupesOCRAndCaption(t *testing.T) {
+	tests := []struct {
+		name     string
+		asset    parser.Asset
+		wantText string
+	}{
+		{
+			name: "caption 与 OCR 相同只保留一份",
+			asset: parser.Asset{
+				Caption:  "发票 金额",
+				Metadata: map[string]any{"ocr_text": "发票 金额"},
+			},
+			wantText: "发票 金额",
+		},
+		{
+			name: "caption 与 OCR 不同则都保留",
+			asset: parser.Asset{
+				Caption:  "图 1 系统架构",
+				Metadata: map[string]any{"ocr_text": "API 网关"},
+			},
+			wantText: "API 网关\n图 1 系统架构",
+		},
+		{
+			name: "caption 为空仅保留 OCR",
+			asset: parser.Asset{
+				Metadata: map[string]any{"ocr_text": "发票 金额"},
+			},
+			wantText: "发票 金额",
+		},
+		{
+			name:     "仅 caption 时保持原行为",
+			asset:    parser.Asset{Caption: "图 1 系统架构"},
+			wantText: "图 1 系统架构",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pictureText(tt.asset); got != tt.wantText {
+				t.Errorf("pictureText() = %q, 期望 %q", got, tt.wantText)
+			}
+		})
+	}
+}

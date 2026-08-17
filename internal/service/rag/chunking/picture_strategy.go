@@ -35,12 +35,17 @@ func descriptionOf(asset parser.Asset) string {
 }
 
 // pictureText 生成图片检索文本（OCR 文字优先，其次 caption，最后增强描述）。
+// caption 与 OCR 文字相同时只保留一份，避免重复文本进入 Chunk。
 func pictureText(asset parser.Asset) string {
 	var parts []string
-	if ocr := ocrTextOf(asset); ocr != "" {
+	ocr := ocrTextOf(asset)
+	caption := strings.TrimSpace(asset.Caption)
+	if ocr != "" {
 		parts = append(parts, ocr)
-	}
-	if caption := strings.TrimSpace(asset.Caption); caption != "" {
+		if caption != "" && caption != ocr {
+			parts = append(parts, caption)
+		}
+	} else if caption != "" {
 		parts = append(parts, caption)
 	}
 	if desc := descriptionOf(asset); desc != "" {

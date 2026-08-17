@@ -61,7 +61,8 @@ func (r *documentChunkRepository) DeleteByVersion(ctx context.Context, documentI
 	return nil
 }
 
-// ReadActive 只读取当前用户、知识库内已成功文档的活动索引版本。
+// ReadActive 只读取当前用户、知识库内已发布活动索引版本的 Chunk。
+// 可见性由 active_index_version 控制，重建失败不影响旧版本内容的读取。
 func (r *documentChunkRepository) ReadActive(ctx context.Context, userID, kbID, documentID, section string, fromChunk, limit int) ([]DocumentReadChunk, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 100
@@ -73,7 +74,7 @@ func (r *documentChunkRepository) ReadActive(ctx context.Context, userID, kbID, 
 			dc.source_location`).
 		Joins("JOIN documents d ON d.id = dc.document_id").
 		Where(`d.id = ? AND d.user_id = ? AND d.knowledge_base_id = ?
-			AND d.deleted_at IS NULL AND d.processing_status = 'succeeded'
+			AND d.deleted_at IS NULL
 			AND d.active_index_version IS NOT NULL
 			AND dc.index_version = d.active_index_version AND dc.chunk_no >= ?`, documentID, userID, kbID, fromChunk)
 	if value := strings.TrimSpace(section); value != "" {
@@ -86,7 +87,7 @@ func (r *documentChunkRepository) ReadActive(ctx context.Context, userID, kbID, 
 	if len(chunks) == 0 {
 		var count int64
 		err := dbFromContext(ctx, r.db).WithContext(ctx).Table("documents").
-			Where("id = ? AND user_id = ? AND knowledge_base_id = ? AND deleted_at IS NULL AND processing_status = 'succeeded'", documentID, userID, kbID).
+			Where("id = ? AND user_id = ? AND knowledge_base_id = ? AND deleted_at IS NULL AND active_index_version IS NOT NULL", documentID, userID, kbID).
 			Count(&count).Error
 		if err != nil {
 			return nil, fmt.Errorf("校验文档读取权限失败: %w", err)

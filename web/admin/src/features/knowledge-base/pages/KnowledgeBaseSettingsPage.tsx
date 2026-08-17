@@ -21,6 +21,7 @@ export function KnowledgeBaseSettingsContent({ status, kbId, embedded = false }:
   const [defaultChatModelId, setDefaultChatModelId] = useState('');
   const [defaultEmbeddingModelId, setDefaultEmbeddingModelId] = useState('');
   const [defaultRerankerModelId, setDefaultRerankerModelId] = useState('');
+  const [duplicatePolicy, setDuplicatePolicy] = useState<'skip' | 'create_new'>('skip');
   const [notice, setNotice] = useState('');
 
   const kbQuery = useQuery({
@@ -43,6 +44,7 @@ export function KnowledgeBaseSettingsContent({ status, kbId, embedded = false }:
     setDefaultChatModelId(kbQuery.data.default_chat_model_id || '');
     setDefaultEmbeddingModelId(kbQuery.data.default_embedding_model_id || '');
     setDefaultRerankerModelId(kbQuery.data.default_reranker_model_id || '');
+    setDuplicatePolicy(kbQuery.data.duplicate_policy ?? 'skip');
   }, [kbQuery.data]);
 
   const saveMutation = useMutation({
@@ -55,6 +57,7 @@ export function KnowledgeBaseSettingsContent({ status, kbId, embedded = false }:
       default_chat_model_id: defaultChatModelId,
       default_embedding_model_id: defaultEmbeddingModelId,
       default_reranker_model_id: defaultRerankerModelId,
+      duplicate_policy: duplicatePolicy,
     }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['knowledge-bases', kbId] });
@@ -116,6 +119,10 @@ export function KnowledgeBaseSettingsContent({ status, kbId, embedded = false }:
               <Typography>启用联网搜索</Typography>
             </Stack>
           </Stack>
+          <TextField select label="重复策略" value={duplicatePolicy} onChange={(event) => setDuplicatePolicy(event.target.value as 'skip' | 'create_new')} helperText="导入文件时，遇到重复内容按此策略处理">
+            <MenuItem value="skip">重复内容跳过（推荐）</MenuItem>
+            <MenuItem value="create_new">重复内容创建新文档</MenuItem>
+          </TextField>
           <Divider />
           <Typography component="h3" variant="h6">RAG 默认模型</Typography>
           {embeddingModels.length === 0 && <Alert severity="warning">尚未配置 Embedding 模型，向量与混合检索将不可用。</Alert>}
