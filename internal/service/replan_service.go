@@ -3,168 +3,136 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/1090-f/Memora/internal/contracts"
-	"github.com/1090-f/Memora/pkg/logger"
-	"go.uber.org/zap"
 )
 
-// ReplanService 实现计划重新规划逻辑。
+// ReplanService 负责在计划执行失败时重新规划。
 type ReplanService struct {
-	planner    contracts.Planner
-	stateStore PlanStateStore
-	maxReplans int
+	planner *PlannerService
 }
 
 // NewReplanService 创建 ReplanService 实例。
-func NewReplanService(planner contracts.Planner, stateStore PlanStateStore, maxReplans int) *ReplanService {
+func NewReplanService(planner *PlannerService) *ReplanService {
 	return &ReplanService{
-		planner:    planner,
-		stateStore: stateStore,
-		maxReplans: maxReplans,
+		planner: planner,
 	}
 }
 
-// Replan 重新规划计划。
-func (s *ReplanService) Replan(ctx context.Context, agentContext contracts.AgentContext, plan contracts.Plan) (contracts.Plan, error) {
-	start := time.Now()
-
-	logger.Info("开始重新规划",
-		zap.String("plan_id", string(plan.ID)),
-		zap.Int("version", plan.Version),
-		zap.Int("max_replans", s.maxReplans),
-	)
-
-	// 检查是否已达重规划上限
-	if plan.Version > s.maxReplans {
-		return plan, fmt.Errorf("已达重规划上限 %d，当前版本 %d", s.maxReplans, plan.Version)
+// Replan 重新规划未完成的步骤。
+func (s *ReplanService) Replan(ctx context.Context, plan *contracts.Plan, request contracts.AgentRunRequest) (*contracts.Plan, error) {
+	// 1. 检查是否超过重规划次数限制
+	if plan.ReplanCount >= plan.MaxReplans {
+		return plan, fmt.Errorf("replan limit reached: %d/%d", plan.ReplanCount, plan.MaxReplans)
 	}
 
-	// 更新计划状态为重新规划中
-	if err := s.stateStore.UpdateStatus(ctx, plan.ID, contracts.PlanReplanning); err != nil {
-		return plan, fmt.Errorf("update plan status: %w", err)
-	}
+	// 2. 收集已完成步骤的输出
+	completedSteps := plan.GetCompletedSteps()
+	failedSteps := plan.GetFailedSteps()
 
-	// 收集已执行步骤的结果
-	completedSteps := s.getCompletedSteps(plan.Steps)
+	// 3. 构建重规划提示词
+	prompt := s.buildReplanPrompt(plan, completedSteps, failedSteps, request)
 
-	// 调用 Planner 重新生成剩余步骤
-	newPlan, err := s.planner.Plan(ctx, agentContext, contracts.AgentConfig{
-		MaxPlanSteps: len(plan.Steps),
-		MaxReplans:   s.maxReplans,
-	})
+	// 4. 使用 PlannerService 生成新计划
+	newPlan, err := s.planner.PlanWithPrompt(ctx, request, prompt)
 	if err != nil {
-		return plan, fmt.Errorf("replan: %w", err)
+		return nil, fmt.Errorf("replan: %w", err)
 	}
 
-	// 合并步骤：保留已完成步骤，替换未执行步骤
-	mergedPlan := s.mergeSteps(plan, newPlan, completedSteps)
+	// 5. 合并步骤：保留已完成步骤，更新未完成步骤
+	plan.Steps = s.mergeSteps(plan.Steps, newPlan.Steps)
+	plan.ReplanCount++
+	plan.UpdatedAt = time.Now()
 
-	// 递增版本号
-	mergedPlan.Version = plan.Version + 1
-
-	// 保存新计划
-	if _, err := s.stateStore.Save(ctx, mergedPlan, plan.RunID, agentContext.UserID, agentContext.KnowledgeBaseID); err != nil {
-		return plan, fmt.Errorf("save replanned plan: %w", err)
-	}
-
-	logger.Info("重新规划完成",
-		zap.String("plan_id", string(mergedPlan.ID)),
-		zap.Int("version", mergedPlan.Version),
-		zap.Int("steps", len(mergedPlan.Steps)),
-		zap.Duration("elapsed", time.Since(start)),
-	)
-
-	return mergedPlan, nil
+	return plan, nil
 }
 
-// getCompletedSteps 获取已完成的步骤。
-func (s *ReplanService) getCompletedSteps(steps []contracts.PlanStep) []contracts.PlanStep {
-	var completed []contracts.PlanStep
-	for _, step := range steps {
-		if step.Status == contracts.StepCompleted {
-			completed = append(completed, step)
-		}
-	}
-	return completed
-}
+// buildReplanPrompt 构建重规划提示词。
+func (s *ReplanService) buildReplanPrompt(plan *contracts.Plan, completedSteps, failedSteps []contracts.PlanStep, request contracts.AgentRunRequest) string {
+	var sb strings.Builder
 
-// mergeSteps 合并步骤。
-func (s *ReplanService) mergeSteps(oldPlan, newPlan contracts.Plan, completedSteps []contracts.PlanStep) contracts.Plan {
-	// 创建新的步骤列表
-	var mergedSteps []contracts.PlanStep
+	sb.WriteString("你是一个任务规划专家。之前的计划执行失败，需要重新规划。\n\n")
 
-	// 添加已完成的步骤
-	mergedSteps = append(mergedSteps, completedSteps...)
+	// 添加原始目标
+	sb.WriteString("## 原始目标\n")
+	sb.WriteString(plan.Goal + "\n\n")
 
-	// 添加新计划中未执行的步骤
-	for _, step := range newPlan.Steps {
-		// 检查是否已在已完成步骤中
-		alreadyCompleted := false
-		for _, completed := range completedSteps {
-			if step.StepNo == completed.StepNo {
-				alreadyCompleted = true
-				break
+	// 添加已完成步骤
+	if len(completedSteps) > 0 {
+		sb.WriteString("## 已完成的步骤\n")
+		for _, step := range completedSteps {
+			sb.WriteString(fmt.Sprintf("### 步骤 %d: %s\n", step.StepNumber, step.Title))
+			sb.WriteString("状态: 已完成\n")
+			if step.Output != "" {
+				sb.WriteString("输出: " + step.Output + "\n")
 			}
-		}
-
-		if !alreadyCompleted {
-			// 重新编号
-			step.StepNo = len(mergedSteps) + 1
-			mergedSteps = append(mergedSteps, step)
+			sb.WriteString("\n")
 		}
 	}
 
-	// 重新计算依赖关系
-	mergedSteps = s.recalculateDependencies(mergedSteps)
-
-	return contracts.Plan{
-		ID:                 oldPlan.ID,
-		RunID:              oldPlan.RunID,
-		Version:            oldPlan.Version, // 外部会递增
-		Goal:               oldPlan.Goal,
-		CompletionCriteria: oldPlan.CompletionCriteria,
-		Status:             contracts.PlanPending,
-		Steps:              mergedSteps,
-	}
-}
-
-// recalculateDependencies 重新计算依赖关系。
-func (s *ReplanService) recalculateDependencies(steps []contracts.PlanStep) []contracts.PlanStep {
-	// 创建步骤序号到索引的映射
-	stepMap := make(map[int]int)
-	for i, step := range steps {
-		stepMap[step.StepNo] = i
-	}
-
-	// 重新计算依赖关系
-	for i := range steps {
-		var newDependsOn []int
-		for _, dep := range steps[i].DependsOn {
-			if _, exists := stepMap[dep]; exists {
-				newDependsOn = append(newDependsOn, dep)
+	// 添加失败步骤
+	if len(failedSteps) > 0 {
+		sb.WriteString("## 失败的步骤\n")
+		for _, step := range failedSteps {
+			sb.WriteString(fmt.Sprintf("### 步骤 %d: %s\n", step.StepNumber, step.Title))
+			sb.WriteString("状态: 失败\n")
+			if step.Error != "" {
+				sb.WriteString("错误: " + step.Error + "\n")
 			}
+			sb.WriteString("\n")
 		}
-		steps[i].DependsOn = newDependsOn
 	}
 
-	return steps
+	// 添加可用工具
+	sb.WriteString("## 可用工具\n")
+	if len(request.Context.AllowedTools) > 0 {
+		for _, tool := range request.Context.AllowedTools {
+			sb.WriteString("- " + tool + "\n")
+		}
+	} else {
+		sb.WriteString("无可用工具\n")
+	}
+	sb.WriteString("\n")
+
+	// 添加输出格式说明
+	sb.WriteString("## 输出格式\n")
+	sb.WriteString("请生成新的执行计划，只包含未完成的步骤。已完成的步骤将保留。\n")
+	sb.WriteString("必须输出有效的 JSON 格式。\n")
+	sb.WriteString("计划步骤数不超过 " + fmt.Sprintf("%d", plan.MaxSteps-len(completedSteps)) + " 步。\n")
+
+	return sb.String()
 }
 
-// ShouldReplan 判断是否应该重新规划。
-func (s *ReplanService) ShouldReplan(plan contracts.Plan, review contracts.ReviewerResult) bool {
-	// 如果审查结果为 "needs_attention"，则应该重新规划
-	if review.Result == "needs_attention" {
-		return true
-	}
-
-	// 如果有步骤失败，也应该重新规划
-	for _, step := range plan.Steps {
-		if step.Status == contracts.StepFailed {
-			return true
+// mergeSteps 合并旧步骤和新步骤。
+func (s *ReplanService) mergeSteps(oldSteps, newSteps []contracts.PlanStep) []contracts.PlanStep {
+	// 创建已完成步骤的映射
+	completedMap := make(map[contracts.ID]contracts.PlanStep)
+	for _, step := range oldSteps {
+		if step.Status == contracts.PlanStepStatusCompleted {
+			completedMap[step.ID] = step
 		}
 	}
 
-	return false
+	// 合并步骤
+	var merged []contracts.PlanStep
+
+	// 首先添加所有已完成的步骤
+	for _, step := range oldSteps {
+		if step.Status == contracts.PlanStepStatusCompleted {
+			merged = append(merged, step)
+		}
+	}
+
+	// 然后添加新步骤（重规划后的步骤）
+	stepNumber := len(merged) + 1
+	for _, step := range newSteps {
+		step.StepNumber = stepNumber
+		step.Status = contracts.PlanStepStatusPending
+		merged = append(merged, step)
+		stepNumber++
+	}
+
+	return merged
 }

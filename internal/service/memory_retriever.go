@@ -89,6 +89,13 @@ func (r *memoryRetriever) Retrieve(
 		kbID = &id
 	}
 
+	// 记忆检索入口日志
+	logger.Info("[记忆检索-入口] 开始检索记忆",
+		zap.String("user_id", userID),
+		zap.String("query", query.Query),
+		zap.Int("top_k", query.TopK),
+	)
+
 	// 1. 并行执行向量检索和关键词检索
 	type vectorResult struct {
 		results []repository.VectorSearchResult
@@ -104,16 +111,16 @@ func (r *memoryRetriever) Retrieve(
 
 	// goroutine 1: 向量检索
 	go func() {
-		queryVector, err := r.embeddingSvc.Embed(ctx, query.Query)
+		queryVector, err := r.embeddingSvc.Embed(ctx, userID, query.Query)
 		if err != nil {
 			vectorCh <- vectorResult{err: fmt.Errorf("embed query: %w", err)}
 			return
 		}
-		queryVectorBytes := float64SliceToBytes(queryVector)
+		queryVectorStr := formatPgVectorFromFloat64(queryVector)
 		searchReq := repository.VectorSearchRequest{
 			UserID:          userID,
 			KnowledgeBaseID: kbID,
-			QueryVector:     queryVectorBytes,
+			QueryVector:     queryVectorStr,
 			EmbeddingDim:    len(queryVector),
 			TopK:            r.config.VectorTopK,
 			MinImportance:   r.config.MinImportance,
@@ -143,13 +150,23 @@ func (r *memoryRetriever) Retrieve(
 	vr := <-vectorCh
 	kr := <-keywordCh
 
+	// 记忆检索结果日志
 	if vr.err != nil {
+		logger.Error("[记忆检索-向量检索] 失败", zap.Error(vr.err))
 		return nil, fmt.Errorf("vector search: %w", vr.err)
 	}
+	logger.Info("[记忆检索-向量检索] 完成",
+		zap.Int("结果数量", len(vr.results)),
+	)
+
 	if kr.err != nil {
 		// 关键词检索失败不阻塞，降级为纯向量检索
-		logger.Warn("keyword search failed, fallback to vector only", zap.Error(kr.err))
+		logger.Warn("[记忆检索-关键词检索] 失败，降级为纯向量检索", zap.Error(kr.err))
 		kr.results = nil
+	} else {
+		logger.Info("[记忆检索-关键词检索] 完成",
+			zap.Int("结果数量", len(kr.results)),
+		)
 	}
 
 	// 2. RRF 融合
@@ -177,6 +194,11 @@ func (r *memoryRetriever) Retrieve(
 		// 更新失败不影响返回结果
 		logger.Warn("update last accessed at failed", zap.Error(err))
 	}
+
+	// 记忆检索完成日志
+	logger.Info("[记忆检索-完成] 返回最终结果",
+		zap.Int("最终结果数量", len(ranked)),
+	)
 
 	return ranked, nil
 }

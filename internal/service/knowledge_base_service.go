@@ -32,9 +32,6 @@ const (
 	maxRerankerThreshold  = 1.0
 	maxMinVectorScore     = 1.0
 	maxReactRounds        = 8
-	maxPlanSteps          = 5
-	maxReplans            = 1
-	maxReviewerRuns       = 1
 	maxToolCalls          = 10
 	maxDocumentReadTokens = 20000
 	maxToolResultBytes    = 8 * 1024 * 1024
@@ -475,9 +472,11 @@ func defaultAgentConfigEntity(userID, kbID, chatModelID string) *entity.AgentCon
 	agentConfig := &entity.AgentConfig{
 		UserID: userID, KnowledgeBaseID: kbID, Name: "Default Agent",
 		ChatModelID:    chatModelID,
-		MaxReactRounds: config.MaxReactRounds, MaxPlanSteps: config.MaxPlanSteps,
-		MaxReplans: config.MaxReplans, ReviewerRuns: config.ReviewerRuns,
-		MaxToolCalls: config.MaxToolCalls, MaxDocumentReadTokens: config.MaxDocumentReadTokens,
+		MaxReactRounds: config.MaxReactRounds,
+		MaxPlanSteps:   config.MaxPlanSteps,
+		MaxReplans:     config.MaxReplans,
+		ReviewerRuns:   config.ReviewerRuns,
+		MaxToolCalls:   config.MaxToolCalls, MaxDocumentReadTokens: config.MaxDocumentReadTokens,
 		MaxToolResultBytes: config.MaxToolResultBytes, MaxRunSeconds: config.MaxRunSeconds,
 		NetworkEnabled: networkEnabled, MemoryEnabled: true, MemoryTopK: config.MemoryTopK,
 		ShowExecutionStatus: true, Status: "active",

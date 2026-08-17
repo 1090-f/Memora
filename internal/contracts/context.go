@@ -30,9 +30,13 @@ type AgentContext struct {
 	NetworkEnabled bool            `json:"network_enabled"`  // 是否允许联网搜索
 	MemoryEnabled  bool            `json:"memory_enabled"`   // 是否启用记忆功能
 	MaxReactRounds int             `json:"max_react_rounds"` // ReAct 模式最大轮数
-	MaxPlanSteps   int             `json:"max_plan_steps"`   // Plan-Execute 最大规划步数
 	AllowedTools   []string        `json:"allowed_tools"`    // 允许使用的工具白名单
 	ToolsConfig    adk.ToolsConfig `json:"-"`                // 当前运行可用的 ADK 工具配置
+
+	// Plan-Execute 模式配置（来自 AgentConfig）
+	MaxPlanSteps int `json:"max_plan_steps"` // Plan-Execute 最大步骤数 (default: 5)
+	MaxReplans   int `json:"max_replans"`    // Plan-Execute 最大重规划次数 (default: 1)
+	ReviewerRuns int `json:"reviewer_runs"`  // Plan-Execute 审查次数 (default: 1)
 
 	// 对话上下文（固定插槽 - 可选）
 	Conversation ConversationContext `json:"conversation"` // 会话历史上下文

@@ -210,7 +210,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	convCtxService := service.NewConversationContextService(messages, nil, tokenCounter)
 
 	memoryRepo := repository.NewMemoryRepository(a.db)
-	embeddingSvc := service.NewEmbeddingService(nil, "") // TODO: 从配置加载 embedding 模型
+	embeddingSvc := service.NewEmbeddingService(modelFactory, aiModelConfigs)
 	memoryRetriever := service.NewMemoryRetriever(memoryRepo, embeddingSvc)
 
 	conversationRepo := repository.NewConversationRepository(a.db)
@@ -252,31 +252,9 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		cb.SetMCPToolRefresher(mcpToolRefresher)
 	}
 
-	// 初始化 Plan-Execute 服务（Phase 5）
-	planRepo := repository.NewPlanRepository(a.db)
-	planStateStore := service.NewPlanStateStore(planRepo)
-
-	plannerService, err := service.NewPlannerService(modelFactory, "internal/ai/prompts/planner.yaml", cfg.Agent.MaxPlanSteps)
-	if err != nil {
-		_ = a.Close()
-		return fmt.Errorf("初始化 PlannerService 失败: %w", err)
-	}
-
-	// TODO: 从配置注入 ToolExecutor
-	// 暂时使用 nil，需要在 Agent Core 初始化时注入
-	planExecutorService := service.NewPlanExecutorService(toolExecutor, planStateStore, modelFactory, cfg.Agent.MaxToolCalls, cfg.Agent.MaxToolResultBytes)
-	_ = planExecutorService // 用于后续集成
-
-	reviewerService, err := service.NewReviewerService(modelFactory, "internal/ai/prompts/reviewer.yaml", planStateStore)
-	if err != nil {
-		_ = a.Close()
-		return fmt.Errorf("初始化 ReviewerService 失败: %w", err)
-	}
-
-	replanService := service.NewReplanService(plannerService, planStateStore, cfg.Agent.MaxReplans)
-
-	// 初始化事件发布器与订阅器：使用按 Run 隔离的 Redis Stream 保存并推送事件。
-	// eventSub 会先回放历史事件，再从同一 cursor 继续等待实时事件。
+	// 初始化事件发布器与订阅器（Phase 7）：使用 Redis Pub/Sub 实现实时事件推送。
+	// eventPub 将 AgentEvent 序列化为 JSON 后发布到 Redis 频道；
+	// eventSub 从同一频道过滤出指定 runID 的事件供 SSE 端点使用。
 	eventPub := events.NewRedisEventPublisher(a.redis)
 	eventSub := events.NewRedisEventSubscriber(a.redis)
 
@@ -290,9 +268,6 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 
 	// 用带序列号的发布器包装底层组合发布器，确保事件序号单调递增。
 	sequencedEvents := core.NewSequencedEventPublisher(compositeEventPub)
-
-	// 初始化 PlanRunner（Plan-Execute 模式执行器），供路由后的 Plan-Execute 调用。
-	planRunner := core.NewPlanRunner(plannerService, planExecutorService, reviewerService, replanService, planStateStore, sequencedEvents)
 
 	// 初始化 Agent 运行和工具调用 Repository
 	agentRunRepo := repository.NewAgentRunRepository(a.db)
@@ -317,16 +292,21 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		},
 		contracts.AgentConfig{
 			MaxReactRounds:     contracts.DefaultAgentConfig().MaxReactRounds,
-			MaxPlanSteps:       cfg.Agent.MaxPlanSteps,
-			MaxReplans:         cfg.Agent.MaxReplans,
-			ReviewerRuns:       cfg.Agent.ReviewerRuns,
 			MaxToolCalls:       cfg.Agent.MaxToolCalls,
 			MaxToolResultBytes: cfg.Agent.MaxToolResultBytes,
 			MaxRunSeconds:      cfg.Agent.MaxRunSeconds,
 		},
 	)
-	adkRunner.ToolCallRepo = toolCallRepo
-	adkService := adkcore.NewService(adkRunner, planRunner, routerService, sequencedEvents, core.NewCitationCollector(), &agentRunRepoAdapter{repo: agentRunRepo})
+
+	// 初始化 Plan-Execute 服务（Phase 5）
+	_ = repository.NewPlanRepository(a.db) // TODO: 保存到结构体字段以供后续使用
+	plannerService := service.NewPlannerService(modelFactory)
+	planExecutorService := service.NewPlanExecutor(toolExecutor, modelFactory)
+	replanService := service.NewReplanService(plannerService)
+	reviewerService := service.NewReviewerService(modelFactory)
+	planGraph := adkcore.NewPlanExecuteGraph(plannerService, planExecutorService, replanService, reviewerService, sequencedEvents)
+
+	adkService := adkcore.NewService(adkRunner, planGraph, routerService, sequencedEvents, core.NewCitationCollector(), &agentRunRepoAdapter{repo: agentRunRepo})
 	var agentCoreService contracts.AgentRunService = adkService
 
 	// 初始化 Agent 运行管理的 HTTP 控制器，注入事件订阅器以支持 SSE 流式事件推送
@@ -341,24 +321,6 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		agentEventRepo,
 	)
 
-	// 初始化 Agent Worker（异步执行 Agent 运行的后台工作者）
-	// Worker 周期性轮询数据库中状态为 queued 的运行记录，原子性领取后在后台 goroutine 中执行
-	agentWorker := worker.NewAgentWorker(
-		agentCoreService,
-		agentRunRepo,
-		messages,
-		contextBuilder,
-		worker.DefaultAgentWorkerConfig(),
-	)
-	// 使用独立生命周期上下文启动 Worker，服务器关闭时主动取消该上下文。
-	workerCtx, workerCancel := context.WithCancel(context.Background())
-	a.workerCancel = workerCancel
-	go func() {
-		if err := agentWorker.Run(workerCtx); err != nil {
-			logger.Error("Agent Worker 运行异常", zap.Error(err))
-		}
-	}()
-
 	// 初始化 Memory 提取与管理服务（Phase 6）
 	memoryManager, err := service.NewMemoryManager(memoryRepo, embeddingSvc, modelFactory, "internal/ai/prompts/memory_dedup.yaml")
 	if err != nil {
@@ -371,7 +333,25 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		_ = a.Close()
 		return fmt.Errorf("初始化 MemoryExtractor 失败: %w", err)
 	}
-	_ = memoryExtractor // 用于后续集成
+
+	// 初始化 Agent Worker（异步执行 Agent 运行的后台工作者）
+	// Worker 周期性轮询数据库中状态为 queued 的运行记录，原子性领取后在后台 goroutine 中执行
+	agentWorker := worker.NewAgentWorker(
+		agentCoreService,
+		agentRunRepo,
+		messages,
+		contextBuilder,
+		memoryExtractor,
+		worker.DefaultAgentWorkerConfig(),
+	)
+	// 使用独立生命周期上下文启动 Worker，服务器关闭时主动取消该上下文。
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	a.workerCancel = workerCancel
+	go func() {
+		if err := agentWorker.Run(workerCtx); err != nil {
+			logger.Error("Agent Worker 运行异常", zap.Error(err))
+		}
+	}()
 
 	router := api.NewRouter(api.Dependencies{
 		Config: cfg.CORS, Auth: authService, Users: userService, MCP: mcpService,

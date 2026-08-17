@@ -123,7 +123,7 @@ func (r *LLMRouter) buildRouterPrompt(agentCtx contracts.AgentContext) string {
 	if err != nil {
 		logger.Error("渲染路由提示词失败", zap.Error(err))
 		// 降级到简单提示词
-		return "请判断以下问题应该用 react 还是 plan_execute 模式处理，并返回 JSON: {\"mode\": \"...\", \"confidence\": ..., \"reason\": \"...\"}\n\n问题: " + agentCtx.Query
+		return "请判断以下问题应该用 react 模式处理，并返回 JSON: {\"mode\": \"react\", \"confidence\": ..., \"reason\": \"...\"}\n\n问题: " + agentCtx.Query
 	}
 
 	return userPrompt
@@ -200,8 +200,6 @@ func (r *LLMRouter) normalizeMode(mode string) contracts.ExecutionMode {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 
 	switch mode {
-	case "plan_execute", "plan-execute", "plan", "execute":
-		return contracts.ExecutionPlanExecute
 	case "react", "re_act":
 		return contracts.ExecutionReact
 	default:
