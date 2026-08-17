@@ -4,11 +4,11 @@ import { useEffect, useReducer, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { capabilities } from '@/app/capabilities';
 import { initialAgentRunState, reduceAgentEvent } from '@/features/agent-run/eventReducer';
-import { cancelAgentRun, createAgentRun, getAgentRun } from '@/features/agent-run/api';
+import { cancelAgentRun, createAgentRun, getAgentRun, retryAgentRun } from '@/features/agent-run/api';
 import { queryKeys } from '@/api/queryKeys';
 import { listKnowledgeBases } from '@/features/knowledge-base/api';
 import { ChatWorkspace } from '@/layouts/ChatWorkspace';
-import { createConversation, listMessages } from '../api';
+import { createConversation, listMessages, updateConversation } from '../api';
 import { streamAgentEvents } from '../events';
 import { ChatComposer } from '../components/ChatComposer';
 import { MessageList } from '../components/MessageList';
@@ -28,7 +28,7 @@ function normalizeCitations(values: Array<Record<string, unknown>>): Citation[] 
   }));
 }
 
-export function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationId?: string }) {
+function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationId?: string }) {
   const enabled = capabilities.conversation === 'available';
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -130,6 +130,34 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
     return conversation.id;
   };
 
+  const updateConversationTitle = (id: string, title: string) => {
+    void updateConversation(id, title);
+    void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
+  };
+
+  const runAgentStream = async (runId: string, conversationId: string, query: string) => {
+    replayAbortRef.current?.abort();
+    currentRunId.current = runId;
+    setActiveRunId(runId);
+    hydratedRunIdRef.current = runId;
+    dispatchRun({ type: 'RESET_AGENT_RUN_STATE' });
+    dispatchRun({ type: 'SET_AGENT_RUN_QUEUED' });
+    const controller = new AbortController();
+    abortRef.current = controller;
+    await streamAgentEvents(`${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${runId}/events`, {
+      signal: controller.signal,
+      onEvent: dispatchRun,
+    });
+    const completedRun = await getAgentRun(runId);
+    const answer = completedRun.final_result || runStateRef.current.answer;
+    if (answer) {
+      setMessages((current) => [...current, {
+        id: crypto.randomUUID(), role: 'assistant', content: answer, agent_run_id: runId,
+        status: completedRun.status || 'completed', citations: normalizeCitations(runStateRef.current.citations), created_at: new Date().toISOString(),
+      }]);
+    }
+  };
+
   const send = async () => {
     if (!enabled || !draft.trim() || submitting) return;
     const query = draft.trim();
@@ -139,33 +167,50 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
       setErrorMessage(null);
       const id = await getConversationId();
       setDraft('');
+
+      // Create user message
+      const userMessageId = crypto.randomUUID();
       setMessages((current) => [...current, {
-        id: crypto.randomUUID(), role: 'user', content: query, agent_run_id: null, created_at: new Date().toISOString(),
+        id: userMessageId, role: 'user', content: query, agent_run_id: null, created_at: new Date().toISOString(),
       }]);
-      const response = await createAgentRun({ knowledge_base_id: kbId, conversation_id: id, query });
-      replayAbortRef.current?.abort();
-      currentRunId.current = response.run_id;
-      setActiveRunId(response.run_id);
-      hydratedRunIdRef.current = response.run_id;
-      // 重置 reducer 状态，清除上一轮运行的数据（highest_sequence、answer 等）
-      dispatchRun({ type: 'RESET_AGENT_RUN_STATE' });
-      dispatchRun({ type: 'SET_AGENT_RUN_QUEUED' });
-      const controller = new AbortController();
-      abortRef.current = controller;
-      await streamAgentEvents(`${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${response.run_id}/events`, {
-        signal: controller.signal,
-        onEvent: dispatchRun,
-      });
-      const completedRun = await getAgentRun(response.run_id);
-      const answer = completedRun.final_result || runStateRef.current.answer;
-      if (answer) {
-        setMessages((current) => [...current, {
-          id: crypto.randomUUID(), role: 'assistant', content: answer, agent_run_id: response.run_id,
-          status: completedRun.status || 'completed', citations: normalizeCitations(runStateRef.current.citations), created_at: new Date().toISOString(),
-        }]);
+
+      // If this is the first message (after conversation creation), update the title
+      if (!conversationId) {
+        updateConversationTitle(id, query);
       }
+
+      const response = await createAgentRun({ knowledge_base_id: kbId, conversation_id: id, query });
+      await runAgentStream(response.run_id, id, query);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '智能问答请求失败');
+    } finally {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
+      if (activeConversationId) void queryClient.invalidateQueries({ queryKey: ['conversations', activeConversationId, 'messages'] });
+      setSubmitting(false);
+      abortRef.current = null;
+    }
+  };
+
+  const retry = async (agentRunId: string) => {
+    if (!enabled || submitting) return;
+    setSubmitting(true);
+
+    try {
+      setErrorMessage(null);
+      const response = await retryAgentRun(agentRunId);
+      const id = activeConversationId || await getConversationId();
+
+      // Remove the last assistant message (the one being retried)
+      setMessages((current) => {
+        const lastAssistantIdx = [...current].reverse().findIndex((m) => m.role === 'assistant' && m.agent_run_id === agentRunId);
+        if (lastAssistantIdx === -1) return current;
+        const idx = current.length - 1 - lastAssistantIdx;
+        return [...current.slice(0, idx), ...current.slice(idx + 1)];
+      });
+
+      await runAgentStream(response.new_run_id, id, '');
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '重试请求失败');
     } finally {
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
       if (activeConversationId) void queryClient.invalidateQueries({ queryKey: ['conversations', activeConversationId, 'messages'] });
@@ -198,7 +243,7 @@ export function ChatPageContent({ kbId, conversationId }: { kbId: string; conver
       {!enabled && <Alert severity="info" sx={{ m: 2, mb: 0 }}>智能问答后端未启用，请检查服务配置。</Alert>}
       {errorMessage && <Alert severity="error" sx={{ m: 2, mb: 0 }}>{errorMessage}</Alert>}
       {messagesQuery.error && <Alert severity="warning" sx={{ m: 2, mb: 0 }}>历史消息加载失败，请稍后重试。</Alert>}
-      <MessageList messages={messages} streamingAnswer={submitting ? runState.answer : ''} agentRunState={runState} agentRunId={activeRunId} emptyComposer={empty ? composer : undefined} onSuggestion={setDraft} />
+      <MessageList messages={messages} streamingAnswer={submitting ? runState.answer : ''} agentRunState={runState} agentRunId={activeRunId} emptyComposer={empty ? composer : undefined} onSuggestion={setDraft} onRetry={retry} />
     </Stack>
   );
 

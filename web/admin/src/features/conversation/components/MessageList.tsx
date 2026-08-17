@@ -1,24 +1,76 @@
 import ArrowForwardOutlined from '@mui/icons-material/ArrowForwardOutlined';
 import ContentCopyOutlined from '@mui/icons-material/ContentCopyOutlined';
+import CheckOutlined from '@mui/icons-material/CheckOutlined';
+import ReplayOutlined from '@mui/icons-material/ReplayOutlined';
 import SmartToyOutlined from '@mui/icons-material/SmartToyOutlined';
-import ThumbDownAltOutlined from '@mui/icons-material/ThumbDownAltOutlined';
-import ThumbUpAltOutlined from '@mui/icons-material/ThumbUpAltOutlined';
 import { Box, Button, IconButton, Paper, Stack, Typography } from '@mui/material';
 import type { ReactNode } from 'react';
+import { useState, useCallback } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { InlineAgentRun } from '@/features/agent-run/components/InlineAgentRun';
 import type { AgentRunViewState } from '@/features/agent-run/types';
 import type { Message } from '../types';
 
 const suggestions = ['总结当前知识库', '列出关键概念', '生成学习路径'];
 
-export function MessageList({ messages, streamingAnswer, agentRunState, agentRunId, emptyComposer, onSuggestion }: {
+const markdownSx = {
+  overflowWrap: 'anywhere',
+  '& > :first-of-type': { mt: 0 },
+  '& > :last-child': { mb: 0 },
+  '& h1, & h2, & h3, & h4, & h5, & h6': { mt: 2.5, mb: 1, lineHeight: 1.35 },
+  '& p, & ul, & ol, & blockquote': { my: 1.25, lineHeight: 1.75 },
+  '& pre': { overflowX: 'auto', p: 1.5, borderRadius: 1, bgcolor: 'action.hover' },
+  '& code': { fontFamily: 'Consolas, "SFMono-Regular", monospace' },
+  '& :not(pre) > code': { px: 0.5, py: 0.2, borderRadius: 0.5, bgcolor: 'action.hover' },
+  '& table': { display: 'block', maxWidth: '100%', overflowX: 'auto', borderCollapse: 'collapse', my: 2 },
+  '& th, & td': { border: 1, borderColor: 'divider', px: 1.25, py: 0.75, textAlign: 'left' },
+  '& blockquote': { ml: 0, pl: 2, borderLeft: 4, borderColor: 'divider', color: 'text.secondary' },
+  '& img': { maxWidth: '100%', maxHeight: 480, width: 'auto', height: 'auto', cursor: 'zoom-in' },
+} as const;
+
+function MarkdownContent({ content }: { content: string }) {
+  return (
+    <Box sx={markdownSx}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          img: ({ node, ...props }) => {
+            void node;
+            return <img {...props} onClick={() => props.src && !props.src.startsWith('data:') && window.open(props.src, '_blank', 'noopener')} />;
+          },
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </Box>
+  );
+}
+
+export function MessageList({ messages, streamingAnswer, agentRunState, agentRunId, emptyComposer, onSuggestion, onRetry }: {
   messages: Message[];
   streamingAnswer: string;
   agentRunState: AgentRunViewState;
   agentRunId: string | null;
   emptyComposer?: ReactNode;
   onSuggestion: (suggestion: string) => void;
+  onRetry?: (agentRunId: string) => void;
 }) {
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const handleCopy = useCallback(async (text: string, messageId: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedId(messageId);
+      setTimeout(() => setCopiedId((prev) => prev === messageId ? null : prev), 2000);
+    } catch {
+      // ignore clipboard errors
+    }
+  }, []);
+
+  // Find the last assistant message with an agent_run_id
+  const lastAssistantMsg = [...messages].reverse().find((m) => m.role === 'assistant' && m.agent_run_id);
+
   if (messages.length === 0 && !streamingAnswer) {
     return (
       <Stack alignItems="center" justifyContent="center" spacing={1.4} sx={{ flex: 1, width: '100%', px: 2.5, pb: { xs: 3, md: 10 } }}>
@@ -34,7 +86,7 @@ export function MessageList({ messages, streamingAnswer, agentRunState, agentRun
   return (
     <Stack spacing={2.2} alignItems="center" sx={{ flex: 1, overflow: 'auto', px: { xs: 2, md: 4 }, py: 3, bgcolor: '#fff' }}>
       <Stack spacing={2.2} sx={{ width: '100%', maxWidth: 980, flexShrink: 0 }}>
-      {messages.map((message) => (
+      {messages.map((message, idx) => (
         <Box key={message.id}>
         {message.role === 'assistant' && message.agent_run_id === agentRunId && <InlineAgentRun state={agentRunState} />}
         <Stack direction={message.role === 'user' ? 'row-reverse' : 'row'} spacing={1.2} alignItems="flex-start" sx={{ mt: message.role === 'assistant' && message.agent_run_id === agentRunId ? 1.2 : 0, width: message.role === 'assistant' ? '100%' : 'fit-content', ml: message.role === 'user' ? 'auto' : 0, maxWidth: message.role === 'user' ? '78%' : '100%' }}>
@@ -43,19 +95,27 @@ export function MessageList({ messages, streamingAnswer, agentRunState, agentRun
           </Box>
           <Box minWidth={0} sx={{ flex: message.role === 'assistant' ? 1 : 'initial' }}>
             <Paper variant="outlined" sx={{ p: message.role === 'user' ? '13px 16px' : 2, borderRadius: message.role === 'user' ? '14px 4px 14px 14px' : '4px 14px 14px 14px', borderColor: message.role === 'user' ? 'transparent' : '#e1e5ed', bgcolor: message.role === 'user' ? '#efefff' : '#fff', boxShadow: message.role === 'user' ? 'none' : '0 5px 18px rgba(31,45,90,.035)' }}>
-              <Typography sx={{ color: '#25314c', fontSize: 14, lineHeight: 1.75, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{message.content}</Typography>
+              <Box sx={{ color: '#25314c', fontSize: 14, lineHeight: 1.75 }}>
+                <MarkdownContent content={message.content} />
+              </Box>
               {message.citations && message.citations.length > 0 && (
                 <Stack direction="row" useFlexGap flexWrap="wrap" spacing={0.8} sx={{ mt: 1.2 }}>
                   {message.citations.slice(0, 3).map((citation, index) => <Button key={`${message.id}-${index}`} size="small" variant="outlined" sx={{ fontSize: 11, borderRadius: 1.5 }}>{citation.document_title || citation.title || `引用 ${index + 1}`}</Button>)}
                 </Stack>
               )}
-              {message.role === 'assistant' && (
-                <Stack direction="row" justifyContent="flex-end" sx={{ mt: 0.7, mb: -0.8, mr: -0.8 }}>
-                  <IconButton size="small" aria-label="复制回答" onClick={() => void navigator.clipboard?.writeText(message.content)}><ContentCopyOutlined sx={{ fontSize: 16 }} /></IconButton>
-                  <IconButton size="small" aria-label="回答有帮助"><ThumbUpAltOutlined sx={{ fontSize: 16 }} /></IconButton>
-                  <IconButton size="small" aria-label="回答无帮助"><ThumbDownAltOutlined sx={{ fontSize: 16 }} /></IconButton>
+              {/* Bottom action bar for both user and assistant messages */}
+              <Stack direction="row" justifyContent={message.role === 'user' ? 'flex-start' : 'space-between'} alignItems="center" sx={{ mt: 0.7, mb: -0.8, mr: -0.8 }}>
+                <Stack direction="row" spacing={0.2}>
+                  <IconButton size="small" aria-label="复制" onClick={() => void handleCopy(message.content, message.id)}>
+                    {copiedId === message.id ? <CheckOutlined sx={{ fontSize: 16, color: '#4caf50' }} /> : <ContentCopyOutlined sx={{ fontSize: 16 }} />}
+                  </IconButton>
+                  {message.role === 'assistant' && message.agent_run_id && message.id === lastAssistantMsg?.id && onRetry && (
+                    <IconButton size="small" aria-label="重试" onClick={() => onRetry(message.agent_run_id!)}>
+                      <ReplayOutlined sx={{ fontSize: 16 }} />
+                    </IconButton>
+                  )}
                 </Stack>
-              )}
+              </Stack>
             </Paper>
             <Typography sx={{ color: '#8c97aa', fontSize: 10.5, mt: 0.5, textAlign: message.role === 'user' ? 'right' : 'left' }}>{new Date(message.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</Typography>
           </Box>
@@ -67,7 +127,9 @@ export function MessageList({ messages, streamingAnswer, agentRunState, agentRun
       {streamingAnswer && (
         <Stack direction="row" spacing={1.2} alignItems="flex-start" sx={{ width: '100%' }}>
           <Box sx={{ width: 34, height: 34, flexShrink: 0, borderRadius: 2, display: 'grid', placeItems: 'center', color: '#fff', background: 'linear-gradient(145deg,#697af6,#704de5)' }}><SmartToyOutlined sx={{ fontSize: 20 }} /></Box>
-          <Paper variant="outlined" sx={{ flex: 1, minWidth: 0, p: 2, borderRadius: '4px 14px 14px 14px', borderColor: '#e1e5ed' }}><Typography sx={{ color: '#25314c', fontSize: 14, lineHeight: 1.75, whiteSpace: 'pre-wrap' }}>{streamingAnswer}</Typography></Paper>
+          <Paper variant="outlined" sx={{ flex: 1, minWidth: 0, p: 2, borderRadius: '4px 14px 14px 14px', borderColor: '#e1e5ed' }}>
+            <MarkdownContent content={streamingAnswer} />
+          </Paper>
         </Stack>
       )}
       </Stack>
