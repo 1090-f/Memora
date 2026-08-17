@@ -25,6 +25,8 @@ type VectorRetrieverOptions struct {
 	KnowledgeBaseID string
 	// DocumentIDs 可选：限定检索的文档范围。
 	DocumentIDs []string
+	// EmbeddingModelID 查询向量使用的模型配置 ID，只检索同模型生成的向量。
+	EmbeddingModelID string
 	// IndexVersion 可选：限定索引版本。
 	IndexVersion *int
 }
@@ -35,6 +37,7 @@ func WithVectorScope(scope VectorRetrieverOptions) retriever.Option {
 		o.UserID = scope.UserID
 		o.KnowledgeBaseID = scope.KnowledgeBaseID
 		o.DocumentIDs = scope.DocumentIDs
+		o.EmbeddingModelID = scope.EmbeddingModelID
 		o.IndexVersion = scope.IndexVersion
 	})
 }
@@ -74,6 +77,9 @@ func (r *PgVectorRetriever) Retrieve(ctx context.Context, query string, opts ...
 	if impl.UserID == "" || impl.KnowledgeBaseID == "" {
 		return nil, fmt.Errorf("向量检索缺少 UserID/KnowledgeBaseID 租户选项")
 	}
+	if impl.EmbeddingModelID == "" {
+		return nil, fmt.Errorf("向量检索缺少 EmbeddingModelID，无法按模型过滤索引")
+	}
 	if query == "" {
 		return nil, fmt.Errorf("检索查询不能为空")
 	}
@@ -106,13 +112,14 @@ func (r *PgVectorRetriever) Retrieve(ctx context.Context, query string, opts ...
 	}
 
 	hits, err := r.vectors.SearchCosine(ctx, repository.VectorSearchParams{
-		UserID:          impl.UserID,
-		KnowledgeBaseID: impl.KnowledgeBaseID,
-		DocumentIDs:     impl.DocumentIDs,
-		QueryVector:     queryVector,
-		TopK:            topK,
-		ScoreThreshold:  common.ScoreThreshold,
-		IndexVersion:    impl.IndexVersion,
+		UserID:           impl.UserID,
+		KnowledgeBaseID:  impl.KnowledgeBaseID,
+		DocumentIDs:      impl.DocumentIDs,
+		QueryVector:      queryVector,
+		TopK:             topK,
+		ScoreThreshold:   common.ScoreThreshold,
+		EmbeddingModelID: impl.EmbeddingModelID,
+		IndexVersion:     impl.IndexVersion,
 	})
 	if err != nil {
 		return nil, err

@@ -32,6 +32,8 @@ type VectorSearchParams struct {
 	QueryVector     []float32
 	TopK            int
 	ScoreThreshold  *float64
+	// EmbeddingModelID 查询向量使用的模型配置 ID，检索只命中同模型生成的向量。
+	EmbeddingModelID string
 	// IndexVersion 为空时使用 documents.active_index_version。
 	IndexVersion *int
 }
@@ -92,7 +94,8 @@ func (r *vectorRepository) MarkFailed(ctx context.Context, documentID string, in
 }
 
 // SearchCosine 执行 cosine 相似度检索。
-// 只返回 status='ready' 且 index_version = active_index_version 的向量。
+// 只返回 status='ready'、与查询向量同 embedding 模型的向量，且 index_version = active_index_version。
+// 可见性由 active 索引版本控制，不依赖 processing_status，重建失败不影响旧版本。
 func (r *vectorRepository) SearchCosine(ctx context.Context, params VectorSearchParams) ([]*VectorHit, error) {
 	if len(params.QueryVector) == 0 || params.TopK <= 0 {
 		return nil, nil
@@ -100,9 +103,13 @@ func (r *vectorRepository) SearchCosine(ctx context.Context, params VectorSearch
 	queryVector := pgvector.NewVector(params.QueryVector)
 	// args 严格按 SQL 占位符出现顺序构造。
 	args := []any{queryVector} // SELECT 1 - (embedding <=> ?)
-	where := `dv.user_id = ? AND dv.knowledge_base_id = ? AND dv.status = 'ready' AND d.deleted_at IS NULL AND d.processing_status = 'succeeded'`
+	// 归属过滤(user_id + knowledge_base_id) + 状态过滤 + 软删除过滤。
+	// embedding_model_id 必须与查询向量模型一致：避免模型切换后不同维度向量比较报错，
+	// 或同维度不同语义空间产生无意义分数；未重建文档在向量分支自然缺席，由关键词分支兜底。
+	where := `dv.user_id = ? AND dv.knowledge_base_id = ? AND dv.status = 'ready' AND d.deleted_at IS NULL`
+	where += ` AND dv.embedding_model_id = ?`
 	where += ` AND 1 - (dv.embedding <=> ?) > 0`
-	args = append(args, params.UserID, params.KnowledgeBaseID, queryVector) // WHERE user/kb/dist
+	args = append(args, params.UserID, params.KnowledgeBaseID, params.EmbeddingModelID, queryVector) // WHERE user/kb/model/dist
 
 	if len(params.DocumentIDs) > 0 {
 		where += fmt.Sprintf(" AND dv.document_id IN (%s)", placeholders(len(params.DocumentIDs)))

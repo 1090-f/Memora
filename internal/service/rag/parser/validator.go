@@ -15,6 +15,8 @@ type ValidateLimits struct {
 	MaxTables int
 	// MaxAssets 是 Asset 数量上限。
 	MaxAssets int
+	// MaxAssetBytes 是单个 Asset base64 解码后的最大字节数；0 表示不限制。
+	MaxAssetBytes int64
 	// MaxTotalAssetBytes 是所有资产 base64 解码后的总大小上限。
 	MaxTotalAssetBytes int64
 	// MaxWarnings 是 warning 数量上限（防止响应膨胀）。
@@ -28,6 +30,7 @@ func DefaultValidateLimits() ValidateLimits {
 		MaxBlocks:          100000,
 		MaxTables:          10000,
 		MaxAssets:          100,
+		MaxAssetBytes:      32 * 1024 * 1024,
 		MaxTotalAssetBytes: 64 * 1024 * 1024,
 		MaxWarnings:        1000,
 	}
@@ -75,7 +78,7 @@ func ValidateParsedDocument(doc *ParsedDocument, expectedSourceSHA256 string, li
 	if err := validateReferences(doc); err != nil {
 		return err
 	}
-	if err := validateAssets(doc, limits.MaxTotalAssetBytes); err != nil {
+	if err := validateAssets(doc, limits); err != nil {
 		return err
 	}
 	return nil
@@ -121,8 +124,9 @@ func validateReferences(doc *ParsedDocument) error {
 	return nil
 }
 
-// validateAssets 校验资产 base64 合法性与总大小限制。
-func validateAssets(doc *ParsedDocument, maxTotalBytes int64) error {
+// validateAssets 校验资产 base64 合法性与大小限制。
+// 解码前先用 DecodedLen 预检单图与总量上限，避免恶意超大 base64 先完整解码撑爆内存。
+func validateAssets(doc *ParsedDocument, limits ValidateLimits) error {
 	var total int64
 	for _, asset := range doc.Assets {
 		if asset.Omitted {
@@ -135,15 +139,20 @@ func validateAssets(doc *ParsedDocument, maxTotalBytes int64) error {
 		if asset.DataBase64 == "" {
 			continue
 		}
+		decodedLen := int64(base64.StdEncoding.DecodedLen(len(asset.DataBase64)))
+		if limits.MaxAssetBytes > 0 && decodedLen > limits.MaxAssetBytes {
+			return ParseErrorf(ParseErrorInvalidResponse,
+				"Asset %q 大小 %d 字节超过单图限制 %d", asset.ID, decodedLen, limits.MaxAssetBytes)
+		}
 		data, err := base64.StdEncoding.DecodeString(asset.DataBase64)
 		if err != nil {
 			return ParseErrorf(ParseErrorInvalidResponse, "Asset %q base64 解码失败: %v", asset.ID, err)
 		}
 		total += int64(len(data))
 	}
-	if maxTotalBytes > 0 && total > maxTotalBytes {
+	if limits.MaxTotalAssetBytes > 0 && total > limits.MaxTotalAssetBytes {
 		return ParseErrorf(ParseErrorInvalidResponse,
-			"资产总量 %d 字节超过限制 %d", total, maxTotalBytes)
+			"资产总量 %d 字节超过限制 %d", total, limits.MaxTotalAssetBytes)
 	}
 	return nil
 }

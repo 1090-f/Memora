@@ -30,6 +30,7 @@ const (
 	maxRRFTopK            = 100
 	maxRerankerTopK       = 20
 	maxRerankerThreshold  = 1.0
+	maxMinVectorScore     = 1.0
 	maxReactRounds        = 8
 	maxPlanSteps          = 5
 	maxReplans            = 1
@@ -429,6 +430,12 @@ func (s *knowledgeBaseService) UpdateSearchConfig(ctx context.Context, userID, k
 	if req.MinimumEffectiveResult != nil {
 		cfg.MinimumEffectiveRate = *req.MinimumEffectiveResult
 	}
+	if req.MinVectorScore != nil {
+		if *req.MinVectorScore < 0 || *req.MinVectorScore > maxMinVectorScore {
+			return nil, apperrors.ErrInvalidArgument
+		}
+		cfg.MinVectorScore = *req.MinVectorScore
+	}
 	if req.RerankerModelID != nil && *req.RerankerModelID != "" {
 		if _, err := s.modelConfigs.FindEnabledByID(ctx, userID, *req.RerankerModelID); err != nil {
 			return nil, apperrors.New(contracts.ErrInvalidArgument, err)
@@ -457,6 +464,7 @@ func defaultSearchConfigEntity(kbID string) *entity.SearchConfig {
 		RerankerTopK:         config.RerankerTopK,
 		RerankerThreshold:    config.RerankerThreshold,
 		MinimumEffectiveRate: config.MinimumEffectiveResult,
+		MinVectorScore:       config.MinVectorScore,
 	}
 }
 
@@ -569,6 +577,6 @@ func searchConfigResponse(cfg *entity.SearchConfig) *dto.SearchConfigResponse {
 	return &dto.SearchConfigResponse{
 		KeywordTopK: cfg.KeywordTopK, VectorTopK: cfg.VectorTopK, RRFK: cfg.RRFK,
 		RRFTopK: cfg.RRFTopK, RerankerTopK: cfg.RerankerTopK, RerankerThreshold: cfg.RerankerThreshold,
-		MinimumEffectiveResult: cfg.MinimumEffectiveRate, RerankerModelID: cfg.RerankerModelID,
+		MinimumEffectiveResult: cfg.MinimumEffectiveRate, MinVectorScore: cfg.MinVectorScore, RerankerModelID: cfg.RerankerModelID,
 	}
 }

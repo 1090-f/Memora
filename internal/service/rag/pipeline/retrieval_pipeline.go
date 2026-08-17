@@ -24,6 +24,8 @@ type RetrievalInput struct {
 	Request  contracts.RetrievalRequest
 	Embedder embedding.Embedder
 	Reranker contracts.Reranker
+	// EmbeddingModelID 查询向量使用的模型配置 ID，向量检索只命中同模型生成的索引。
+	EmbeddingModelID string
 }
 
 type retrievalState struct {
@@ -91,9 +93,16 @@ func NewRetrievalPipeline(keyword, vector retriever.Retriever, citations citatio
 		}
 		if req.Mode == contracts.RetrievalVector || req.Mode == contracts.RetrievalHybrid {
 			group.Go(func() error {
-				docs, err := vector.Retrieve(groupCtx, req.Query,
+				opts := []retriever.Option{
 					retriever.WithTopK(req.Config.VectorTopK), retriever.WithEmbedding(state.input.Embedder),
-					retrievalVectorScope(string(req.UserID), string(req.KnowledgeBaseID), scopeIDs))
+					retrievalVectorScope(string(req.UserID), string(req.KnowledgeBaseID), scopeIDs, state.input.EmbeddingModelID),
+				}
+				// 配置了向量分数阈值时，在候选召回层过滤低相似度结果，
+				// 避免无意义候选进入 RRF/知识充分性判断。
+				if req.Config.MinVectorScore > 0 {
+					opts = append(opts, retriever.WithScoreThreshold(req.Config.MinVectorScore))
+				}
+				docs, err := vector.Retrieve(groupCtx, req.Query, opts...)
 				if err == nil {
 					state.vectorDocs = docs
 				}
@@ -187,7 +196,7 @@ func NewRetrievalPipeline(keyword, vector retriever.Retriever, citations citatio
 			minimum = 1
 		}
 		state.status = "insufficient"
-		if effectiveResultCount(state.finalDocs, state.input.Request.Mode) >= minimum {
+		if effectiveResultCount(state.finalDocs, state.input.Request.Mode, state.input.Request.Config.MinVectorScore) >= minimum {
 			state.status = "sufficient"
 		}
 		return state, nil
@@ -260,8 +269,8 @@ func NewRetrievalPipeline(keyword, vector retriever.Retriever, citations citatio
 var retrievalKeywordScope = func(userID, kbID string, documentIDs []string) retriever.Option {
 	return customretrieval.WithKeywordScope(customretrieval.KeywordRetrieverOptions{UserID: userID, KnowledgeBaseID: kbID, DocumentIDs: documentIDs})
 }
-var retrievalVectorScope = func(userID, kbID string, documentIDs []string) retriever.Option {
-	return customretrieval.WithVectorScope(customretrieval.VectorRetrieverOptions{UserID: userID, KnowledgeBaseID: kbID, DocumentIDs: documentIDs})
+var retrievalVectorScope = func(userID, kbID string, documentIDs []string, embeddingModelID string) retriever.Option {
+	return customretrieval.WithVectorScope(customretrieval.VectorRetrieverOptions{UserID: userID, KnowledgeBaseID: kbID, DocumentIDs: documentIDs, EmbeddingModelID: embeddingModelID})
 }
 
 // Run 执行已编译检索 Graph。
@@ -341,13 +350,34 @@ func keywordRRFWeight(meta map[string]any) float64 {
 	}
 }
 
-func effectiveResultCount(docs []*schema.Document, mode contracts.RetrievalMode) int {
-	if mode != contracts.RetrievalKeyword {
+func effectiveResultCount(docs []*schema.Document, mode contracts.RetrievalMode, minVectorScore float64) int {
+	if mode == contracts.RetrievalKeyword {
+		count := 0
+		for _, doc := range docs {
+			level := contracts.KeywordMatchLevel(einoadapter.GetMetaString(doc.MetaData, einoadapter.MetaKeywordMatchLevel))
+			if level == "" || level == contracts.KeywordMatchExact || level == contracts.KeywordMatchStrong {
+				count++
+			}
+		}
+		return count
+	}
+	// vector：候选已在召回层按 MinVectorScore 过滤，数量即有效数量。
+	if mode == contracts.RetrievalVector {
+		return len(docs)
+	}
+	// hybrid：未配置向量阈值时保持纯计数；配置后只统计“带合格向量分数”或“强关键词匹配”的结果，
+	// 弱关键词召回且无向量分数不构成知识充分性，防止低质量结果被判为 sufficient。
+	if minVectorScore <= 0 {
 		return len(docs)
 	}
 	count := 0
 	for _, doc := range docs {
-		level := contracts.KeywordMatchLevel(einoadapter.GetMetaString(doc.MetaData, einoadapter.MetaKeywordMatchLevel))
+		meta := doc.MetaData
+		if _, ok := meta[einoadapter.MetaVectorScore]; ok {
+			count++
+			continue
+		}
+		level := contracts.KeywordMatchLevel(einoadapter.GetMetaString(meta, einoadapter.MetaKeywordMatchLevel))
 		if level == "" || level == contracts.KeywordMatchExact || level == contracts.KeywordMatchStrong {
 			count++
 		}

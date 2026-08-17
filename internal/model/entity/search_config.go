@@ -15,6 +15,7 @@ type SearchConfig struct {
 	RerankerTopK         int       `gorm:"column:reranker_top_k" json:"reranker_top_k"`                        // RerankerTopK 重排序后返回的条数
 	RerankerThreshold    *float64  `gorm:"column:reranker_threshold" json:"reranker_threshold,omitempty"`      // RerankerThreshold 重排序分数阈值，低于该分数的结果被过滤，可选
 	MinimumEffectiveRate int       `gorm:"column:minimum_effective_results" json:"minimum_effective_results"`  // MinimumEffectiveRate 最低有效结果数，防止检索结果过少
+	MinVectorScore       float64   `gorm:"column:min_vector_score" json:"min_vector_score"`                    // MinVectorScore 向量相似度最低阈值（0~1），0 表示不启用过滤
 	RerankerModelID      *string   `gorm:"column:reranker_model_id" json:"reranker_model_id,omitempty"`        // RerankerModelID 重排序模型配置 ID，可选
 	CreatedAt            time.Time `gorm:"column:created_at" json:"created_at"`                                // CreatedAt 创建时间
 	UpdatedAt            time.Time `gorm:"column:updated_at" json:"updated_at"`                                // UpdatedAt 更新时间

@@ -3,14 +3,20 @@ package pipeline
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/1090-f/Memora/internal/service/rag/chunking"
 	"github.com/1090-f/Memora/internal/service/rag/parser"
 	"github.com/1090-f/Memora/internal/service/rag/transformer"
+	"github.com/klauspost/compress/zstd"
 )
 
 // fakeStore 是内存版 ObjectStore。
@@ -316,4 +322,79 @@ func TestAssetOnlyDocument(t *testing.T) {
 func hashOfParseOptions() string {
 	h, _ := parser.ParseConfigHash(parser.DefaultParseOptions())
 	return h
+}
+
+// TestGenericFigureCaption 验证通用编号 caption 的识别。
+func TestGenericFigureCaption(t *testing.T) {
+	generic := []string{"图 1", "图 12", "图片", "图"}
+	descriptive := []string{"", "图 1 系统架构", "架构图", "图1所示结构"}
+	for _, caption := range generic {
+		if !genericFigureCaption(caption) {
+			t.Errorf("genericFigureCaption(%q) = false, 期望 true", caption)
+		}
+	}
+	for _, caption := range descriptive {
+		if genericFigureCaption(caption) {
+			t.Errorf("genericFigureCaption(%q) = true, 期望 false", caption)
+		}
+	}
+}
+
+// TestPipelineOCRBackfillsGenericCaption 验证 OCR 文本回填空/通用编号 caption：
+// 图片 alt 为通用编号 "图 1" 时，OCR 结果写入 caption 并随 Artifact 持久化。
+func TestPipelineOCRBackfillsGenericCaption(t *testing.T) {
+	ocrSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/ocr" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"lines": []string{"发票", "金额"}, "languages": []string{"zh"}, "engine": "test",
+		})
+	}))
+	defer ocrSrv.Close()
+
+	store := newFakeStore()
+	png := base64.StdEncoding.EncodeToString([]byte{0x89, 'P', 'N', 'G'})
+	content := "![图 1](data:image/png;base64," + png + ")\n\n正文"
+	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.md", strings.NewReader(content), int64(len(content)), "text/markdown")
+
+	cfg := testPipelineConfig(store, `{}`)
+	cfg.ParserConfig.BaseURL = ocrSrv.URL
+	cfg.ParserConfig.Timeout = 5 * time.Second
+	p, err := NewDocumentPipeline(cfg)
+	if err != nil {
+		t.Fatalf("构造 pipeline 失败: %v", err)
+	}
+	if _, err := p.Run(context.Background(), processInput(store, "a.md")); err != nil {
+		t.Fatalf("运行 pipeline 失败: %v", err)
+	}
+
+	artifactKey := "derived/u1/d1/content-1/parse-" + hashOfParseOptions() + "/parsed-document.json.zst"
+	compressed, ok := store.objects[artifactKey]
+	if !ok {
+		t.Fatalf("Artifact 未保存: %s", artifactKey)
+	}
+	decoder, err := zstd.NewReader(nil)
+	if err != nil {
+		t.Fatalf("构造 zstd 解码器失败: %v", err)
+	}
+	defer decoder.Close()
+	raw, err := decoder.DecodeAll(compressed, nil)
+	if err != nil {
+		t.Fatalf("zstd 解码失败: %v", err)
+	}
+	var artifactDoc parser.ParsedDocument
+	if err := json.Unmarshal(raw, &artifactDoc); err != nil {
+		t.Fatalf("解析 Artifact 失败: %v", err)
+	}
+	if len(artifactDoc.Assets) != 1 {
+		t.Fatalf("Assets 数量 = %d, 期望 1", len(artifactDoc.Assets))
+	}
+	if artifactDoc.Assets[0].Caption != "发票\n金额" {
+		t.Errorf("通用编号 caption 应被 OCR 文本回填，实际 %q", artifactDoc.Assets[0].Caption)
+	}
+	if artifactDoc.Assets[0].Metadata["ocr_text"] != "发票\n金额" {
+		t.Errorf("ocr_text 元数据缺失: %v", artifactDoc.Assets[0].Metadata)
+	}
 }

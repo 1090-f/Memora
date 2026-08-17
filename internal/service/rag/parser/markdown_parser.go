@@ -272,6 +272,9 @@ func loadMarkdownImage(ctx context.Context, alt, ref string, loader AssetLoader)
 		if len(dataURI) > maxMarkdownImageBytes {
 			return nil, fmt.Sprintf("图片 %q 超过大小限制 %d 字节", ref, maxMarkdownImageBytes)
 		}
+		if !isAllowedAssetMIME(mime) {
+			return nil, fmt.Sprintf("图片 %q 类型 %q 不受支持，已跳过", ref, mime)
+		}
 		return makeMarkdownAsset(alt, ref, mime, dataURI), ""
 	}
 
@@ -299,9 +302,13 @@ func loadMarkdownImage(ctx context.Context, alt, ref string, loader AssetLoader)
 	if len(data) == 0 {
 		return nil, fmt.Sprintf("图片 %q 内容为空", ref)
 	}
+	// 附件加载器不返回 Content-Type，按扩展名回退；扩展名无法识别时拒绝（不再伪装成 PNG）。
 	mime := contentType
 	if mime == "" || !strings.HasPrefix(mime, "image/") {
 		mime = mimeForExtension(path.Ext(ref))
+	}
+	if !isAllowedAssetMIME(mime) {
+		return nil, fmt.Sprintf("图片 %q 类型 %q 不受支持，已跳过", ref, mime)
 	}
 	return makeMarkdownAsset(alt, ref, mime, data), ""
 }
@@ -363,7 +370,7 @@ func mimeForExtension(ext string) string {
 	case ".svg":
 		return "image/svg+xml"
 	default:
-		return "image/png"
+		return ""
 	}
 }
 

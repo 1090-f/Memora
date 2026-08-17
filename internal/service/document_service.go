@@ -40,6 +40,10 @@ const (
 	MaxUploadFilesPerRequest = 20
 	// minioUploadTimeout 单文件上传超时。
 	minioUploadTimeout = 5 * time.Minute
+	// maxUploadAttempts 对象上传最大尝试次数（含首次）。
+	maxUploadAttempts = 3
+	// uploadRetryDelay 对象上传重试的基础退避间隔（线性递增）。
+	uploadRetryDelay = 1 * time.Second
 	// ImportModeFolderArchive 表示 ZIP 是文件夹传输容器，内部每个文档都应创建独立任务。
 	ImportModeFolderArchive = "folder_archive"
 )
@@ -244,8 +248,18 @@ func (s *documentService) rewriteDoclingImagePlaceholders(markdown string, block
 		if err != nil {
 			return match
 		}
-		return "![图片](" + assetURL + ")"
+		return "![" + imageAlt(asset) + "](" + assetURL + ")"
 	})
+}
+
+// imageAlt 返回图片的 Markdown alt 文本：优先 caption（可能已回填 OCR 文字），
+// 兜底 "图片"；换行折叠为空格避免破坏 Markdown 语法。
+func imageAlt(asset parser.Asset) string {
+	alt := strings.Join(strings.Fields(strings.TrimSpace(asset.Caption)), " ")
+	if alt == "" {
+		return "图片"
+	}
+	return alt
 }
 
 // markdownImageRefRe 匹配 Markdown 图片引用 ![alt](ref)。
@@ -775,7 +789,7 @@ func (s *documentService) uploadOne(ctx context.Context, userID, kbID string, di
 	}
 
 	objectKey := objectstore.BuildObjectKey(userID, kbID, task.ID, file.FileName)
-	hash, err := s.putObjectWithHash(ctx, objectKey, file.Reader, file.Size, mimeType)
+	hash, err := s.putObjectWithHashRetry(ctx, objectKey, reopenUploadReader(file.Reader), file.Size, mimeType)
 	if err != nil {
 		// 失败点 2：对象上传失败 → 删除刚创建的任务记录，避免残留 pending 孤儿任务。
 		if deleteErr := s.tasks.Delete(ctx, userID, task.ID); deleteErr != nil {
@@ -820,7 +834,7 @@ func (s *documentService) uploadOneDeferred(ctx context.Context, userID, kbID st
 		return nil, "", apperrors.New(contracts.ErrInternal, err)
 	}
 	objectKey := objectstore.BuildObjectKey(userID, kbID, task.ID, file.FileName)
-	hash, err := s.putObjectWithHash(ctx, objectKey, file.Reader, file.Size, mimeType)
+	hash, err := s.putObjectWithHashRetry(ctx, objectKey, reopenUploadReader(file.Reader), file.Size, mimeType)
 	if err != nil {
 		if deleteErr := s.tasks.Delete(ctx, userID, task.ID); deleteErr != nil {
 			logger.Error("上传失败后删除任务记录失败",
@@ -853,6 +867,38 @@ type folderArchiveDocument struct {
 	attachments map[string]folderArchiveEntry
 }
 
+// spoolZipToTemp 将上传的 ZIP 流式写入临时文件（限制大小）并打开为 zip.Reader，
+// 避免整包读入内存。返回的清理函数负责关闭并删除临时文件，调用方必须 defer 调用。
+func spoolZipToTemp(file UploadFileInput, kind string) (*zip.Reader, func(), error) {
+	tmp, err := os.CreateTemp("", "memora-upload-*.zip")
+	if err != nil {
+		return nil, nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+	}
+	n, err := io.Copy(tmp, io.LimitReader(file.Reader, MaxUploadFileSize+1))
+	if err != nil {
+		cleanup()
+		return nil, nil, apperrors.New(contracts.ErrServiceUnavailable, err)
+	}
+	if n > MaxUploadFileSize {
+		cleanup()
+		return nil, nil, apperrors.New(contracts.ErrPayloadTooLarge, nil)
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return nil, nil, apperrors.New(contracts.ErrInternal, err)
+	}
+	reader, err := zip.NewReader(tmp, n)
+	if err != nil {
+		cleanup()
+		return nil, nil, apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("不是有效的%s %q", kind, file.FileName))
+	}
+	return reader, cleanup, nil
+}
+
 // uploadFolderArchive 将文件夹 ZIP 作为传输批次处理：每个主文档创建独立 ImportTask，
 // Markdown 图片只挂到实际引用它的文档；未被引用且可独立解析的图片会成为独立文档任务。
 func (s *documentService) uploadFolderArchive(
@@ -863,17 +909,11 @@ func (s *documentService) uploadFolderArchive(
 	file UploadFileInput,
 	bucket, batchID string,
 ) ([]dto.UploadTaskItem, []dto.UploadRejectedItem, error) {
-	data, err := io.ReadAll(io.LimitReader(file.Reader, MaxUploadFileSize+1))
+	reader, cleanupZip, err := spoolZipToTemp(file, "文件夹 ZIP")
 	if err != nil {
-		return nil, nil, apperrors.New(contracts.ErrServiceUnavailable, err)
+		return nil, nil, err
 	}
-	if int64(len(data)) > MaxUploadFileSize {
-		return nil, nil, apperrors.New(contracts.ErrPayloadTooLarge, nil)
-	}
-	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return nil, nil, apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("不是有效的文件夹 ZIP %q", file.FileName))
-	}
+	defer cleanupZip()
 	if len(reader.File) > maxZipEntries {
 		return nil, nil, apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("ZIP 内条目数超过上限 %d", maxZipEntries))
 	}
@@ -1018,14 +1058,12 @@ func (s *documentService) uploadFolderArchiveDocument(
 	for alias, attachment := range document.attachments {
 		key, exists := uploadedAttachments[attachment.name]
 		if !exists {
-			attachmentData, err := readZipEntry(attachment.file)
-			if err != nil {
-				s.removeObjects(ctx, uploadedKeys)
-				cleanupTask()
-				return nil, err
-			}
+			// 附件直接从 zip 条目流式上传（大小已在归档校验阶段确认），不整体读入内存。
 			key = objectstore.BuildObjectKey(userID, kbID, task.ID, archiveAttachmentObjectName(attachment.name))
-			if err := s.store.PutObject(ctx, key, bytes.NewReader(attachmentData), int64(len(attachmentData)), mimeTypeOf(strings.ToLower(path.Ext(attachment.name)))); err != nil {
+			attachmentEntry := attachment
+			if _, err := s.putObjectWithHashRetry(ctx, key, func() (io.ReadCloser, error) {
+				return attachmentEntry.file.Open()
+			}, int64(attachmentEntry.file.UncompressedSize64), mimeTypeOf(strings.ToLower(path.Ext(attachmentEntry.name)))); err != nil {
 				s.removeObjects(ctx, uploadedKeys)
 				cleanupTask()
 				return nil, apperrors.New(contracts.ErrServiceUnavailable, err)
@@ -1036,15 +1074,11 @@ func (s *documentService) uploadFolderArchiveDocument(
 		attachments[alias] = key
 	}
 
-	mainReader, err := document.entry.file.Open()
-	if err != nil {
-		s.removeObjects(ctx, uploadedKeys)
-		cleanupTask()
-		return nil, apperrors.New(contracts.ErrInvalidArgument, err)
-	}
 	objectKey := objectstore.BuildObjectKey(userID, kbID, task.ID, fileName)
-	hash, err := s.putObjectWithHash(ctx, objectKey, mainReader, fileSize, mimeType)
-	_ = mainReader.Close()
+	entry := document.entry
+	hash, err := s.putObjectWithHashRetry(ctx, objectKey, func() (io.ReadCloser, error) {
+		return entry.file.Open()
+	}, fileSize, mimeType)
 	if err != nil {
 		s.removeObjects(ctx, uploadedKeys)
 		cleanupTask()
@@ -1149,17 +1183,11 @@ func uploadRejected(sourcePath, code, message string) dto.UploadRejectedItem {
 // 图片附件上传 MinIO 并记录相对路径 → object key 映射，供 Worker 解析 Markdown 图片引用。
 // 任一步失败时补偿删除任务与已上传对象。
 func (s *documentService) uploadZip(ctx context.Context, userID, kbID string, directoryID *string, duplicatePolicy string, file UploadFileInput, bucket string) (*dto.UploadTaskItem, string, error) {
-	data, err := io.ReadAll(io.LimitReader(file.Reader, MaxUploadFileSize+1))
+	reader, cleanupZip, err := spoolZipToTemp(file, "zip 文件")
 	if err != nil {
-		return nil, "", apperrors.New(contracts.ErrServiceUnavailable, err)
+		return nil, "", err
 	}
-	if int64(len(data)) > MaxUploadFileSize {
-		return nil, "", apperrors.New(contracts.ErrPayloadTooLarge, nil)
-	}
-	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return nil, "", apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("不是有效的 zip 文件 %q", file.FileName))
-	}
+	defer cleanupZip()
 	if len(reader.File) > maxZipEntries {
 		return nil, "", apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("zip 内条目数超过上限 %d", maxZipEntries))
 	}
@@ -1231,30 +1259,15 @@ func (s *documentService) uploadZip(ctx context.Context, userID, kbID string, di
 	}
 
 	// 上传图片附件并收集映射；失败时补偿删除附件对象。
+	// 附件直接从 zip 条目流式上传（大小已在上方校验），不整体读入内存。
 	attachments := make(map[string]string, len(imageEntries))
 	uploadedKeys := make([]string, 0, len(imageEntries))
 	for _, entry := range imageEntries {
-		rc, openErr := entry.file.Open()
-		if openErr != nil {
-			cleanup()
-			s.removeObjects(ctx, uploadedKeys)
-			return nil, "", apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("读取 zip 条目 %q 失败: %w", entry.name, openErr))
-		}
-		entryData, readErr := io.ReadAll(io.LimitReader(rc, MaxUploadFileSize+1))
-		_ = rc.Close()
-		if readErr != nil {
-			cleanup()
-			s.removeObjects(ctx, uploadedKeys)
-			return nil, "", apperrors.New(contracts.ErrServiceUnavailable, readErr)
-		}
-		if int64(len(entryData)) > MaxUploadFileSize {
-			cleanup()
-			s.removeObjects(ctx, uploadedKeys)
-			return nil, "", apperrors.New(contracts.ErrPayloadTooLarge, nil)
-		}
 		ext := strings.ToLower(path.Ext(entry.name))
 		key := objectstore.BuildObjectKey(userID, kbID, task.ID, "attachments/"+entry.name)
-		if putErr := s.store.PutObject(ctx, key, bytes.NewReader(entryData), int64(len(entryData)), mimeTypeOf(ext)); putErr != nil {
+		if _, putErr := s.putObjectWithHashRetry(ctx, key, func() (io.ReadCloser, error) {
+			return entry.file.Open()
+		}, int64(entry.file.UncompressedSize64), mimeTypeOf(ext)); putErr != nil {
 			cleanup()
 			s.removeObjects(ctx, uploadedKeys)
 			return nil, "", apperrors.New(contracts.ErrServiceUnavailable, putErr)
@@ -1263,16 +1276,12 @@ func (s *documentService) uploadZip(ctx context.Context, userID, kbID string, di
 		attachments[entry.name] = key
 	}
 
-	// 上传主文档内容（流式 + 哈希）。
-	mainReader, openErr := mainEntry.Open()
-	if openErr != nil {
-		cleanup()
-		s.removeObjects(ctx, uploadedKeys)
-		return nil, "", apperrors.New(contracts.ErrInvalidArgument, fmt.Errorf("读取主文档 %q 失败: %w", mainName, openErr))
-	}
+	// 上传主文档内容（流式 + 哈希 + 重试）。
+	mainEntryCopy := mainEntry
 	objectKey := objectstore.BuildObjectKey(userID, kbID, task.ID, mainName)
-	hash, putErr := s.putObjectWithHash(ctx, objectKey, mainReader, mainSize, mimeType)
-	_ = mainReader.Close()
+	hash, putErr := s.putObjectWithHashRetry(ctx, objectKey, func() (io.ReadCloser, error) {
+		return mainEntryCopy.Open()
+	}, mainSize, mimeType)
 	if putErr != nil {
 		cleanup()
 		s.removeObjects(ctx, uploadedKeys)
@@ -1369,6 +1378,56 @@ func (s *documentService) putObjectWithHash(ctx context.Context, objectKey strin
 		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// putObjectWithHashRetry 流式上传并计算 SHA-256，失败时指数退避重试。
+// open 每次调用返回一个可从头读取的新 Reader（zip 条目重新打开；multipart 文件回退偏移）；
+// 不可回退的流应限制为单次尝试（open 内部自守）。
+func (s *documentService) putObjectWithHashRetry(ctx context.Context, objectKey string, open func() (io.ReadCloser, error), size int64, contentType string) (string, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maxUploadAttempts; attempt++ {
+		reader, err := open()
+		if err != nil {
+			return "", err
+		}
+		hash, err := s.putObjectWithHash(ctx, objectKey, reader, size, contentType)
+		_ = reader.Close()
+		if err == nil {
+			return hash, nil
+		}
+		lastErr = err
+		if attempt >= maxUploadAttempts || ctx.Err() != nil {
+			break
+		}
+		logger.Warn("对象上传失败，将重试",
+			zap.String("object_key", objectKey), zap.Int("attempt", attempt+1), zap.Error(err))
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(uploadRetryDelay * time.Duration(attempt)):
+		}
+	}
+	return "", lastErr
+}
+
+// reopenUploadReader 为 multipart 上传流构造可重试的 opener：
+// 可回退（Seek）的流每次重试回到起点；不可回退的流只允许一次尝试。
+func reopenUploadReader(reader io.Reader) func() (io.ReadCloser, error) {
+	attempts := 0
+	return func() (io.ReadCloser, error) {
+		attempts++
+		if seeker, ok := reader.(io.Seeker); ok {
+			if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+				return nil, fmt.Errorf("重置上传流失败: %w", err)
+			}
+		} else if attempts > 1 {
+			return nil, errors.New("上传流不可回退，无法重试")
+		}
+		if rc, ok := reader.(io.ReadCloser); ok {
+			return rc, nil
+		}
+		return io.NopCloser(reader), nil
+	}
 }
 
 // mimeTypeOf 由扩展名推断 Content-Type：Go 标准库不认识的扩展名补常用类型，最后兜底 octet-stream。
