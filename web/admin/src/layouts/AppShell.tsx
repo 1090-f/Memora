@@ -10,10 +10,15 @@ import NotificationsNoneOutlined from '@mui/icons-material/NotificationsNoneOutl
 import QuestionAnswerOutlined from '@mui/icons-material/QuestionAnswerOutlined';
 import TimelineOutlined from '@mui/icons-material/TimelineOutlined';
 import type { SvgIconProps } from '@mui/material';
+import { useQuery } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { useEffect, useRef, useState, type ComponentType } from 'react';
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { GlobalKnowledgeBaseSearch } from '@/components/shared/GlobalKnowledgeBaseSearch';
+import { capabilities } from '@/app/capabilities';
+import { queryKeys } from '@/api/queryKeys';
+import { SidebarConversationList } from '@/features/conversation/components/SidebarConversationList';
+import { listKnowledgeBases } from '@/features/knowledge-base/api';
 import { useAppSelector } from '@/store';
 
 const navigation: Array<{
@@ -21,8 +26,8 @@ const navigation: Array<{
   path: string;
   icon: ComponentType<SvgIconProps>;
 }> = [
-  { label: '知识库', path: '/knowledge-bases', icon: MenuBookOutlined },
   { label: '智能问答', path: '/chat', icon: QuestionAnswerOutlined },
+  { label: '知识库', path: '/knowledge-bases', icon: MenuBookOutlined },
   { label: '运行记录', path: '/runs', icon: TimelineOutlined },
   { label: '长期记忆', path: '/memories', icon: MemoryOutlined },
   { label: 'MCP 工具', path: '/mcp', icon: BuildOutlined },
@@ -93,6 +98,34 @@ export function AppShell() {
     return location.pathname === path;
   };
 
+  // 对话路由 /chat/:kbId/:conversationId? —— 会话列表挂在导航栏“最近对话”区。
+  const chatSegments = location.pathname.startsWith('/chat/')
+    ? location.pathname.slice('/chat/'.length).split('/')
+    : [];
+  const chatKbId = chatSegments[0] || undefined;
+  const chatConversationId = chatSegments[1] || undefined;
+  const projectKbId = location.pathname.startsWith('/kb/')
+    ? location.pathname.slice('/kb/'.length).split('/')[0] || undefined
+    : undefined;
+  const routeKbId = chatKbId || projectKbId;
+  const storedKbId = sessionStorage.getItem('memora:last-active-kb') || undefined;
+  const knowledgeBasesQuery = useQuery({
+    queryKey: queryKeys.knowledgeBases,
+    queryFn: () => listKnowledgeBases({ page: 1, page_size: 100, sort: 'updated_at_desc' }),
+    enabled: capabilities.knowledgeBase === 'available',
+    staleTime: 30_000,
+  });
+  const knowledgeBases = knowledgeBasesQuery.data?.items;
+  const validStoredKbId = storedKbId && (!knowledgeBases || knowledgeBases.some((kb) => kb.id === storedKbId))
+    ? storedKbId
+    : undefined;
+  const activeKbId = routeKbId || validStoredKbId || knowledgeBases?.[0]?.id;
+  const isChatWorkspace = Boolean(chatKbId);
+
+  useEffect(() => {
+    if (routeKbId) sessionStorage.setItem('memora:last-active-kb', routeKbId);
+  }, [routeKbId]);
+
   const title =
     pageTitles[location.pathname] ||
     (location.pathname.startsWith('/chat') ? '智能问答' : undefined) ||
@@ -101,11 +134,12 @@ export function AppShell() {
     (location.pathname.includes('/settings') ? '知识库设置' : 'Memora');
 
   return (
-    <div className="min-h-screen bg-[#fbfcff]">
+    <div className={clsx('min-h-screen', isChatWorkspace ? 'bg-white' : 'bg-[#fbfcff]')}>
       <aside
         aria-label="侧边栏导航"
         className={clsx(
           sidebarBase,
+          isChatWorkspace && 'bg-[#f3f6fa]',
           'w-72 -translate-x-full lg:translate-x-0',
           'transition-[width,transform] duration-200 motion-reduce:transition-none',
           collapsed && 'lg:w-20',
@@ -155,32 +189,45 @@ export function AppShell() {
           </button>
         </div>
 
-        <nav aria-label="主导航" className="mt-2 flex-1 overflow-y-auto px-5 pb-4">
-          {navigation.map((item) => {
-            const active = isPathActive(item.path);
-            const Icon = item.icon;
-            return (
-              <NavLink
-                key={item.path}
-                to={item.path}
-                title={collapsed ? item.label : undefined}
-                aria-label={collapsed ? item.label : undefined}
-                className={clsx(
-                  navLinkBase,
-                  collapsed && 'lg:mx-auto lg:w-12 lg:justify-center lg:px-0',
-                  active
-                    ? 'bg-gradient-to-r from-blue-50 to-indigo-50 text-blue-600'
-                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900',
-                )}
-              >
-                <Icon className="h-5 w-5 shrink-0" />
-                <span className={clsx('truncate', collapsed && 'lg:hidden')}>
-                  {item.label}
-                </span>
-              </NavLink>
-            );
-          })}
-        </nav>
+        <div className="mt-2 flex min-h-0 flex-1 flex-col overflow-hidden">
+          <nav aria-label="主导航" className="shrink-0 px-5 pb-2">
+            {navigation.map((item) => {
+              const active = item.path === '/chat' && chatKbId
+                ? !chatConversationId
+                : isPathActive(item.path);
+              const Icon = item.icon;
+              const itemPath = item.path === '/chat'
+                ? activeKbId ? `/chat/${activeKbId}` : '/knowledge-bases'
+                : item.path;
+              const itemLabel = item.path === '/chat' ? '新问答' : item.label;
+              return (
+                <NavLink
+                  key={item.path}
+                  to={itemPath}
+                  title={collapsed ? itemLabel : undefined}
+                  aria-label={collapsed ? itemLabel : undefined}
+                  className={clsx(
+                    navLinkBase,
+                    collapsed && 'lg:mx-auto lg:w-12 lg:justify-center lg:px-0',
+                    active
+                      ? 'bg-gradient-to-r from-blue-50 to-indigo-50 text-blue-600'
+                      : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900',
+                  )}
+                >
+                  <Icon className="h-5 w-5 shrink-0" />
+                  <span className={clsx('truncate', collapsed && 'lg:hidden')}>
+                    {itemLabel}
+                  </span>
+                </NavLink>
+              );
+            })}
+          </nav>
+          {capabilities.conversation === 'available' && activeKbId && (
+            <div className={clsx('flex min-h-0 flex-1 flex-col', collapsed && 'lg:hidden')}>
+              <SidebarConversationList kbId={activeKbId} selectedId={chatConversationId} />
+            </div>
+          )}
+        </div>
 
         {user && (
           <Link
@@ -214,7 +261,18 @@ export function AppShell() {
         )}
       />
 
-      <header
+      {isChatWorkspace && (
+        <button
+          type="button"
+          onClick={() => setDrawerOpen(true)}
+          aria-label="打开导航菜单"
+          className="fixed left-3 top-3 z-20 flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white/90 text-slate-600 shadow-sm backdrop-blur transition hover:bg-slate-50 lg:hidden"
+        >
+          <MenuOutlined className="h-5 w-5" />
+        </button>
+      )}
+
+      {!isChatWorkspace && <header
         className={clsx(
           'fixed inset-x-0 top-0 z-30 flex h-20 items-center gap-3 border-b border-slate-200/70 bg-white/90 px-4 backdrop-blur-xl md:px-7',
           'transition-[left] duration-200 motion-reduce:transition-none',
@@ -257,16 +315,17 @@ export function AppShell() {
             </Link>
           )}
         </div>
-      </header>
+      </header>}
 
       <main
         className={clsx(
-          'min-h-screen pt-20',
+          'min-h-screen',
+          isChatWorkspace ? 'h-screen overflow-hidden' : 'pt-20',
           collapsed ? 'lg:pl-20' : 'lg:pl-72',
           'transition-[padding-left] duration-200 motion-reduce:transition-none',
         )}
       >
-        <div className="px-4 py-5 md:px-7 md:py-7 lg:px-12 lg:py-7">
+        <div className={clsx(isChatWorkspace ? 'h-full p-0' : 'px-4 py-5 md:px-7 md:py-7 lg:px-12 lg:py-7')}>
           <Outlet />
         </div>
       </main>

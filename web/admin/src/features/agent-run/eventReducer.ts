@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentRunViewState } from './types';
+import type { AgentEvent, AgentRun, AgentRunViewState } from './types';
 
 export const initialAgentRunState: AgentRunViewState = {
   highest_sequence: 0,
@@ -18,10 +18,39 @@ const stringValue = (value: unknown, fallback = '') => typeof value === 'string'
 const numberValue = (value: unknown, fallback = 0) => typeof value === 'number' ? value : fallback;
 
 export type ResetAction = { type: 'RESET_AGENT_RUN_STATE' };
+export type QueueAction = { type: 'SET_AGENT_RUN_QUEUED' };
+export type HydrateAction = { type: 'HYDRATE_AGENT_RUN_STATE'; run: AgentRun };
+export type AgentRunAction = AgentEvent | ResetAction | QueueAction | HydrateAction;
 
-export function reduceAgentEvent(state: AgentRunViewState, event: AgentEvent | ResetAction): AgentRunViewState {
+export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction): AgentRunViewState {
   if (event.type === 'RESET_AGENT_RUN_STATE') {
     return { ...initialAgentRunState };
+  }
+  if (event.type === 'SET_AGENT_RUN_QUEUED') {
+    return { ...initialAgentRunState, status: 'queued' };
+  }
+  if (event.type === 'HYDRATE_AGENT_RUN_STATE') {
+    const run = event.run;
+    const hasUsage = (run.input_tokens ?? 0) > 0 || (run.output_tokens ?? 0) > 0 || (run.total_tokens ?? 0) > 0;
+    return {
+      ...initialAgentRunState,
+      status: run.status,
+      answer: run.final_result ?? '',
+      router: run.execution_mode ? {
+        execution_mode: run.execution_mode,
+        reason_summary: run.router_reason_summary ?? run.router_reason ?? '',
+      } : null,
+      usage: hasUsage ? {
+        input_tokens: run.input_tokens ?? 0,
+        output_tokens: run.output_tokens ?? 0,
+        total_tokens: run.total_tokens ?? 0,
+      } : null,
+      error: run.error_code || run.error_message ? {
+        code: run.error_code ?? 'RUN_FAILED',
+        message: run.error_message ?? 'Agent 运行失败',
+      } : null,
+      resumable: run.status === 'failed' || run.status === 'cancelled',
+    };
   }
   if (event.sequence <= state.highest_sequence) return state;
   const next: AgentRunViewState = { ...state, highest_sequence: event.sequence };
@@ -33,7 +62,13 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentEvent | R
     case 'agent.run.started':
       return { ...next, status: 'running', resumable: false, error: null, answer: '' };
     case 'agent.run.completed':
-      return { ...next, status: 'completed', resumable: false };
+      return {
+        ...next,
+        status: 'completed',
+        resumable: false,
+        rounds: state.rounds.map((round) => round.status === 'running' ? { ...round, status: 'completed' } : round),
+        tools: state.tools.map((tool) => tool.status === 'running' ? { ...tool, status: 'completed' } : tool),
+      };
     case 'agent.run.cancelled':
       return { ...next, status: 'cancelled', resumable: true };
     case 'agent.run.failed':
@@ -103,20 +138,30 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentEvent | R
       };
     }
     case 'agent.react.round.started':
+      {
+        const roundNo = numberValue(payload.round_no, numberValue(payload.round));
+        return {
+          ...next,
+          rounds: [...state.rounds, {
+            round_no: roundNo,
+            status: 'running',
+            action_summary: stringValue(payload.action_summary),
+            ...(payload.tool_name ? { tool_name: stringValue(payload.tool_name) } : {}),
+          }],
+        };
+      }
+    case 'agent.react.round.completed': {
+      const roundNo = numberValue(payload.round_no, numberValue(payload.round));
       return {
         ...next,
-        rounds: [...state.rounds, {
-          round_no: numberValue(payload.round_no),
-          status: 'running',
-          action_summary: stringValue(payload.action_summary),
-          ...(payload.tool_name ? { tool_name: stringValue(payload.tool_name) } : {}),
-        }],
+        rounds: state.rounds.map((round) => round.round_no === roundNo ? { ...round, status: 'completed' } : round),
       };
+    }
     case 'agent.tool.started':
       return {
         ...next,
         tools: [...state.tools, {
-          tool_call_id: stringValue(payload.tool_call_id),
+          tool_call_id: stringValue(payload.tool_call_id) || stringValue(payload.call_id),
           tool_name: stringValue(payload.tool_name),
           status: 'running',
           input_summary: stringValue(payload.input_summary),
@@ -124,11 +169,11 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentEvent | R
       };
     case 'agent.tool.completed':
     case 'agent.tool.call.failed': {
-      const id = stringValue(payload.tool_call_id);
+      const id = stringValue(payload.tool_call_id) || stringValue(payload.call_id);
       return {
         ...next,
         tools: state.tools.map((tool) => tool.tool_call_id === id
-          ? { ...tool, status: event.type === 'agent.tool.completed' ? 'succeeded' : 'failed', output_summary: stringValue(payload.output_summary ?? payload.error_message) }
+          ? { ...tool, status: event.type === 'agent.tool.completed' ? 'completed' : 'failed', output_summary: stringValue(payload.output_summary ?? payload.summary ?? payload.error_message) }
           : tool),
       };
     }
