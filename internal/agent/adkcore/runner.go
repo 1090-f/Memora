@@ -47,6 +47,18 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 		return result, fmt.Errorf("build system prompt: %w", err)
 	}
 
+	// 追加工具调用失败处理规则到系统提示词。
+	// 当 SafeToolMiddleware 将工具错误转为字符串返回给 LLM 时，
+	// LLM 需要知道不应该无限重试同一个失败的工具。
+	systemPrompt += "\n\n[Tool Call Rules]\n" +
+		"When a tool call returns an error (Success=false), do NOT retry the same tool with the same parameters.\n" +
+		"If a tool fails, try at most once more with different parameters if appropriate.\n" +
+		"After a tool has failed twice, do not retry it again. Instead:\n" +
+		"- Try a different tool that might achieve the same goal\n" +
+		"- Use the information you already have to answer the user\n" +
+		"- If you cannot proceed, inform the user about the limitation clearly\n" +
+		"Do not waste iterations by repeatedly calling the same failing tool.\n"
+
 	// 2. 构建 ChatModel
 	chatModel, err := r.ModelFactory(ctx, contracts.ID(request.Context.ChatModelID))
 	if err != nil {
@@ -88,6 +100,8 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 	}
 
 	// 6. 创建 ADK ChatModelAgent
+	// 中间件顺序：SafeToolMiddleware 在最外层（捕获所有工具调用的错误并发布失败事件），
+	// AgentMiddleware 在内层（事件发布、引用收集、预算控制）。
 	chatModelAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:          "assistant",
 		Description:   "A helpful assistant that can use tools to help users.",
@@ -96,6 +110,10 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 		ToolsConfig:   toolsConfig,
 		MaxIterations: maxIterations,
 		Handlers: []adk.ChatModelAgentMiddleware{
+			&SafeToolMiddleware{
+				EventPublisher: eventPublisher,
+				RunID:          request.RunID,
+			},
 			middleware,
 		},
 	})
@@ -133,8 +151,11 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 	// 10. 通过 agent.Run 直接运行（返回异步迭代器）
 	iter := chatModelAgent.Run(execCtx, input, opts...)
 
-	// 11. 迭代事件流并收集最终结果
+	// 11. 迭代事件流并收集最终结果和 token 用量
+	// 注意：ADK 的 AfterAgent 中间件钩子在错误路径上不会被调用，
+	// 因此必须在事件循环中主动累积 token 用量，确保失败时也有记录。
 	var finalContent string
+	var accumulatedUsage contracts.TokenUsage
 	for {
 		event, ok := iter.Next()
 		if !ok {
@@ -147,16 +168,25 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 		if event.Err != nil {
 			err = event.Err
 		}
-		// 从消息输出中提取最终内容
+		// 从消息输出中提取最终内容和 token 用量
 		// GetMessage 返回 (msg, wrappedEvent, error)
 		if msg, _, getErr := adk.GetMessage(event); getErr == nil && msg != nil {
 			if msg.Role == schema.Assistant && msg.Content != "" {
 				finalContent = msg.Content
 			}
+			// 从每条消息中提取 token 用量并累积
+			if msg.ResponseMeta != nil && msg.ResponseMeta.Usage != nil {
+				accumulatedUsage.InputTokens += msg.ResponseMeta.Usage.PromptTokens
+				accumulatedUsage.OutputTokens += msg.ResponseMeta.Usage.CompletionTokens
+				accumulatedUsage.TotalTokens += msg.ResponseMeta.Usage.TotalTokens
+			}
 		}
 	}
 
 	if err != nil {
+		// AfterAgent 不会被调用，使用事件循环中累积的用量
+		result.Usage = accumulatedUsage
+		result.RunID = request.RunID
 		return result, fmt.Errorf("adk agent run: %w", err)
 	}
 
@@ -165,7 +195,7 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 		ExecutionMode: contracts.ExecutionReact,
 		FinalResult:   finalContent,
 		Citations:     citationCollector.Get(),
-		Usage:         middleware.Usage, // 由中间件 AfterAgent 收集
+		Usage:         accumulatedUsage, // AfterAgent 只在成功路径被调用，此处等效
 		StartedAt:     startedAt,
 		EndedAt:       time.Now().UTC(),
 	}, nil

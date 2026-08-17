@@ -90,14 +90,14 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentEvent | R
     case 'agent.step.started':
     case 'agent.step.completed': {
       if (!state.plan) return next;
-      const status = event.type === 'agent.step.started' ? 'running' : 'completed';
+      const stepStatus = event.type === 'agent.step.started' ? 'running' : 'completed';
       const stepNo = numberValue(payload.step_no);
       return {
         ...next,
         plan: {
           ...state.plan,
           steps: state.plan.steps.map((step) => step.step_no === stepNo
-            ? { ...step, status }
+            ? { ...step, status: stepStatus }
             : step),
         },
       };

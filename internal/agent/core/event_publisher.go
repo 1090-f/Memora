@@ -137,7 +137,10 @@ func (p *SequencedEventPublisher) PublishReactRoundCompleted(ctx context.Context
 }
 
 func (p *SequencedEventPublisher) PublishToolCallStarted(ctx context.Context, id contracts.ID, toolName string, callID contracts.ID) error {
-	return p.publish(ctx, id, contracts.EventToolStarted, map[string]any{"tool_name": toolName, "call_id": callID})
+	return p.publish(ctx, id, contracts.EventToolStarted, map[string]any{
+		"tool_name":    toolName,
+		"tool_call_id": callID,
+	})
 }
 
 func (p *SequencedEventPublisher) PublishToolCallCompleted(ctx context.Context, id contracts.ID, callID contracts.ID, toolName string, success bool, summary string) error {
@@ -145,12 +148,16 @@ func (p *SequencedEventPublisher) PublishToolCallCompleted(ctx context.Context, 
 	if !success {
 		eventType = contracts.EventToolCallFailed
 	}
-	return p.publish(ctx, id, eventType, map[string]any{
-		"tool_name": toolName,
-		"call_id":   callID,
-		"success":   success,
-		"summary":   summary,
-	})
+	payload := map[string]any{
+		"tool_name":      toolName,
+		"tool_call_id":   callID,
+		"success":        success,
+		"output_summary": summary,
+	}
+	if !success {
+		payload["error_message"] = summary
+	}
+	return p.publish(ctx, id, eventType, payload)
 }
 
 func (p *SequencedEventPublisher) PublishAnswerDelta(ctx context.Context, id contracts.ID, delta string) error {
