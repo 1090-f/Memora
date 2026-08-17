@@ -1,15 +1,13 @@
 import DownloadOutlined from '@mui/icons-material/DownloadOutlined';
 import OpenInNewOutlined from '@mui/icons-material/OpenInNewOutlined';
-import TuneOutlined from '@mui/icons-material/TuneOutlined';
 import { Alert, Button, Chip, Divider, Paper, Stack, Typography } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
 import { errorMessage } from '@/api/errors';
 import { queryKeys } from '@/api/queryKeys';
 import { getDocumentPreview, getOriginalDocument, retryDocumentPreview } from '../api';
 import { documentStatusLabel } from '../status';
 import type { Document, DocumentProcessing } from '../types';
-import { DocumentProcessingDrawer } from './DocumentProcessingDrawer';
+import { DocumentProcessingPanel } from './DocumentProcessingPanel';
 import { PreviewHost } from './preview/PreviewHost';
 
 const sourceLabel = { manual: '手工文档', file: '文件导入', url: 'URL 导入' } as const;
@@ -25,7 +23,6 @@ function mainStatusLabel(status: DocumentProcessing['processing_status'], indexM
 
 export function DocumentViewer({ document, processing }: { document: Document; processing?: DocumentProcessing }) {
   const queryClient = useQueryClient();
-  const [processingOpen, setProcessingOpen] = useState(false);
   const failureReason = processing?.failure_reason || document.failure_reason;
   const failureStep = processing?.failure_step || document.failure_step;
   const effectiveStatus = processing?.processing_status ?? document.processing_status;
@@ -57,7 +54,7 @@ export function DocumentViewer({ document, processing }: { document: Document; p
   });
 
   return (
-    <Paper variant="outlined" sx={{ p: 3, minHeight: 360, overflow: 'hidden' }}>
+    <Paper variant="outlined" sx={{ p: 3, minHeight: 360 }}>
       <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap">
         <Typography component="h2" variant="h5" fontWeight={750} sx={{ flexGrow: 1 }}>{document.title}</Typography>
         <Chip size="small" label={sourceLabel[document.source_type]} />
@@ -70,7 +67,6 @@ export function DocumentViewer({ document, processing }: { document: Document; p
         {document.source_type === 'url' && document.source_url && (
           <Button size="small" variant="outlined" startIcon={<OpenInNewOutlined />} component="a" href={document.source_url} target="_blank" rel="noopener noreferrer">打开来源页面</Button>
         )}
-        <Button size="small" variant="text" startIcon={<TuneOutlined />} onClick={() => setProcessingOpen(true)}>处理详情</Button>
       </Stack>
       {document.source_url && <Typography mt={1} variant="body2" color="text.secondary">来源：{document.source_url}</Typography>}
       {failureReason && <Alert severity="error" sx={{ mt: 2 }}>失败步骤：{failureStep || '未知'}；{failureReason}</Alert>}
@@ -82,9 +78,14 @@ export function DocumentViewer({ document, processing }: { document: Document; p
       ) : descriptorQuery.error ? (
         <Alert severity="warning">预览信息读取失败：{errorMessage(descriptorQuery.error)}</Alert>
       ) : descriptorQuery.data ? (
-        <PreviewHost descriptor={descriptorQuery.data} title={document.title} onRetry={() => retryPreview.mutate()} retrying={retryPreview.isPending} />
+        <PreviewHost
+          descriptor={descriptorQuery.data}
+          title={document.title}
+          onRetry={() => retryPreview.mutate()}
+          retrying={retryPreview.isPending}
+          processingContent={<DocumentProcessingPanel document={document} processing={processing} />}
+        />
       ) : null}
-      <DocumentProcessingDrawer open={processingOpen} onClose={() => setProcessingOpen(false)} document={document} processing={processing} />
     </Paper>
   );
 }
