@@ -279,8 +279,17 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	// eventSub 会先回放历史事件，再从同一 cursor 继续等待实时事件。
 	eventPub := events.NewRedisEventPublisher(a.redis)
 	eventSub := events.NewRedisEventSubscriber(a.redis)
-	// 用带序列号的发布器包装底层 Redis 发布器，确保事件序号单调递增。
-	sequencedEvents := core.NewSequencedEventPublisher(eventPub)
+
+	// 初始化 Agent 事件持久化仓库，用于断线重连时从 DB 恢复中间事件。
+	agentEventRepo := repository.NewAgentEventRepository(a.db)
+	// PostgresEventPublisher 将事件持久化到 agent_events 表。
+	pgEventPub := events.NewPostgresEventPublisher(agentEventRepo)
+	// CompositeEventPublisher 同时写 Redis（实时 SSE）和 Postgres（持久化）。
+	// Redis 写入失败不阻断流程，PG 写入失败同样不阻断。两个路径相互独立。
+	compositeEventPub := events.NewCompositeEventPublisher(eventPub, pgEventPub)
+
+	// 用带序列号的发布器包装底层组合发布器，确保事件序号单调递增。
+	sequencedEvents := core.NewSequencedEventPublisher(compositeEventPub)
 
 	// 初始化 PlanRunner（Plan-Execute 模式执行器），供路由后的 Plan-Execute 调用。
 	planRunner := core.NewPlanRunner(plannerService, planExecutorService, reviewerService, replanService, planStateStore, sequencedEvents)
@@ -316,6 +325,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 			MaxRunSeconds:      cfg.Agent.MaxRunSeconds,
 		},
 	)
+	adkRunner.ToolCallRepo = toolCallRepo
 	adkService := adkcore.NewService(adkRunner, planRunner, routerService, sequencedEvents, core.NewCitationCollector(), &agentRunRepoAdapter{repo: agentRunRepo})
 	var agentCoreService contracts.AgentRunService = adkService
 
@@ -328,6 +338,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		agentConfigs,
 		contextBuilder,
 		eventSub,
+		agentEventRepo,
 	)
 
 	// 初始化 Agent Worker（异步执行 Agent 运行的后台工作者）
