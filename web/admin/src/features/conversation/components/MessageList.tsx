@@ -94,7 +94,18 @@ export function MessageList({ messages, streamingAnswer, agentRunState, agentRun
 
   const handleCopy = useCallback(async (text: string, messageId: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
       setCopiedId(messageId);
       setTimeout(() => setCopiedId((prev) => prev === messageId ? null : prev), 2000);
     } catch {
