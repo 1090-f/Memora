@@ -19,23 +19,26 @@ type MCPReadOnlyTool struct {
 	target   internalmcp.MCPServerTarget
 	metadata internalmcp.MCPServerTool
 	serverID string // 所属 MCP Server ID，用于调用前的动态可用性检查（第一层/第二层拦截）
+	toolID   string // MCP 工具在 mcp_tools 表中的 ID，用于工具调用记录关联
 	enabled  bool
 	timeout  time.Duration
 }
 
 // NewMCPReadOnlyTool 创建 MCP 只读适配器。enabled 由服务端授权/配置传入，模型不能改变它；
-// serverID 为工具所属 MCP Server 的唯一标识，供 Executor 在调用前动态复核启用状态。
-func NewMCPReadOnlyTool(client internalmcp.MCPClient, target internalmcp.MCPServerTarget, metadata internalmcp.MCPServerTool, serverID string, enabled bool, timeout time.Duration) *MCPReadOnlyTool {
-	return &MCPReadOnlyTool{client: client, target: target, metadata: metadata, serverID: serverID, enabled: enabled, timeout: timeout}
+// serverID 为工具所属 MCP Server 的唯一标识，供 Executor 在调用前动态复核启用状态；
+// toolID 为工具在 mcp_tools 表中的 ID，用于工具调用记录的关联。
+func NewMCPReadOnlyTool(client internalmcp.MCPClient, target internalmcp.MCPServerTarget, metadata internalmcp.MCPServerTool, serverID, toolID string, enabled bool, timeout time.Duration) *MCPReadOnlyTool {
+	return &MCPReadOnlyTool{client: client, target: target, metadata: metadata, serverID: serverID, toolID: toolID, enabled: enabled, timeout: timeout}
 }
 
 // Spec 固化 MCP 工具的只读、联网和启用边界，不包含服务端地址或凭证。
 // SourceID 携带所属 Server ID，供 Executor 在调用前做动态可用性检查。
+// MCPToolID 携带工具在 mcp_tools 表中的 ID，供工具调用记录关联。
 // Name 使用复合格式 "serverID::toolName" 避免不同 Server 的同名工具冲突。
 func (t *MCPReadOnlyTool) Spec() contracts.ToolSpec {
 	// 使用复合名称格式避免工具名冲突
 	compositeName := fmt.Sprintf("%s::%s", t.serverID, t.metadata.Name)
-	return contracts.ToolSpec{Name: compositeName, Description: t.metadata.Description, InputSchema: t.metadata.InputSchema, Type: contracts.ToolTypeMCP, ReadOnly: true, Enabled: t.enabled, SourceID: t.serverID, NetworkRequired: true, Timeout: t.timeout, MaxCalls: 10}
+	return contracts.ToolSpec{Name: compositeName, Description: t.metadata.Description, InputSchema: t.metadata.InputSchema, Type: contracts.ToolTypeMCP, ReadOnly: true, Enabled: t.enabled, SourceID: t.serverID, MCPToolID: t.toolID, NetworkRequired: true, Timeout: t.timeout, MaxCalls: 10}
 }
 
 // Info 将 MCP 的 JSON Schema 转为 Eino schema，模型参数只代表 MCP arguments。

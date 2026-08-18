@@ -2,6 +2,7 @@ package adkcore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -11,6 +12,8 @@ import (
 	"github.com/1090-f/Memora/internal/agent/core"
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/service"
+	"github.com/1090-f/Memora/pkg/logger"
+	"go.uber.org/zap"
 )
 
 // PlanExecuteGraph 基于 Eino compose.Graph 的 Plan-Execute 执行引擎。
@@ -58,12 +61,16 @@ func (g *PlanExecuteGraph) Run(ctx context.Context, request contracts.AgentRunRe
 		return contracts.AgentRunResult{}, fmt.Errorf("plan: %w", err)
 	}
 
+	if err := g.executor.PreparePlan(plan, request); err != nil {
+		return contracts.AgentRunResult{}, fmt.Errorf("prepare plan: %w", err)
+	}
 	// 发布计划创建事件
 	_ = g.eventPublisher.PublishPlanCreated(ctx, request.RunID, plan)
+	toolCallBudget := contracts.NewToolCallBudget(request.Config.MaxToolCalls)
 
 	// 2. 执行 + 重规划循环（最多 MaxReplans 次重规划）
 	for {
-		execErr := g.executePlan(ctx, plan, request)
+		execErr := g.executePlan(ctx, plan, request, toolCallBudget)
 		if execErr == nil {
 			break // 执行成功，退出循环
 		}
@@ -78,20 +85,32 @@ func (g *PlanExecuteGraph) Run(ctx context.Context, request contracts.AgentRunRe
 		if err != nil {
 			return contracts.AgentRunResult{}, fmt.Errorf("replan: %w", err)
 		}
+		if err := g.executor.PreparePlan(plan, request); err != nil {
+			return contracts.AgentRunResult{}, fmt.Errorf("prepare replanned plan: %w", err)
+		}
 		_ = g.eventPublisher.PublishPlanReplanned(ctx, request.RunID, plan)
 	}
 
+	if g.executor.RequiresExternalEvidence(request) && !g.executor.HasSuccessfulExternalEvidence(plan, request) {
+		return contracts.AgentRunResult{}, fmt.Errorf("external information request completed without successful network tool evidence")
+	}
+
 	// 3. 生成最终答案（在审查之前，让审查检查真实结果）
-	finalAnswer := g.generateFinalAnswer(plan, request)
+	finalAnswer, synthErr := g.executor.SynthesizeFinalAnswer(ctx, plan, request)
+	if synthErr != nil {
+		finalAnswer = g.generateFinalAnswer(plan, request)
+	}
+	plan.FinalAnswer = finalAnswer
 
 	// 4. Reviewer 阶段：审查最终答案的完整性
 	reviewResult, err := g.reviewer.Review(ctx, plan, request)
-	if err != nil {
+	if err == nil && reviewResult != nil && !reviewResult.Approved {
 		// 审查失败不阻断流程，记录警告
-		_ = g.eventPublisher.PublishPlanReplanned(ctx, request.RunID, plan)
-	} else if !reviewResult.Approved {
 		// 审查不通过但已无重规划额度，记录问题但仍然返回结果
-		_ = reviewResult
+		if refined, refineErr := g.executor.RefineFinalAnswer(ctx, plan, request, reviewResult); refineErr == nil {
+			finalAnswer = refined
+			plan.FinalAnswer = refined
+		}
 	}
 
 	// 发布最终答案事件
@@ -110,42 +129,211 @@ func (g *PlanExecuteGraph) Run(ctx context.Context, request contracts.AgentRunRe
 }
 
 // generateFinalAnswer 生成最终答案，确保是纯文本格式。
-// 如果 plan.FinalAnswer 为空或包含 markdown 格式，则从步骤输出中提取并格式化。
+// 优先级：plan.FinalAnswer > 步骤输出提取的文本 > Plan Goal > 兜底提示。
+// 工具步骤的 Output 是 ToolResult JSON，需要解析出其中的 text 字段，
+// 而非像旧逻辑那样直接跳过所有 JSON 输出。
 func (g *PlanExecuteGraph) generateFinalAnswer(plan *contracts.Plan, request contracts.AgentRunRequest) string {
-	// 如果已有 final_answer 且不是 markdown 格式，直接使用
-	if plan.FinalAnswer != "" && !containsMarkdown(plan.FinalAnswer) {
-		return plan.FinalAnswer
-	}
-
-	// 从步骤输出中提取答案
-	var answers []string
-	for _, step := range plan.Steps {
-		if step.Status == contracts.PlanStepStatusCompleted && step.Output != "" {
-			// 跳过工具调用的原始输出（通常是 JSON）和模板占位符/无关内容块
-			if !isToolOutput(step.Output) && !isBoilerplateOutput(step.Output) {
-				answers = append(answers, step.Output)
+	// 1. 优先使用 Planner 生成的 final_answer（去除 markdown 格式）
+	if plan.FinalAnswer != "" && !hasCompletedOutput(plan) {
+		answer := stripMarkdown(plan.FinalAnswer)
+		// 检查答案是否仍然是 JSON 格式，如果是则尝试提取文本
+		// 这种情况可能发生在 Planner 基于先验知识生成了包含原始 JSON 的答案
+		if isToolOutput(answer) {
+			extracted := extractTextFromNestedJSON(answer)
+			if extracted != answer {
+				logger.Debug("Planner final_answer 是 JSON 格式，已提取文本",
+					zap.String("run_id", string(request.RunID)),
+					zap.Int("original_len", len(answer)),
+					zap.Int("extracted_len", len(extracted)))
+				return extracted
 			}
 		}
+		return answer
 	}
 
-	// 如果没有提取到答案，使用 plan.FinalAnswer（去除 markdown 格式）
-	if len(answers) == 0 {
-		if plan.FinalAnswer != "" {
-			return stripMarkdown(plan.FinalAnswer)
+	// 2. 从步骤输出中提取有效文本
+	var answers []string
+	var failedSteps []string
+	for _, step := range plan.Steps {
+		if step.Status != contracts.PlanStepStatusCompleted || step.Output == "" {
+			if step.Status == contracts.PlanStepStatusFailed {
+				failedSteps = append(failedSteps, fmt.Sprintf("步骤%d(%s): %s", step.StepNumber, step.Title, step.Error))
+			}
+			continue
 		}
-		return "任务已完成，但未生成具体答案。"
-	}
-
-	// 组合答案
-	result := ""
-	for i, answer := range answers {
-		if i > 0 {
-			result += "\n\n"
+		// 提取步骤输出中的有效文本（工具步骤解析 ToolResult JSON 的 text 字段）
+		text := extractStepOutputText(step.Output)
+		if text == "" {
+			logger.Debug("步骤输出提取文本为空，跳过",
+				zap.Int("step_number", step.StepNumber),
+				zap.String("title", step.Title),
+				zap.String("tool_name", step.ToolName))
+			continue
 		}
-		result += stripMarkdown(answer)
+		if isBoilerplateOutput(text) {
+			logger.Debug("步骤输出被判定为模板占位符，跳过",
+				zap.Int("step_number", step.StepNumber),
+				zap.String("title", step.Title),
+				zap.Int("text_len", len(text)))
+			continue
+		}
+		answers = append(answers, text)
 	}
 
-	return result
+	// 3. 如果有有效答案，组合并返回
+	if len(answers) > 0 {
+		result := ""
+		for i, answer := range answers {
+			if i > 0 {
+				result += "\n\n"
+			}
+			result += stripMarkdown(answer)
+		}
+
+		// 最终检查：确保答案不包含 JSON 格式
+		// 这是最后一道防线，防止任何遗漏的 JSON 格式内容出现在最终答案中
+		if isToolOutput(result) {
+			extracted := extractTextFromNestedJSON(result)
+			if extracted != result {
+				logger.Debug("最终答案是 JSON 格式，已提取文本",
+					zap.String("run_id", string(request.RunID)),
+					zap.Int("original_len", len(result)),
+					zap.Int("extracted_len", len(extracted)))
+				return extracted
+			}
+		}
+
+		return result
+	}
+
+	// 4. 当有失败步骤时，明确返回失败信息，不使用 Goal 兜底
+	// Goal 兜底仅在无失败步骤（如步骤未执行）时使用
+	if len(failedSteps) > 0 {
+		logger.Error("计划执行失败，存在失败步骤",
+			zap.String("run_id", string(request.RunID)),
+			zap.Int("total_steps", len(plan.Steps)),
+			zap.Strings("failed_steps", failedSteps))
+		return fmt.Sprintf("任务执行失败：%s", strings.Join(failedSteps, "；"))
+	}
+
+	// 5. 兜底方案：使用 Plan Goal 作为答案
+	// 当所有步骤输出都为空时（可能是工具调用失败或步骤未执行），
+	// 使用 Planner 生成的 Goal 作为答案，而不是返回无意义的"任务已完成，但未生成具体答案。"
+	if plan.Goal != "" {
+		logger.Warn("所有步骤输出均为空，使用 Plan Goal 作为答案",
+			zap.String("run_id", string(request.RunID)),
+			zap.String("goal", plan.Goal),
+			zap.Int("total_steps", len(plan.Steps)),
+			zap.Int("failed_steps", len(failedSteps)))
+		return plan.Goal
+	}
+
+	// 6. 最终兜底：返回错误信息
+	logger.Error("Plan 无有效输出且无 Goal",
+		zap.String("run_id", string(request.RunID)),
+		zap.Int("total_steps", len(plan.Steps)),
+		zap.Strings("failed_steps", failedSteps))
+	if len(failedSteps) > 0 {
+		return fmt.Sprintf("任务执行失败：%s", strings.Join(failedSteps, "；"))
+	}
+	return "任务执行过程中未生成有效答案，请重试。"
+}
+
+// extractStepOutputText 从步骤输出中提取有效文本。
+func hasCompletedOutput(plan *contracts.Plan) bool {
+	for _, step := range plan.Steps {
+		if step.Status == contracts.PlanStepStatusCompleted && strings.TrimSpace(step.Output) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// 工具调用步骤的 Output 是 ToolResult JSON 序列化字符串，
+// 需要解析出其中的 text 字段；纯 LLM 推理步骤的 Output 是纯文本，直接返回。
+// 注意：MCP 工具返回的 Text 字段可能是嵌套的 JSON（如 {"content":[{"type":"text","text":"..."}]}），
+// 需要进一步解析提取其中的文本内容。
+func extractStepOutputText(output string) string {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return ""
+	}
+	// 非 JSON 文本（纯 LLM 步骤输出），直接返回原文本
+	if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
+		return output
+	}
+	// 尝试解析为 ToolResult JSON，提取 text 字段
+	var toolResult contracts.ToolResult
+	if err := json.Unmarshal([]byte(trimmed), &toolResult); err == nil {
+		// 检查是否真的是 ToolResult 格式（有 call_id 或 tool_name 字段）
+		isToolResult := toolResult.CallID != "" || toolResult.ToolName != ""
+		if isToolResult {
+			if toolResult.Text != "" {
+				// 进一步解析 toolResult.Text，可能是嵌套的 JSON（如 MCP 工具返回格式）
+				return extractTextFromNestedJSON(toolResult.Text)
+			}
+			// text 为空但 StructuredData 有内容时，降级使用 StructuredData
+			if len(toolResult.StructuredData) > 0 {
+				return extractTextFromNestedJSON(string(toolResult.StructuredData))
+			}
+			return ""
+		}
+	}
+	// 非标准 ToolResult 格式或解析失败，尝试从原始 JSON 提取文本
+	return extractTextFromNestedJSON(trimmed)
+}
+
+// extractTextFromNestedJSON 从嵌套的 JSON 字符串中提取文本内容。
+// 支持格式：
+// - {"content":[{"type":"text","text":"..."}]}  (MCP 工具返回格式)
+// - {"text":"..."}
+// - {"content":"..."}
+// 如果无法提取，返回原文本。
+func extractTextFromNestedJSON(jsonStr string) string {
+	trimmed := strings.TrimSpace(jsonStr)
+	if trimmed == "" {
+		return ""
+	}
+
+	// 如果不是 JSON 格式，直接返回
+	if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
+		return jsonStr
+	}
+
+	// 尝试解析为通用 JSON 对象
+	var genericObj map[string]interface{}
+	if err := json.Unmarshal([]byte(trimmed), &genericObj); err != nil {
+		// 解析失败，返回原文本
+		return jsonStr
+	}
+
+	// 格式1: {"content":[{"type":"text","text":"..."}]}
+	if content, ok := genericObj["content"].([]interface{}); ok {
+		var texts []string
+		for _, item := range content {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				if text, ok := itemMap["text"].(string); ok {
+					texts = append(texts, text)
+				}
+			}
+		}
+		if len(texts) > 0 {
+			return strings.Join(texts, "\n")
+		}
+	}
+
+	// 格式2: {"text":"..."}
+	if text, ok := genericObj["text"].(string); ok {
+		return text
+	}
+
+	// 格式3: {"content":"..."}
+	if content, ok := genericObj["content"].(string); ok {
+		return content
+	}
+
+	// 无法提取文本，返回原文本
+	return jsonStr
 }
 
 // containsMarkdown 检查文本是否包含 markdown 格式
@@ -208,9 +396,9 @@ func isBoilerplateOutput(text string) bool {
 	}
 
 	// 2. 检测通用模板标题（MCP 工具返回的标准化报告模板）
+	// 注意：不要把 LLM 总结时常见的自然语言标题（如 "项目内容总结"、"GitHub网页内容分析结果"）
+	// 列入此处，否则会误杀 LLM 生成的有效答案。只保留真正的模板标记。
 	boilerplateHeaders := []string{
-		"GitHub网页内容分析结果",
-		"项目内容总结",
 		"任务执行结果：结构化报告",
 		"标准化分析模板",
 		"注：实际分析需根据",
@@ -341,11 +529,16 @@ func stripRedundantPrefix(text string) string {
 }
 
 // executePlan 执行计划中的所有步骤（DAG 并行）。
-func (g *PlanExecuteGraph) executePlan(ctx context.Context, plan *contracts.Plan, request contracts.AgentRunRequest) error {
+func (g *PlanExecuteGraph) executePlan(ctx context.Context, plan *contracts.Plan, request contracts.AgentRunRequest, toolCallBudget *contracts.ToolCallBudget) error {
 	// 1. 拓扑排序（返回指针，修改直接回写到 plan.Steps）
 	layers, err := g.topologicalSort(plan.Steps)
 	if err != nil {
 		return fmt.Errorf("topological sort: %w", err)
+	}
+
+	// 2a. 零步骤计划直接视为执行失败
+	if len(plan.Steps) == 0 {
+		return fmt.Errorf("execute plan: plan has no steps to execute")
 	}
 
 	// 2. 构建 ToolContext
@@ -357,10 +550,12 @@ func (g *PlanExecuteGraph) executePlan(ctx context.Context, plan *contracts.Plan
 		NetworkEnabled:   request.Context.NetworkEnabled,
 		MaxResultBytes:   request.Config.MaxToolResultBytes,
 		ChatModelID:      request.Context.ChatModelID,
+		ToolCallBudget:   toolCallBudget,
 	}
 
 	// 3. 逐层并行执行
 	for _, layer := range layers {
+		toolCtx.PriorStepOutputs = completedPlanStepOutputs(plan)
 		if err := g.executeParallelLayer(ctx, layer, toolCtx); err != nil {
 			return err
 		}
@@ -496,6 +691,51 @@ func (g *PlanExecuteGraph) executeParallelLayer(ctx context.Context, layer []*co
 // extractCitationsFromPlan 从计划中提取引用。
 func extractCitationsFromPlan(plan *contracts.Plan) []contracts.Citation {
 	var citations []contracts.Citation
+	seen := make(map[string]struct{})
+	for _, step := range plan.Steps {
+		if step.Status != contracts.PlanStepStatusCompleted || step.Output == "" {
+			continue
+		}
+		var result contracts.ToolResult
+		if err := json.Unmarshal([]byte(step.Output), &result); err != nil {
+			continue
+		}
+		for _, citation := range result.Citations {
+			encoded, err := json.Marshal(citation)
+			if err != nil {
+				continue
+			}
+			key := string(encoded)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			citations = append(citations, citation)
+		}
+	}
 	// TODO: 从步骤输出中提取引用
 	return citations
+}
+
+func completedPlanStepOutputs(plan *contracts.Plan) map[int]string {
+	outputs := make(map[int]string)
+	for _, step := range plan.Steps {
+		if step.Status == contracts.PlanStepStatusCompleted && strings.TrimSpace(step.Output) != "" {
+			outputs[step.StepNumber] = dependencyStepOutput(step.Output)
+		}
+	}
+	return outputs
+}
+
+func dependencyStepOutput(output string) string {
+	var result contracts.ToolResult
+	if json.Unmarshal([]byte(output), &result) == nil {
+		if result.Text != "" {
+			return result.Text
+		}
+		if len(result.StructuredData) > 0 {
+			return string(result.StructuredData)
+		}
+	}
+	return output
 }

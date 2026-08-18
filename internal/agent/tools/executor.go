@@ -44,6 +44,26 @@ func (e *Executor) SetAvailabilityChecker(checker ToolAvailabilityChecker) {
 	e.available = checker
 }
 
+// Spec 返回工具的运行规格，供上层执行器实施按工具调用次数限制。
+func (e *Executor) Spec(name string) (contracts.ToolSpec, bool) {
+	if e == nil || e.registry == nil {
+		return contracts.ToolSpec{}, false
+	}
+	value, ok := e.registry.find(name)
+	if !ok {
+		return contracts.ToolSpec{}, false
+	}
+	return value.Spec(), true
+}
+
+// Specs returns a stable snapshot for Plan-Execute tool selection.
+func (e *Executor) Specs() []contracts.ToolSpec {
+	if e == nil || e.registry == nil {
+		return nil
+	}
+	return e.registry.Specs()
+}
+
 // Execute 统一执行前置授权、参数大小/合法性、超时和结果归一化检查。
 func (e *Executor) Execute(ctx context.Context, toolContext contracts.ToolContext, call contracts.ToolCall) (contracts.ToolResult, error) {
 	if e == nil || e.registry == nil {

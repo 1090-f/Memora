@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/1090-f/Memora/internal/contracts"
@@ -141,9 +142,30 @@ func (r *Registry) find(name string) (Tool, bool) {
 		return nil, false
 	}
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	value, ok := r.tools[name]
-	return value, ok
+	if ok {
+		r.mu.RUnlock()
+		return value, ok
+	}
+	// 降级：尝试短名匹配（处理 LLM 省略 serverID:: 前缀的情况）
+	// 仅当匹配到唯一结果时才返回，避免不同 Server 的同名工具冲突
+	if idx := strings.LastIndex(name, "::"); idx >= 0 {
+		shortName := name[idx+2:]
+		var matched Tool
+		matchCount := 0
+		for fullName, tool := range r.tools {
+			if strings.HasSuffix(fullName, "::"+shortName) || fullName == shortName {
+				matched = tool
+				matchCount++
+			}
+		}
+		r.mu.RUnlock()
+		if matchCount == 1 {
+			return matched, true
+		}
+	}
+	r.mu.RUnlock()
+	return nil, false
 }
 
 func decodeResult(text string) (contracts.ToolResult, error) {

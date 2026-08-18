@@ -3,6 +3,7 @@ import type { PageResult } from '@/features/knowledge-base/types';
 import type {
   AgentRun,
   AgentRunListItem,
+  AgentToolCall,
   CreateAgentRunResponse,
 } from './types';
 
@@ -10,6 +11,8 @@ export const listAgentRuns = (params: Record<string, unknown> = {}) =>
   apiRequest<PageResult<AgentRunListItem>>({ url: '/agent/runs', params });
 export const getAgentRun = (id: string) =>
   apiRequest<AgentRun>({ url: `/agent/runs/${id}` });
+export const getAgentRunToolCalls = (runId: string) =>
+  apiRequest<AgentToolCall[]>({ url: `/agent/runs/${runId}/tool-calls` });
 export const createAgentRun = (input: {
   knowledge_base_id: string;
   conversation_id: string;

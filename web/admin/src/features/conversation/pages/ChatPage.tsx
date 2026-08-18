@@ -14,6 +14,7 @@ import { ChatComposer } from '../components/ChatComposer';
 import { MessageList } from '../components/MessageList';
 import type { AgentRunViewState } from '@/features/agent-run/types';
 import type { Citation, Message } from '../types';
+import { v4 as uuidv4 } from 'uuid';
 
 const conversationStorageKey = (kbId: string) => `memora:conversation:${kbId}`;
 
@@ -206,7 +207,7 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
             updateMessages((current) => {
               if (current.some((m) => m.agent_run_id === latestRunId && m.role === 'assistant')) return current;
               return [...current, {
-                id: crypto.randomUUID(),
+                id: uuidv4(),
                 role: 'assistant',
                 content: answer,
                 agent_run_id: latestRunId,
@@ -327,7 +328,7 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
     if (answer !== undefined && answer !== null && activeConversationIdRef.current === streamConversationId) {
       updateMessages((current) => {
         const newMessage: Message = {
-          id: crypto.randomUUID(),
+          id: uuidv4(),
           role: 'assistant',
           content: answer,
           agent_run_id: runId,
@@ -372,7 +373,7 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
       const id = await getConversationId();
       setDraft('');
 
-      const userMessageId = crypto.randomUUID();
+      const userMessageId = uuidv4();
       updateMessages((current) => [...current, {
         id: userMessageId, role: 'user', content: query, agent_run_id: null, created_at: new Date().toISOString(),
       }]);
@@ -413,7 +414,7 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
           // Guard: 避免同一 run 重复追加助手消息（切换会话后可能被 replay 逻辑重复写入）
           if (current.some((m) => m.agent_run_id === response.run_id && m.role === 'assistant')) return current;
           return [...current, {
-            id: crypto.randomUUID(), role: 'assistant', content: answer, agent_run_id: response.run_id,
+            id: uuidv4(), role: 'assistant', content: answer, agent_run_id: response.run_id,
             status: completedRun.status || 'completed', citations: normalizeCitations(runStateRef.current.citations), created_at: new Date().toISOString(),
           }];
         });

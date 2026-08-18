@@ -120,3 +120,24 @@ export interface AgentRunViewState {
   error: { code: string; message: string } | null;
   resumable: boolean;
 }
+
+export interface AgentToolCall {
+  id: string;
+  tool_name: string;
+  tool_type: string;
+  status: 'running' | 'succeeded' | 'failed' | 'timeout' | 'cancelled';
+  react_round_no?: number;
+  input_summary?: string;
+  output_summary?: string;
+  arguments_redacted?: string | null;
+  result_meta?: unknown;
+  response_bytes?: number | null;
+  is_truncated?: boolean;
+  error_code?: string | null;
+  error_message?: string | null;
+  duration_ms?: number | null;
+  started_at: string;
+  ended_at?: string | null;
+}
+
+export type AgentToolCallStatus = AgentToolCall['status'];
