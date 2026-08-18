@@ -90,7 +90,7 @@ func (r *memoryRetriever) Retrieve(
 	}
 
 	// 记忆检索入口日志
-	logger.Info("[记忆检索-入口] 开始检索记忆",
+	logger.Debug("[记忆检索-入口] 开始检索记忆",
 		zap.String("user_id", userID),
 		zap.String("query", query.Query),
 		zap.Int("top_k", query.TopK),
@@ -155,7 +155,7 @@ func (r *memoryRetriever) Retrieve(
 		logger.Error("[记忆检索-向量检索] 失败", zap.Error(vr.err))
 		return nil, fmt.Errorf("vector search: %w", vr.err)
 	}
-	logger.Info("[记忆检索-向量检索] 完成",
+	logger.Debug("[记忆检索-向量检索] 完成",
 		zap.Int("结果数量", len(vr.results)),
 	)
 
@@ -164,7 +164,7 @@ func (r *memoryRetriever) Retrieve(
 		logger.Warn("[记忆检索-关键词检索] 失败，降级为纯向量检索", zap.Error(kr.err))
 		kr.results = nil
 	} else {
-		logger.Info("[记忆检索-关键词检索] 完成",
+		logger.Debug("[记忆检索-关键词检索] 完成",
 			zap.Int("结果数量", len(kr.results)),
 		)
 	}
@@ -196,7 +196,7 @@ func (r *memoryRetriever) Retrieve(
 	}
 
 	// 记忆检索完成日志
-	logger.Info("[记忆检索-完成] 返回最终结果",
+	logger.Debug("[记忆检索-完成] 返回最终结果",
 		zap.Int("最终结果数量", len(ranked)),
 	)
 
