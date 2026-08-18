@@ -16,6 +16,7 @@ type Config struct {
 	JWT              JWTConfig              `mapstructure:"jwt"`
 	DocumentConsumer DocumentConsumerConfig `mapstructure:"document_consumer"`
 	Outbox           OutboxConfig           `mapstructure:"outbox"`
+	IndexCleanup     IndexCleanupConfig     `mapstructure:"index_cleanup"`
 	MCP              MCPConfig              `mapstructure:"mcp"`
 	Log              LogConfig              `mapstructure:"log"`
 	CORS             CORSConfig             `mapstructure:"cors"`
@@ -87,6 +88,13 @@ type DocumentConsumerConfig struct {
 type OutboxConfig struct {
 	PollInterval time.Duration `mapstructure:"poll_interval"`
 	BatchSize    int           `mapstructure:"batch_size"`
+}
+
+// IndexCleanupConfig 定义旧索引版本与已删除文档索引数据的后台清理参数。
+type IndexCleanupConfig struct {
+	Enabled   bool          `mapstructure:"enabled"`
+	Interval  time.Duration `mapstructure:"interval"`
+	Retention int           `mapstructure:"retention"` // 保留的旧版本数（0 表示只保留当前 active 版本）
 }
 
 // PreviewConfig 定义视觉预览的异步消费者与渲染资源上限。

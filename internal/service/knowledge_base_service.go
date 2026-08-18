@@ -436,6 +436,12 @@ func (s *knowledgeBaseService) UpdateSearchConfig(ctx context.Context, userID, k
 		}
 		cfg.MinVectorScore = *req.MinVectorScore
 	}
+	if req.AmbiguousScore != nil {
+		if *req.AmbiguousScore < 0 || *req.AmbiguousScore > maxMinVectorScore {
+			return nil, apperrors.ErrInvalidArgument
+		}
+		cfg.AmbiguousScore = *req.AmbiguousScore
+	}
 	if req.RerankerModelID != nil && *req.RerankerModelID != "" {
 		if _, err := s.modelConfigs.FindEnabledByID(ctx, userID, *req.RerankerModelID); err != nil {
 			return nil, apperrors.New(contracts.ErrInvalidArgument, err)
@@ -465,6 +471,7 @@ func defaultSearchConfigEntity(kbID string) *entity.SearchConfig {
 		RerankerThreshold:    config.RerankerThreshold,
 		MinimumEffectiveRate: config.MinimumEffectiveResult,
 		MinVectorScore:       config.MinVectorScore,
+		AmbiguousScore:       config.AmbiguousScore,
 	}
 }
 
@@ -577,6 +584,6 @@ func searchConfigResponse(cfg *entity.SearchConfig) *dto.SearchConfigResponse {
 	return &dto.SearchConfigResponse{
 		KeywordTopK: cfg.KeywordTopK, VectorTopK: cfg.VectorTopK, RRFK: cfg.RRFK,
 		RRFTopK: cfg.RRFTopK, RerankerTopK: cfg.RerankerTopK, RerankerThreshold: cfg.RerankerThreshold,
-		MinimumEffectiveResult: cfg.MinimumEffectiveRate, MinVectorScore: cfg.MinVectorScore, RerankerModelID: cfg.RerankerModelID,
+		MinimumEffectiveResult: cfg.MinimumEffectiveRate, MinVectorScore: cfg.MinVectorScore, AmbiguousScore: cfg.AmbiguousScore, RerankerModelID: cfg.RerankerModelID,
 	}
 }

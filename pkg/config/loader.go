@@ -104,6 +104,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("document_consumer.max_attempts", 3)
 	v.SetDefault("outbox.poll_interval", "500ms")
 	v.SetDefault("outbox.batch_size", 100)
+	v.SetDefault("index_cleanup.enabled", true)
+	v.SetDefault("index_cleanup.interval", "1h")
+	v.SetDefault("index_cleanup.retention", 1)
 	v.SetDefault("preview.enabled", true)
 	v.SetDefault("preview.consumer.stream", "memora:document:preview")
 	v.SetDefault("preview.consumer.group", "memora-preview")
@@ -186,6 +189,9 @@ func bindEnvironment(v *viper.Viper) {
 		"document_consumer.max_attempts":               "MEMORA_DOCUMENT_CONSUMER_MAX_ATTEMPTS",
 		"outbox.poll_interval":                         "MEMORA_OUTBOX_POLL_INTERVAL",
 		"outbox.batch_size":                            "MEMORA_OUTBOX_BATCH_SIZE",
+		"index_cleanup.enabled":                        "MEMORA_INDEX_CLEANUP_ENABLED",
+		"index_cleanup.interval":                       "MEMORA_INDEX_CLEANUP_INTERVAL",
+		"index_cleanup.retention":                      "MEMORA_INDEX_CLEANUP_RETENTION",
 		"preview.enabled":                              "MEMORA_PREVIEW_ENABLED",
 		"preview.consumer.stream":                      "MEMORA_PREVIEW_CONSUMER_STREAM",
 		"preview.consumer.group":                       "MEMORA_PREVIEW_CONSUMER_GROUP",

@@ -70,6 +70,7 @@ func (r *searchConfigRepository) Update(ctx context.Context, cfg *entity.SearchC
 			"reranker_threshold":        cfg.RerankerThreshold,
 			"minimum_effective_results": cfg.MinimumEffectiveRate,
 			"min_vector_score":          cfg.MinVectorScore,
+			"ambiguous_score":           cfg.AmbiguousScore,
 			"reranker_model_id":         cfg.RerankerModelID,
 			"updated_at":                time.Now().UTC(),
 		})

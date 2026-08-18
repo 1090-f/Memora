@@ -35,6 +35,9 @@ type DocumentProcessService interface {
 	UploadTaskAttachments(ctx context.Context, userID, taskID contracts.ID, files []UploadFileInput) error
 	// RecoverStaleTasks 恢复卡在 running 且超过租约的任务，返回恢复数量。
 	RecoverStaleTasks(ctx context.Context) (int64, error)
+	// CleanupInactiveIndexes 清理已软删除文档与超出保留版本的旧索引 Chunk/向量。
+	// retention 为保留的旧版本数（0 表示只保留当前 active 版本）；返回删除的向量+Chunk 数量。
+	CleanupInactiveIndexes(ctx context.Context, retention int) (int64, error)
 	// CleanupImportTasks 清理知识库内已结束（succeeded/skipped/failed）的导入任务，
 	// 保留 pending/running；返回删除数量。
 	CleanupImportTasks(ctx context.Context, userID, knowledgeBaseID contracts.ID) (int64, error)

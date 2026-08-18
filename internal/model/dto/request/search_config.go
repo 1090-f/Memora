@@ -10,5 +10,6 @@ type UpdateSearchConfigRequest struct {
 	RerankerThreshold      *float64 `json:"reranker_threshold" binding:"omitempty"`
 	MinimumEffectiveResult *int     `json:"minimum_effective_results" binding:"omitempty,gt=0"`
 	MinVectorScore         *float64 `json:"min_vector_score" binding:"omitempty,gte=0,lte=1"`
+	AmbiguousScore         *float64 `json:"ambiguous_score" binding:"omitempty,gte=0,lte=1"`
 	RerankerModelID        *string  `json:"reranker_model_id" binding:"omitempty"`
 }

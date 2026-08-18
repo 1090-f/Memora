@@ -78,5 +78,6 @@ type SearchConfigResponse struct {
 	RerankerThreshold      *float64 `json:"reranker_threshold,omitempty"` // RerankerThreshold 重排序分数阈值，低于该分数的结果被过滤，可选
 	MinimumEffectiveResult int      `json:"minimum_effective_results"`    // MinimumEffectiveResult 最低有效结果数，防止检索结果过少
 	MinVectorScore         float64  `json:"min_vector_score"`             // MinVectorScore 向量相似度最低阈值（0~1），0 表示不启用过滤
+	AmbiguousScore         float64  `json:"ambiguous_score"`              // AmbiguousScore 最高向量相似度低于该值时判为 ambiguous（0~1），0 表示不启用
 	RerankerModelID        *string  `json:"reranker_model_id,omitempty"`  // RerankerModelID 重排序模型配置 ID，可选
 }

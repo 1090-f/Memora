@@ -40,11 +40,14 @@ type SearchConfig struct {
 	// MinVectorScore 向量相似度最低阈值（0~1），召回层过滤低于该分数的结果，
 	// 0 表示不启用过滤。
 	MinVectorScore float64 `json:"min_vector_score"`
+	// AmbiguousScore 最高向量相似度低于该值时知识状态判为 ambiguous（有依据但无法明确支持结论），
+	// 0 表示不启用三态判定。
+	AmbiguousScore float64 `json:"ambiguous_score"`
 }
 
 // DefaultSearchConfig 返回具有合理默认值的 SearchConfig。
 func DefaultSearchConfig() SearchConfig {
-	return SearchConfig{KeywordTopK: 30, VectorTopK: 30, RRFK: 60, RRFTopK: 20, RerankerTopK: 8, MinimumEffectiveResult: 1, MinVectorScore: 0.3}
+	return SearchConfig{KeywordTopK: 30, VectorTopK: 30, RRFK: 60, RRFTopK: 20, RerankerTopK: 8, MinimumEffectiveResult: 1, MinVectorScore: 0.3, AmbiguousScore: 0.45}
 }
 
 // RetrievalRequest 表示检索相关文档的请求。

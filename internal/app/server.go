@@ -202,7 +202,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		_ = a.Close()
 		return err
 	}
-	a.background = background.NewManager(a.redis, importTasks, previewRepo, repository.NewTaskOutboxRepository(a.db), documentProcessService, previewProcessor, cfg.DocumentConsumer, cfg.Preview, cfg.Outbox)
+	a.background = background.NewManager(a.redis, importTasks, previewRepo, repository.NewTaskOutboxRepository(a.db), documentProcessService, previewProcessor, cfg.DocumentConsumer, cfg.Preview, cfg.Outbox, cfg.IndexCleanup)
 
 	// 初始化 ContextBuilder（Phase 3）
 	messages := repository.NewMessageRepository(a.db)
