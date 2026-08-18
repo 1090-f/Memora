@@ -93,6 +93,79 @@ func TestIntegrationVectorSearchVisibilityAndModelFilter(t *testing.T) {
 	}
 }
 
+// TestIntegrationCleanupInactiveVersions 验证旧索引版本后台清理：
+// 保留当前 active + retention 个旧版本，删除更旧版本；已软删除文档全部清理；
+// 正在构建的新版本（active 为 NULL 或 active+1）不受影响。
+func TestIntegrationCleanupInactiveVersions(t *testing.T) {
+	db := testutil.OpenRAGTestDB(t)
+	ctx := context.Background()
+	vectors := NewVectorRepository(db)
+	chunks := NewDocumentChunkRepository(db)
+
+	userID := testutil.NewID()
+	kbID := testutil.NewID()
+	modelID := testutil.NewID()
+	testutil.SeedUser(t, db, userID)
+	testutil.SeedKnowledgeBase(t, db, kbID, userID, "测试知识库")
+	testutil.SeedModelConfig(t, db, modelID, userID, "embedding", 3)
+
+	// D1：active=3，v1/v2 为旧版本，v3 为当前版本；retention=1 时应删除 v1，保留 v2/v3。
+	d1 := testutil.NewID()
+	testutil.SeedDocument(t, db, d1, userID, kbID, "多版本文档", "succeeded", 3, &modelID)
+	for _, version := range []int{1, 2, 3} {
+		chunkID := testutil.NewID()
+		testutil.SeedChunk(t, db, chunkID, userID, kbID, d1, version, "版本内容", version)
+		testutil.SeedVector(t, db, testutil.NewID(), userID, kbID, d1, chunkID, version, modelID, []float32{1, 0, 0})
+	}
+
+	// D2：active 为 NULL（首次导入进行中）→ 其 v1 数据是正在构建的新版本，不得删除。
+	d2 := testutil.NewID()
+	testutil.SeedDocument(t, db, d2, userID, kbID, "构建中文档", "parsing", 0, nil)
+	testutil.SeedChunk(t, db, testutil.NewID(), userID, kbID, d2, 0, "构建中内容", 1)
+
+	// D3：已软删除 → 全部清理。
+	d3 := testutil.NewID()
+	d3Chunk := testutil.NewID()
+	testutil.SeedDocument(t, db, d3, userID, kbID, "已删除文档", "succeeded", 1, &modelID)
+	testutil.SeedChunk(t, db, d3Chunk, userID, kbID, d3, 0, "已删除内容", 1)
+	testutil.SeedVector(t, db, testutil.NewID(), userID, kbID, d3, d3Chunk, 1, modelID, []float32{1, 0, 0})
+	testutil.SoftDeleteDocument(t, db, d3)
+
+	if n, err := vectors.CleanupInactive(ctx, 1); err != nil {
+		t.Fatalf("清理向量失败: %v", err)
+	} else if n != 2 {
+		t.Fatalf("应删除 2 条向量（D1 v1 + D3），实际 %d", n)
+	}
+	if n, err := chunks.CleanupInactive(ctx, 1); err != nil {
+		t.Fatalf("清理 Chunk 失败: %v", err)
+	} else if n != 2 {
+		t.Fatalf("应删除 2 条 Chunk（D1 v1 + D3），实际 %d", n)
+	}
+
+	// 校验剩余：D1 的 v2/v3 保留，D2 构建中内容保留。
+	var remainingChunks int64
+	if err := db.Table("document_chunks").Where("document_id = ?", d1).Count(&remainingChunks).Error; err != nil {
+		t.Fatalf("统计 D1 Chunk 失败: %v", err)
+	}
+	if remainingChunks != 2 {
+		t.Fatalf("D1 应保留 v2/v3 共 2 条 Chunk，实际 %d", remainingChunks)
+	}
+	var d2Chunks int64
+	if err := db.Table("document_chunks").Where("document_id = ?", d2).Count(&d2Chunks).Error; err != nil {
+		t.Fatalf("统计 D2 Chunk 失败: %v", err)
+	}
+	if d2Chunks != 1 {
+		t.Fatalf("D2 构建中 Chunk 不应被清理，实际 %d", d2Chunks)
+	}
+	var d3Chunks int64
+	if err := db.Table("document_chunks").Where("document_id = ?", d3).Count(&d3Chunks).Error; err != nil {
+		t.Fatalf("统计 D3 Chunk 失败: %v", err)
+	}
+	if d3Chunks != 0 {
+		t.Fatalf("D3 已删除文档 Chunk 应全部清理，实际 %d", d3Chunks)
+	}
+}
+
 // TestIntegrationKeywordSearchActiveVersionVisibility 验证修复 1 在真实 ParadeDB 上的行为：
 // 可检索性完全由 active 索引版本 + 软删除 + 归属决定，与 processing_status 无关。
 func TestIntegrationKeywordSearchActiveVersionVisibility(t *testing.T) {

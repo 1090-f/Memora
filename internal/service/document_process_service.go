@@ -648,6 +648,28 @@ func (s *documentProcessService) RecoverStaleTasks(ctx context.Context) (int64, 
 	return s.tasks.RecoverStale(ctx, staleBefore)
 }
 
+// CleanupInactiveIndexes 清理已软删除文档与超出保留版本的旧索引 Chunk/向量。
+// 先删向量（外键引用 Chunk）再删 Chunk；正在构建的新版本不受影响。
+func (s *documentProcessService) CleanupInactiveIndexes(ctx context.Context, retention int) (int64, error) {
+	var total int64
+	if s.vectors != nil {
+		if n, err := s.vectors.CleanupInactive(ctx, retention); err != nil {
+			return total, err
+		} else {
+			total += n
+		}
+	}
+	if s.chunks != nil {
+		if n, err := s.chunks.CleanupInactive(ctx, retention); err != nil {
+			return total, err
+		} else {
+			total += n
+		}
+	}
+	logger.Info("旧索引版本清理完成", zap.Int64("deleted", total), zap.Int("retention", retention))
+	return total, nil
+}
+
 // CleanupImportTasks 清理知识库内已结束的导入任务记录，保留进行中任务。
 func (s *documentProcessService) CleanupImportTasks(ctx context.Context, userID, kbID contracts.ID) (int64, error) {
 	count, err := s.tasks.DeleteCompletedByKB(ctx, string(userID), string(kbID))

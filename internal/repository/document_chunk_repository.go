@@ -126,3 +126,22 @@ func (r *documentChunkRepository) ListIndexVersions(ctx context.Context, userID,
 	}
 	return versions, nil
 }
+
+// CleanupInactive 清理已软删除文档的全部 Chunk 与超出保留版本的旧索引 Chunk。
+// 可见性只由 active_index_version 控制；仅删除 version < active_index_version - retention 的旧版本，
+// 正在构建的新版本（active 为 NULL 或 active+1）不受影响。
+func (r *documentChunkRepository) CleanupInactive(ctx context.Context, retention int) (int64, error) {
+	if retention < 0 {
+		retention = 0
+	}
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Exec(`
+		DELETE FROM document_chunks dc
+		USING documents d
+		WHERE dc.document_id = d.id
+		  AND (d.deleted_at IS NOT NULL
+		       OR (d.active_index_version IS NOT NULL AND dc.index_version < d.active_index_version - ?))`, retention)
+	if result.Error != nil {
+		return 0, fmt.Errorf("清理旧索引 Chunk 失败: %w", result.Error)
+	}
+	return result.RowsAffected, nil
+}
