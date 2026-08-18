@@ -6,8 +6,9 @@ import ErrorOutlineRounded from '@mui/icons-material/ErrorOutlineRounded';
 import ExpandMoreRounded from '@mui/icons-material/ExpandMoreRounded';
 import SyncRounded from '@mui/icons-material/SyncRounded';
 import { Box, Chip, Collapse, IconButton, Stack, Typography } from '@mui/material';
-import { useState } from 'react';
-import type { AgentRunViewState } from '../types';
+import { useCallback, useEffect, useState } from 'react';
+import { getAgentRunToolCalls } from '../api';
+import type { AgentRunViewState, AgentToolCall } from '../types';
 
 const statusText = {
   idle: '等待中',
@@ -18,13 +19,45 @@ const statusText = {
   cancelled: '已停止',
 } as const;
 
+const toolStatusText: Record<string, string> = {
+  running: '进行中',
+  succeeded: '成功',
+  failed: '失败',
+  timeout: '超时',
+  cancelled: '已取消',
+};
+
 function citationName(citation: Record<string, unknown>, index: number) {
   const value = citation.document_title || citation.title || citation.url;
   return typeof value === 'string' && value ? value : `引用 ${index + 1}`;
 }
 
-export function InlineAgentRun({ state }: { state: AgentRunViewState }) {
+function formatDuration(durationMs?: number | null) {
+  if (typeof durationMs !== 'number') return '';
+  if (durationMs < 1000) return `${durationMs} ms`;
+  return `${(durationMs / 1000).toFixed(2)} s`;
+}
+
+function DetailBlock({ label, value, empty }: { label: string; value?: string; empty: string }) {
+  return (
+    <Stack spacing={0.4}>
+      <Typography sx={{ color: '#6d788a', fontSize: 11, fontWeight: 700 }}>{label}</Typography>
+      {value ? (
+        <Box component="pre" sx={{ m: 0, p: 1.2, borderRadius: 1.2, bgcolor: '#f1f4f9', color: '#3c4759', fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontFamily: 'Consolas, "SFMono-Regular", monospace', maxHeight: 240, overflow: 'auto' }}>
+          {value}
+        </Box>
+      ) : (
+        <Typography sx={{ color: '#a5adbc', fontSize: 11.5, fontStyle: 'italic' }}>{empty}</Typography>
+      )}
+    </Stack>
+  );
+}
+
+export function InlineAgentRun({ state, runId }: { state: AgentRunViewState; runId?: string }) {
   const [expanded, setExpanded] = useState(state.status === 'running' || state.status === 'queued');
+  const [toolRecords, setToolRecords] = useState<AgentToolCall[] | null>(null);
+  const [recordsLoading, setRecordsLoading] = useState(false);
+  const [expandedToolKey, setExpandedToolKey] = useState<string | null>(null);
   const running = state.status === 'running' || state.status === 'queued';
   const failed = state.status === 'failed';
   const steps = state.plan?.steps ?? state.rounds.map((round) => ({
@@ -32,7 +65,49 @@ export function InlineAgentRun({ state }: { state: AgentRunViewState }) {
     title: round.action_summary || `执行轮次 ${round.round_no}`,
     status: round.status,
   }));
-  const detailCount = steps.length + state.tools.length + state.citations.length;
+
+  const fetchToolRecords = useCallback(async () => {
+    if (!runId || toolRecords !== null || recordsLoading) return;
+    setRecordsLoading(true);
+    try {
+      const records = await getAgentRunToolCalls(runId);
+      setToolRecords(Array.isArray(records) ? records : []);
+    } catch {
+      setToolRecords([]);
+    } finally {
+      setRecordsLoading(false);
+    }
+  }, [runId, toolRecords, recordsLoading]);
+
+  // 当链路中没有实时工具事件（如 Plan-Execute 模式）时，从服务端补齐工具调用记录。
+  useEffect(() => {
+    if (!runId || running || state.tools.length > 0) return;
+    void fetchToolRecords();
+  }, [runId, running, state.tools.length, fetchToolRecords]);
+
+  // 归一化要展示的工具条目：优先使用实时事件，其次使用服务端记录。
+  const tools = state.tools.length > 0
+    ? state.tools.map((tool, index) => ({
+        key: tool.tool_call_id || `live-${index}`,
+        name: tool.tool_name,
+        record: toolRecords && toolRecords.length > index ? toolRecords[index] : undefined,
+        fallbackInput: tool.input_summary,
+        fallbackOutput: tool.output_summary,
+      }))
+    : (toolRecords ?? []).map((record, index) => ({
+        key: record.id || `${record.tool_name}-${index}`,
+        name: record.tool_name,
+        record,
+        fallbackInput: undefined,
+        fallbackOutput: undefined,
+      }));
+
+  const handleToolClick = (key: string) => {
+    if (state.tools.length > 0) void fetchToolRecords();
+    setExpandedToolKey((prev) => (prev === key ? null : key));
+  };
+
+  const detailCount = steps.length + tools.length + state.citations.length;
 
   if (state.status === 'idle') return null;
 
@@ -107,14 +182,64 @@ export function InlineAgentRun({ state }: { state: AgentRunViewState }) {
             </Stack>
           )}
 
-          {state.tools.length > 0 && (
+          {tools.length > 0 && (
             <Stack spacing={0.7}>
               <Typography sx={{ color: '#6d788a', fontSize: 11, fontWeight: 700 }}>工具调用</Typography>
               <Stack direction="row" useFlexGap flexWrap="wrap" gap={0.7}>
-                {state.tools.map((tool) => (
-                  <Chip key={tool.tool_call_id} size="small" icon={<BuildOutlined />} label={tool.tool_name} variant="outlined" sx={{ bgcolor: '#fff', borderColor: '#dde3ec', color: '#536078', fontSize: 11, '& .MuiChip-icon': { color: '#5b6ee1' } }} />
-                ))}
+                {tools.map((tool) => {
+                  const failedTool = tool.record?.status === 'failed';
+                  return (
+                    <Chip
+                      key={tool.key}
+                      size="small"
+                      icon={<BuildOutlined />}
+                      label={tool.name}
+                      clickable
+                      variant="outlined"
+                      onClick={() => handleToolClick(tool.key)}
+                      sx={{
+                        bgcolor: expandedToolKey === tool.key ? '#e8edff' : '#fff',
+                        borderColor: expandedToolKey === tool.key ? '#aebdff' : '#dde3ec',
+                        color: expandedToolKey === tool.key ? '#394ec8' : failedTool ? '#bd4a4a' : '#536078',
+                        fontSize: 11,
+                        cursor: 'pointer',
+                        '& .MuiChip-icon': { color: failedTool ? '#bd4a4a' : '#5b6ee1' },
+                        '&:hover': { bgcolor: '#f2f5ff' },
+                      }}
+                    />
+                  );
+                })}
               </Stack>
+              {recordsLoading && !toolRecords && (
+                <Typography sx={{ color: '#9aa4b5', fontSize: 10.5 }}>正在加载工具调用记录…</Typography>
+              )}
+              {expandedToolKey && (() => {
+                const tool = tools.find((item) => item.key === expandedToolKey);
+                if (!tool) return null;
+                const record = tool.record;
+                const statusLabel = record ? toolStatusText[record.status] : undefined;
+                return (
+                  <Stack spacing={1} sx={{ border: '1px solid #e1e6ef', borderRadius: 1.5, bgcolor: '#fbfcfe', p: 1.4 }}>
+                    <Stack direction="row" alignItems="center" spacing={1}>
+                      <Typography sx={{ color: '#33405a', fontSize: 12, fontWeight: 650 }}>{tool.name}</Typography>
+                      {statusLabel && (
+                        <Chip size="small" label={statusLabel} sx={{ height: 20, bgcolor: record?.status === 'failed' ? '#fff0f0' : '#eaf9f1', color: record?.status === 'failed' ? '#bd4a4a' : '#278b4d', fontSize: 10, fontWeight: 650 }} />
+                      )}
+                      {typeof record?.duration_ms === 'number' && (
+                        <Typography sx={{ color: '#8c96a7', fontSize: 10.5 }}>耗时 {formatDuration(record.duration_ms)}</Typography>
+                      )}
+                      {record?.is_truncated && (
+                        <Typography sx={{ color: '#c98a2e', fontSize: 10.5 }}>结果已截断</Typography>
+                      )}
+                    </Stack>
+                    <DetailBlock label="输入" value={record?.input_summary || tool.fallbackInput} empty="无输入参数记录" />
+                    <DetailBlock label="输出" value={record?.output_summary || tool.fallbackOutput} empty="无输出结果记录" />
+                    {record?.error_message && (
+                      <DetailBlock label="错误信息" value={record.error_message} empty="" />
+                    )}
+                  </Stack>
+                );
+              })()}
             </Stack>
           )}
 

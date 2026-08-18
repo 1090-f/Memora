@@ -22,6 +22,7 @@ type MCPToolMetadata struct {
 	ServerID      string                      // MCP Server ID
 	ServerTarget  internalmcp.MCPServerTarget // Server 连接目标（URL、headers 等）
 	ToolMetadata  internalmcp.MCPServerTool   // 工具元数据（name、description、schema）
+	ToolID        string                      // MCP 工具在 mcp_tools 表中的 ID
 	Enabled       bool                        // 是否启用
 	CallTimeoutMs int                         // 调用超时（毫秒）
 }
@@ -75,6 +76,7 @@ func (r *MCPToolRefresher) RefreshForUser(ctx context.Context, userID string) er
 			meta.ServerTarget,
 			meta.ToolMetadata,
 			meta.ServerID,
+			meta.ToolID,
 			meta.Enabled,
 			timeout,
 		)

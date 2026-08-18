@@ -296,12 +296,14 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 			MaxToolResultBytes: cfg.Agent.MaxToolResultBytes,
 			MaxRunSeconds:      cfg.Agent.MaxRunSeconds,
 		},
+		toolCallRepo,
+		toolExecutor.Spec,
 	)
 
 	// 初始化 Plan-Execute 服务（Phase 5）
 	_ = repository.NewPlanRepository(a.db) // TODO: 保存到结构体字段以供后续使用
 	plannerService := service.NewPlannerService(modelFactory)
-	planExecutorService := service.NewPlanExecutor(toolExecutor, modelFactory)
+	planExecutorService := service.NewPlanExecutor(toolExecutor, modelFactory, toolCallRepo)
 	replanService := service.NewReplanService(plannerService)
 	reviewerService := service.NewReviewerService(modelFactory)
 	planGraph := adkcore.NewPlanExecuteGraph(plannerService, planExecutorService, replanService, reviewerService, sequencedEvents)

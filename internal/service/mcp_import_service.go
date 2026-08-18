@@ -633,6 +633,7 @@ func (s *importService) ListEnabledToolsForRegistry(ctx context.Context, userID 
 			ServerID:      server.ID,
 			ServerTarget:  target,
 			ToolMetadata:  toolMetadata,
+			ToolID:        tool.ID,
 			Enabled:       tool.Enabled,
 			CallTimeoutMs: server.CallTimeoutMs,
 		})

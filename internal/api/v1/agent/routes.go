@@ -11,6 +11,7 @@ import "github.com/gin-gonic/gin"
 //	POST /api/v1/agent/runs 创建运行
 //	GET /api/v1/agent/runs 分页查询运行记录
 //	GET /api/v1/agent/runs/:id 获取运行详情
+//	GET /api/v1/agent/runs/:id/tool-calls 获取运行的完整工具调用列表
 //	GET /api/v1/agent/runs/:id/events SSE 流式订阅运行事件
 //	POST /api/v1/agent/runs/:id/cancel 取消运行
 //	POST /api/v1/agent/runs/:id/retry 重试运行
@@ -24,6 +25,8 @@ func RegisterRoutes(rg *gin.RouterGroup, auth gin.HandlerFunc, ctrl *Controller)
 	agent.GET("/runs", ctrl.ListRuns)
 	// 获取运行详情（GET /api/v1/agent/runs/:id）。
 	agent.GET("/runs/:id", ctrl.GetRun)
+	// 获取运行的完整工具调用列表（GET /api/v1/agent/runs/:id/tool-calls）。
+	agent.GET("/runs/:id/tool-calls", ctrl.ListToolCalls)
 	// SSE 流式订阅运行事件（GET /api/v1/agent/runs/:id/events）。
 	agent.GET("/runs/:id/events", ctrl.SubscribeEvents)
 	// 取消运行（POST /api/v1/agent/runs/:id/cancel）。

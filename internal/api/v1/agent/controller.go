@@ -212,6 +212,51 @@ func (ctrl *Controller) GetRun(c *gin.Context) {
 	response.Success(c, http.StatusOK, toRunResponse(run))
 }
 
+// ListToolCalls 处理 GET /api/v1/agent/runs/:id/tool-calls，获取指定运行的完整工具调用列表。
+// 用于在运行链路中查看某条工具调用的输入输出与执行元数据。
+// 通过先校验运行归属，避免越权访问其他用户的工具调用记录。
+func (ctrl *Controller) ListToolCalls(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+
+	runID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+	userID, err := uuid.Parse(string(user.ID))
+	if err != nil {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+
+	// 先校验运行存在且属于当前用户，再查询工具调用记录。
+	if _, err := ctrl.runRepo.FindByID(c.Request.Context(), userID, runID); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			response.Failure(c, apperrors.ErrNotFound)
+			return
+		}
+		response.Failure(c, apperrors.ErrInternal)
+		return
+	}
+
+	calls, err := ctrl.toolCallRepo.ListByRunID(c.Request.Context(), runID)
+	if err != nil {
+		response.Failure(c, apperrors.ErrInternal)
+		return
+	}
+
+	items := make([]respdto.ToolCallResponse, 0, len(calls))
+	for i := range calls {
+		items = append(items, toToolCallResponse(&calls[i]))
+	}
+
+	response.Success(c, http.StatusOK, items)
+}
+
 // ListRuns 处理 GET /api/v1/agent/runs，按用户、知识库和会话分页查询运行记录。
 func (ctrl *Controller) ListRuns(c *gin.Context) {
 	user, ok := middleware.GetUser(c)
@@ -555,4 +600,44 @@ func toRunListItem(run *entity.AgentRun) *respdto.AgentRunListItem {
 		item.ErrorCode = run.ErrorCode
 	}
 	return item
+}
+
+// toToolCallResponse 将 ToolCall 实体转换为 API 响应 DTO。
+// JSON 列（arguments_redacted、result_meta）直接以原始字节透传，nil 时缺省。
+func toToolCallResponse(call *entity.ToolCall) respdto.ToolCallResponse {
+	resp := respdto.ToolCallResponse{
+		ID:            call.ID.String(),
+		ToolName:      call.ToolName,
+		ToolType:      call.ToolType,
+		Status:        call.Status,
+		InputSummary:  call.InputSummary,
+		OutputSummary: call.OutputSummary,
+		IsTruncated:   call.IsTruncated,
+		StartedAt:     call.StartedAt,
+	}
+	if len(call.ArgumentsRedacted) > 0 {
+		resp.ArgumentsRedacted = json.RawMessage(call.ArgumentsRedacted)
+	}
+	if len(call.ResultMeta) > 0 {
+		resp.ResultMeta = json.RawMessage(call.ResultMeta)
+	}
+	if call.ReactRoundNo != nil {
+		resp.ReactRoundNo = call.ReactRoundNo
+	}
+	if call.ResponseBytes != nil {
+		resp.ResponseBytes = call.ResponseBytes
+	}
+	if call.ErrorCode != nil {
+		resp.ErrorCode = call.ErrorCode
+	}
+	if call.ErrorMessage != nil {
+		resp.ErrorMessage = call.ErrorMessage
+	}
+	if call.DurationMs != nil {
+		resp.DurationMs = call.DurationMs
+	}
+	if call.EndedAt != nil {
+		resp.EndedAt = call.EndedAt
+	}
+	return resp
 }
