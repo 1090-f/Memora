@@ -57,7 +57,6 @@ import {
   getDocument,
   getDocumentPreview,
   getDocumentProcessing,
-  getDocumentTextPreviewById,
   listDocuments,
   listImportTasks,
   moveDocument,
@@ -640,11 +639,6 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
       queryKey: queryKeys.documentPreview(document.id),
       queryFn: () => getDocumentPreview(document.id),
       staleTime: 30_000,
-    });
-    void queryClient.prefetchQuery({
-      queryKey: queryKeys.documentPreviewText(document.id),
-      queryFn: () => getDocumentTextPreviewById(document.id),
-      staleTime: 5 * 60_000,
     });
   }
 
