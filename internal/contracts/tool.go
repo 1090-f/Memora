@@ -3,6 +3,8 @@ package contracts
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sync"
 	"time"
 )
 
@@ -16,6 +18,39 @@ type ToolContext struct {
 	NetworkEnabled   bool     `json:"network_enabled"`       // 是否允许联网工具
 	MaxResultBytes   int      `json:"max_result_bytes"`      // 工具结果最大字节数限制
 	ChatModelID      string   `json:"chat_model_id"`         // 用于无工具步骤的 LLM 推理
+	// PriorStepOutputs 保存已完成依赖步骤的可读输出；工具参数可使用 {{step_output:N}} 引用第 N 步。
+	PriorStepOutputs map[int]string  `json:"-"`
+	ToolCallBudget   *ToolCallBudget `json:"-"`
+}
+
+// ToolCallBudget 是一次 Agent 运行共享的并发安全工具调用计数器。
+type ToolCallBudget struct {
+	mu      sync.Mutex
+	max     int
+	calls   int
+	perTool map[string]int
+}
+
+func NewToolCallBudget(max int) *ToolCallBudget {
+	return &ToolCallBudget{max: max, perTool: make(map[string]int)}
+}
+
+// Acquire 同时检查本次运行的总预算和具体工具的 MaxCalls。
+func (b *ToolCallBudget) Acquire(toolName string, maxForTool int) error {
+	if b == nil {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.max > 0 && b.calls >= b.max {
+		return fmt.Errorf("tool call budget exceeded: %d/%d", b.calls, b.max)
+	}
+	if maxForTool > 0 && b.perTool[toolName] >= maxForTool {
+		return fmt.Errorf("tool %q call budget exceeded: %d/%d", toolName, b.perTool[toolName], maxForTool)
+	}
+	b.calls++
+	b.perTool[toolName]++
+	return nil
 }
 
 // ToolCall 表示使用参数调用特定工具的请求。
@@ -48,7 +83,9 @@ const (
 // ToolSpec 是工具的静态规格描述，注册时固化，
 // 供 Executor 在执行前做启用、只读、联网、超时等校验。
 type ToolSpec struct {
-	Name            string          `json:"name"`                   // 工具名称，注册表中的唯一标识
+	Name            string          `json:"name"` // 工具名称，注册表中的唯一标识
+	Alias           string          `json:"alias,omitempty"`
+	Capabilities    []string        `json:"capabilities,omitempty"`
 	Description     string          `json:"description"`            // 工具用途说明，供模型理解何时调用
 	InputSchema     json.RawMessage `json:"input_schema,omitempty"` // 入参 JSON Schema（用于参数校验）
 	Type            ToolType        `json:"type"`                   // 工具类型：内置（builtin）或 MCP

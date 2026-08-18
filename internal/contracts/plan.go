@@ -18,6 +18,21 @@ const (
 // PlanStepStatus 步骤状态
 type PlanStepStatus string
 
+type PlanStepKind string
+
+const (
+	PlanStepKindTool      PlanStepKind = "tool"
+	PlanStepKindReasoning PlanStepKind = "reasoning"
+)
+
+type ToolPolicy string
+
+const (
+	ToolPolicyRequired  ToolPolicy = "required"
+	ToolPolicyPreferred ToolPolicy = "preferred"
+	ToolPolicyForbidden ToolPolicy = "forbidden"
+)
+
 const (
 	PlanStepStatusPending   PlanStepStatus = "pending"
 	PlanStepStatusRunning   PlanStepStatus = "running"
@@ -86,18 +101,21 @@ func (p *Plan) GetFailedSteps() []PlanStep {
 
 // PlanStep 单个执行步骤
 type PlanStep struct {
-	ID          ID             `json:"id"`
-	StepNumber  int            `json:"step_number"` // 步骤序号
-	Title       string         `json:"title"`       // 步骤标题
-	Description string         `json:"description"` // 步骤描述
-	ToolName    string         `json:"tool_name"`   // 执行工具名（可选）
-	Arguments   map[string]any `json:"arguments"`   // 工具参数（可选）
-	DependsOn   []ID           `json:"depends_on"`  // 依赖的步骤 ID
-	Status      PlanStepStatus `json:"status"`
-	Output      string         `json:"output"` // 步骤输出
-	Error       string         `json:"error"`  // 错误信息
-	StartedAt   *time.Time     `json:"started_at"`
-	CompletedAt *time.Time     `json:"completed_at"`
+	ID                   ID             `json:"id"`
+	StepNumber           int            `json:"step_number"` // 步骤序号
+	Title                string         `json:"title"`       // 步骤标题
+	Description          string         `json:"description"` // 步骤描述
+	Kind                 PlanStepKind   `json:"kind,omitempty"`
+	ToolPolicy           ToolPolicy     `json:"tool_policy,omitempty"`
+	RequiredCapabilities []string       `json:"required_capabilities,omitempty"`
+	ToolName             string         `json:"tool_name"`  // 执行工具名（可选）
+	Arguments            map[string]any `json:"arguments"`  // 工具参数（可选）
+	DependsOn            []ID           `json:"depends_on"` // 依赖的步骤 ID
+	Status               PlanStepStatus `json:"status"`
+	Output               string         `json:"output"` // 步骤输出
+	Error                string         `json:"error"`  // 错误信息
+	StartedAt            *time.Time     `json:"started_at"`
+	CompletedAt          *time.Time     `json:"completed_at"`
 }
 
 // ReviewerResult 审查结果

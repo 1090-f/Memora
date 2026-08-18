@@ -122,6 +122,22 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 		systemPrompt = derefString(agentConfig.SystemPrompt)
 	}
 
+	// 从注册表读取所有已注册工具的名称和描述。
+	// 这是 Planner LLM 生成含工具调用计划的前提：Planner 需要知道有哪些工具可用，
+	// 以及每个工具的用途，才能做出正确的工具选择决策。
+	// 内置工具（knowledge_search、document_read）和 MCP 工具（如 baidu-search、fetch_url）
+	// 均在此处统一收集，供 Planner 提示词使用。
+	allowedToolNames := []string{}
+	toolDescriptions := map[string]string{}
+	availableToolSpecs := []contracts.ToolSpec{}
+	if b.toolRegistry != nil {
+		allowedToolNames = b.toolRegistry.Names()
+		availableToolSpecs = tools.CatalogSpecs(b.toolRegistry.Specs())
+		for _, spec := range availableToolSpecs {
+			toolDescriptions[spec.Name] = spec.Description
+		}
+	}
+
 	agentCtx := contracts.AgentContext{
 		// 基础信息
 		UserID:          req.UserID,
@@ -131,12 +147,14 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 		Query:           req.Query,
 
 		// 系统配置（优先使用文件中的默认提示词）
-		SystemPrompt:   systemPrompt,
-		ChatModelID:    agentConfig.ChatModelID,
-		NetworkEnabled: agentConfig.NetworkEnabled,
-		MemoryEnabled:  agentConfig.MemoryEnabled,
-		MaxReactRounds: agentConfig.MaxReactRounds,
-		AllowedTools:   []string{}, // TODO: 从 AgentConfig 或工具表加载
+		SystemPrompt:     systemPrompt,
+		ChatModelID:      agentConfig.ChatModelID,
+		NetworkEnabled:   agentConfig.NetworkEnabled,
+		MemoryEnabled:    agentConfig.MemoryEnabled,
+		MaxReactRounds:   agentConfig.MaxReactRounds,
+		AllowedTools:     allowedToolNames,
+		ToolDescriptions: toolDescriptions,
+		AvailableTools:   availableToolSpecs,
 
 		// Plan-Execute 模式配置（来自 AgentConfig）
 		MaxPlanSteps: agentConfig.MaxPlanSteps,
