@@ -3,9 +3,11 @@ package service
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/cloudwego/eino/adk"
+	"gopkg.in/yaml.v3"
 
 	"github.com/1090-f/Memora/internal/agent/tools"
 	"github.com/1090-f/Memora/internal/contracts"
@@ -14,16 +16,22 @@ import (
 	"go.uber.org/zap"
 )
 
+// SystemPromptConfig 系统提示词配置。
+type SystemPromptConfig struct {
+	System string `yaml:"system"`
+}
+
 // contextBuilder 是 contracts.ContextBuilder 接口的实现。
 // 使用固定插槽 + 结构化标签策略组装 AgentContext。
 type contextBuilder struct {
-	agentConfigRepo    repository.AgentConfigRepository
-	convCtxService     contracts.ConversationContextService
-	memoryRetriever    contracts.MemoryRetriever
-	retrievalSvc       contracts.RetrievalService
-	mcpToolRefresher   *tools.MCPToolRefresher // 可选：MCP 工具刷新器（第一层校验）
-	toolRegistry       contracts.ToolRegistry  // 可选：工具注册表，用于检测已注册的 MCP 工具
-	toolsConfigBuilder func() adk.ToolsConfig  // 可选：构建本次运行的 ADK 工具配置
+	agentConfigRepo     repository.AgentConfigRepository
+	convCtxService      contracts.ConversationContextService
+	memoryRetriever     contracts.MemoryRetriever
+	retrievalSvc        contracts.RetrievalService
+	mcpToolRefresher    *tools.MCPToolRefresher // 可选：MCP 工具刷新器（第一层校验）
+	toolRegistry        contracts.ToolRegistry  // 可选：工具注册表，用于检测已注册的 MCP 工具
+	toolsConfigBuilder  func() adk.ToolsConfig  // 可选：构建本次运行的 ADK 工具配置
+	defaultSystemPrompt string                  // 默认系统提示词（从文件加载）
 }
 
 // NewContextBuilder 创建新的上下文构建器实例。
@@ -34,13 +42,35 @@ func NewContextBuilder(
 	retrievalSvc contracts.RetrievalService,
 	toolRegistry contracts.ToolRegistry,
 ) contracts.ContextBuilder {
+	// 加载默认系统提示词
+	defaultPrompt := loadDefaultSystemPrompt()
+
 	return &contextBuilder{
-		agentConfigRepo: agentConfigRepo,
-		convCtxService:  convCtxService,
-		memoryRetriever: memoryRetriever,
-		retrievalSvc:    retrievalSvc,
-		toolRegistry:    toolRegistry,
+		agentConfigRepo:     agentConfigRepo,
+		convCtxService:      convCtxService,
+		memoryRetriever:     memoryRetriever,
+		retrievalSvc:        retrievalSvc,
+		toolRegistry:        toolRegistry,
+		defaultSystemPrompt: defaultPrompt,
 	}
+}
+
+// loadDefaultSystemPrompt 从文件加载默认系统提示词。
+func loadDefaultSystemPrompt() string {
+	data, err := os.ReadFile("internal/ai/prompts/system_prompt.yaml")
+	if err != nil {
+		logger.Warn("加载默认系统提示词失败，将使用数据库配置", zap.Error(err))
+		return ""
+	}
+
+	var config SystemPromptConfig
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		logger.Warn("解析默认系统提示词失败，将使用数据库配置", zap.Error(err))
+		return ""
+	}
+
+	logger.Info("成功加载默认系统提示词")
+	return config.System
 }
 
 // SetMCPToolRefresher 注入 MCP 工具刷新器，用于 Agent 启动前的第一层校验。
@@ -78,6 +108,20 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 	}
 
 	// 2. 构建基础上下文（固定插槽顺序）
+	logger.Info("Agent 配置从数据库加载",
+		zap.Int("max_plan_steps", agentConfig.MaxPlanSteps),
+		zap.Int("max_replans", agentConfig.MaxReplans),
+		zap.Int("reviewer_runs", agentConfig.ReviewerRuns),
+		zap.Bool("memory_enabled", agentConfig.MemoryEnabled),
+		zap.Int("memory_top_k", agentConfig.MemoryTopK),
+	)
+
+	// 确定系统提示词：优先使用文件中的默认提示词，如果为空则从数据库加载
+	systemPrompt := b.defaultSystemPrompt
+	if systemPrompt == "" {
+		systemPrompt = derefString(agentConfig.SystemPrompt)
+	}
+
 	agentCtx := contracts.AgentContext{
 		// 基础信息
 		UserID:          req.UserID,
@@ -86,14 +130,18 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 		RunID:           req.RunID,
 		Query:           req.Query,
 
-		// 系统配置（来自 AgentConfig）
-		SystemPrompt:   derefString(agentConfig.SystemPrompt),
+		// 系统配置（优先使用文件中的默认提示词）
+		SystemPrompt:   systemPrompt,
 		ChatModelID:    agentConfig.ChatModelID,
 		NetworkEnabled: agentConfig.NetworkEnabled,
 		MemoryEnabled:  agentConfig.MemoryEnabled,
 		MaxReactRounds: agentConfig.MaxReactRounds,
-		MaxPlanSteps:   agentConfig.MaxPlanSteps,
 		AllowedTools:   []string{}, // TODO: 从 AgentConfig 或工具表加载
+
+		// Plan-Execute 模式配置（来自 AgentConfig）
+		MaxPlanSteps: agentConfig.MaxPlanSteps,
+		MaxReplans:   agentConfig.MaxReplans,
+		ReviewerRuns: agentConfig.ReviewerRuns,
 
 		// 对话上下文（固定插槽 - 可选）
 		Conversation: contracts.ConversationContext{},

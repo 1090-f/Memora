@@ -232,9 +232,6 @@ type AIConfig struct {
 
 // AgentConfig 定义 Agent 执行的配置。
 type AgentConfig struct {
-	MaxPlanSteps       int `mapstructure:"max_plan_steps"`        // 计划最大步骤数
-	MaxReplans         int `mapstructure:"max_replans"`           // 允许重新规划的最大次数
-	ReviewerRuns       int `mapstructure:"reviewer_runs"`         // 计划评审运行次数
 	MaxToolCalls       int `mapstructure:"max_tool_calls"`        // 单次运行最大工具调用次数
 	MaxToolResultBytes int `mapstructure:"max_tool_result_bytes"` // 工具结果最大字节数
 	MaxRunSeconds      int `mapstructure:"max_run_seconds"`       // 单次运行最大时长（秒）
@@ -334,12 +331,6 @@ func (c Config) Validate() error {
 	}
 	if c.App.Mode == "release" && (len(c.AI.EncryptionKey) < 16 || strings.HasPrefix(strings.ToLower(c.AI.EncryptionKey), "change-me")) {
 		errs = append(errs, errors.New("MEMORA_AI_ENCRYPTION_KEY 在发布模式下至少需要 16 个字符且不能使用示例值"))
-	}
-	if c.Agent.MaxPlanSteps <= 0 {
-		c.Agent.MaxPlanSteps = 5 // 默认最大步骤数
-	}
-	if c.Agent.MaxReplans < 0 {
-		c.Agent.MaxReplans = 1 // 默认最大重规划次数
 	}
 	if c.Agent.MaxToolCalls <= 0 {
 		c.Agent.MaxToolCalls = 10 // 默认最大工具调用次数

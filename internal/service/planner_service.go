@@ -4,271 +4,254 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"strconv"
 	"strings"
-	"text/template"
 	"time"
 
 	"github.com/1090-f/Memora/internal/contracts"
-	"github.com/1090-f/Memora/pkg/logger"
 	"github.com/google/uuid"
-	"go.uber.org/zap"
-	"gopkg.in/yaml.v3"
 )
 
-// PlannerPromptConfig 定义 Planner Prompt 配置。
-type PlannerPromptConfig struct {
-	System string `yaml:"system"`
-	User   string `yaml:"user"`
-}
-
-// PlanUsageCallback 是 Plan 模式下 token 消耗的回调类型。
-type PlanUsageCallback func(inputTokens, outputTokens, totalTokens int)
-
-// PlannerService 实现 contracts.Planner 接口。
+// PlannerService 负责使用 LLM 生成结构化执行计划。
 type PlannerService struct {
 	modelFactory contracts.ModelFactory
-	promptConfig PlannerPromptConfig
-	maxSteps     int
-	onUsage      PlanUsageCallback // 可选：token 消耗回调
-}
-
-// SetUsageCallback 设置 token 消耗回调。
-func (s *PlannerService) SetUsageCallback(cb PlanUsageCallback) {
-	s.onUsage = cb
 }
 
 // NewPlannerService 创建 PlannerService 实例。
-func NewPlannerService(modelFactory contracts.ModelFactory, promptConfigPath string, maxSteps int) (*PlannerService, error) {
-	// 读取 Prompt 配置
-	config, err := loadPlannerPromptConfig(promptConfigPath)
-	if err != nil {
-		return nil, fmt.Errorf("load planner prompt config: %w", err)
-	}
-
+func NewPlannerService(modelFactory contracts.ModelFactory) *PlannerService {
 	return &PlannerService{
 		modelFactory: modelFactory,
-		promptConfig: *config,
-		maxSteps:     maxSteps,
-	}, nil
+	}
 }
 
-// loadPlannerPromptConfig 加载 Planner Prompt 配置。
-func loadPlannerPromptConfig(path string) (*PlannerPromptConfig, error) {
-	// 读取文件内容
-	data, err := os.ReadFile(path)
+// Plan 根据用户查询和上下文生成执行计划。
+func (s *PlannerService) Plan(ctx context.Context, request contracts.AgentRunRequest) (*contracts.Plan, error) {
+	// 1. 构建提示词
+	prompt := s.buildPrompt(request)
+
+	// 2. 获取 ChatModel
+	chatModel, err := s.modelFactory.GetChatModel(ctx, contracts.ID(request.Context.ChatModelID))
 	if err != nil {
-		return nil, fmt.Errorf("read planner prompt config: %w", err)
+		return nil, fmt.Errorf("get chat model: %w", err)
 	}
 
-	var config PlannerPromptConfig
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("unmarshal planner prompt config: %w", err)
-	}
-
-	return &config, nil
-}
-
-// Plan 实现 contracts.Planner 接口。
-func (s *PlannerService) Plan(ctx context.Context, agentContext contracts.AgentContext, config contracts.AgentConfig) (contracts.Plan, error) {
-	start := time.Now()
-
-	logger.Info("开始生成计划",
-		zap.String("query", agentContext.Query),
-		zap.Int("max_steps", config.MaxPlanSteps),
-	)
-
-	// 构建 Prompt
-	prompt, err := s.buildPrompt(agentContext, config)
-	if err != nil {
-		return contracts.Plan{}, fmt.Errorf("build prompt: %w", err)
-	}
-
-	// 调用模型
-	model, err := s.modelFactory.GetChatModel(ctx, contracts.ID(agentContext.ChatModelID))
-	if err != nil {
-		return contracts.Plan{}, fmt.Errorf("get chat model: %w", err)
-	}
-
-	response, err := model.Generate(ctx, contracts.ChatRequest{
+	// 3. 构建请求
+	chatRequest := contracts.ChatRequest{
 		Messages: []contracts.ChatMessage{
-			{Role: "system", Content: s.promptConfig.System},
-			{Role: "user", Content: prompt},
+			{Role: "system", Content: prompt},
+			{Role: "user", Content: request.Context.Query},
 		},
-	})
+	}
+
+	// 4. 调用 LLM
+	response, err := chatModel.Generate(ctx, chatRequest)
 	if err != nil {
-		return contracts.Plan{}, fmt.Errorf("chat with model: %w", err)
+		return nil, fmt.Errorf("generate plan: %w", err)
 	}
 
-	// 记录 token 消耗
-	if s.onUsage != nil {
-		s.onUsage(response.Usage.InputTokens, response.Usage.OutputTokens, response.Usage.TotalTokens)
-	}
-
-	// 解析响应
-	plan, err := s.parseResponse(response.Content, agentContext.RunID)
-	if err != nil {
-		return contracts.Plan{}, fmt.Errorf("parse response: %w", err)
-	}
-
-	// 校验计划
-	if err := s.validatePlan(plan, config); err != nil {
-		return contracts.Plan{}, fmt.Errorf("validate plan: %w", err)
-	}
-
-	logger.Info("计划生成完成",
-		zap.String("plan_id", string(plan.ID)),
-		zap.Int("steps", len(plan.Steps)),
-		zap.Duration("elapsed", time.Since(start)),
-	)
-
-	return plan, nil
-}
-
-// buildPrompt 构建 Prompt。
-func (s *PlannerService) buildPrompt(agentContext contracts.AgentContext, config contracts.AgentConfig) (string, error) {
-	tmpl, err := template.New("planner").Parse(s.promptConfig.User)
-	if err != nil {
-		return "", fmt.Errorf("parse template: %w", err)
-	}
-
-	// 构建上下文
-	context := agentContext.ToPromptWithTagsCompact()
-
-	data := struct {
-		Query    string
-		Context  string
-		MaxSteps int
-	}{
-		Query:    agentContext.Query,
-		Context:  context,
-		MaxSteps: config.MaxPlanSteps,
-	}
-
-	var buf strings.Builder
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return "", fmt.Errorf("execute template: %w", err)
-	}
-
-	return buf.String(), nil
-}
-
-// parseResponse 解析模型响应。
-func (s *PlannerService) parseResponse(response string, runID contracts.ID) (contracts.Plan, error) {
-	// 提取 JSON
-	jsonStr := extractJSON(response)
+	// 5. 提取 JSON
+	jsonStr := extractJSONFromText(response.Content)
 	if jsonStr == "" {
-		return contracts.Plan{}, fmt.Errorf("no JSON found in response")
+		return nil, fmt.Errorf("no JSON found in LLM response")
 	}
 
-	// 解析 JSON
-	var result struct {
-		Goal               string   `json:"goal"`
-		CompletionCriteria []string `json:"completion_criteria"`
-		Steps              []struct {
-			StepNo             int    `json:"step_no"`
-			Title              string `json:"title"`
-			Description        string `json:"description"`
-			DependsOn          []int  `json:"depends_on"`
-			ToolHint           string `json:"tool_hint"`
-			CompletionCriteria string `json:"completion_criteria"`
-		} `json:"steps"`
+	// 6. 解析计划
+	var plan contracts.Plan
+	if err := json.Unmarshal([]byte(jsonStr), &plan); err != nil {
+		return nil, fmt.Errorf("unmarshal plan: %w", err)
 	}
 
-	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-		return contracts.Plan{}, fmt.Errorf("unmarshal plan: %w", err)
+	// 7. 设置元数据
+	plan.ID = contracts.ID(uuid.NewString())
+	plan.RunID = request.RunID
+	plan.MaxSteps = request.Config.MaxPlanSteps
+	plan.MaxReplans = request.Config.MaxReplans
+	plan.Status = contracts.PlanStatusPending
+	plan.FinalAnswer = "" // 清空：实际答案由步骤执行后生成
+	plan.CreatedAt = time.Now()
+	plan.UpdatedAt = time.Now()
+
+	// 8. 验证步骤数
+	if len(plan.Steps) > plan.MaxSteps {
+		return nil, fmt.Errorf("plan has %d steps, max allowed is %d", len(plan.Steps), plan.MaxSteps)
 	}
 
-	// 转换为 contracts.Plan
-	plan := contracts.Plan{
-		ID:                 contracts.ID(generateUUID()),
-		RunID:              runID,
-		Version:            1,
-		Goal:               result.Goal,
-		CompletionCriteria: result.CompletionCriteria,
-		Status:             contracts.PlanPending,
-		Steps:              make([]contracts.PlanStep, len(result.Steps)),
+	// 9. 为每个步骤设置状态和ID
+	stepNumberToID := make(map[int]contracts.ID)
+	for i := range plan.Steps {
+		plan.Steps[i].ID = contracts.ID(uuid.NewString())
+		plan.Steps[i].Status = contracts.PlanStepStatusPending
+		stepNumberToID[plan.Steps[i].StepNumber] = plan.Steps[i].ID
 	}
 
-	for i, step := range result.Steps {
-		plan.Steps[i] = contracts.PlanStep{
-			ID:                 contracts.ID(generateUUID()),
-			StepNo:             step.StepNo,
-			Title:              step.Title,
-			Description:        step.Description,
-			DependsOn:          step.DependsOn,
-			ToolHint:           step.ToolHint,
-			CompletionCriteria: step.CompletionCriteria,
-			Status:             contracts.StepPending,
+	// 10. 将 depends_on 中的步骤序号解析为对应的 step UUID
+	for i := range plan.Steps {
+		var resolvedDeps []contracts.ID
+		for _, dep := range plan.Steps[i].DependsOn {
+			if stepNum, err := strconv.Atoi(string(dep)); err == nil {
+				if depID, ok := stepNumberToID[stepNum]; ok {
+					resolvedDeps = append(resolvedDeps, depID)
+				}
+			} else {
+				// 如果不是数字，可能是已经解析过的 UUID，直接保留
+				resolvedDeps = append(resolvedDeps, dep)
+			}
 		}
+		plan.Steps[i].DependsOn = resolvedDeps
 	}
 
-	return plan, nil
+	return &plan, nil
 }
 
-// validatePlan 校验计划。
-func (s *PlannerService) validatePlan(plan contracts.Plan, config contracts.AgentConfig) error {
-	// 检查步骤数量
-	if len(plan.Steps) == 0 {
-		return fmt.Errorf("plan must have at least one step")
+// PlanWithPrompt 使用自定义提示词生成计划（用于重规划）。
+func (s *PlannerService) PlanWithPrompt(ctx context.Context, request contracts.AgentRunRequest, customPrompt string) (*contracts.Plan, error) {
+	// 1. 获取 ChatModel
+	chatModel, err := s.modelFactory.GetChatModel(ctx, contracts.ID(request.Context.ChatModelID))
+	if err != nil {
+		return nil, fmt.Errorf("get chat model: %w", err)
 	}
 
-	if len(plan.Steps) > config.MaxPlanSteps {
-		return fmt.Errorf("plan has %d steps, max allowed is %d", len(plan.Steps), config.MaxPlanSteps)
+	// 2. 构建请求
+	chatRequest := contracts.ChatRequest{
+		Messages: []contracts.ChatMessage{
+			{Role: "system", Content: customPrompt},
+			{Role: "user", Content: request.Context.Query},
+		},
 	}
 
-	// 检查步骤序号连续性
-	for i, step := range plan.Steps {
-		expectedNo := i + 1
-		if step.StepNo != expectedNo {
-			return fmt.Errorf("step %d has invalid step_no %d, expected %d", i, step.StepNo, expectedNo)
+	// 3. 调用 LLM
+	response, err := chatModel.Generate(ctx, chatRequest)
+	if err != nil {
+		return nil, fmt.Errorf("generate plan: %w", err)
+	}
+
+	// 4. 提取 JSON
+	jsonStr := extractJSONFromText(response.Content)
+	if jsonStr == "" {
+		return nil, fmt.Errorf("no JSON found in LLM response")
+	}
+
+	// 5. 解析计划
+	var plan contracts.Plan
+	if err := json.Unmarshal([]byte(jsonStr), &plan); err != nil {
+		return nil, fmt.Errorf("unmarshal plan: %w", err)
+	}
+
+	// 6. 为每个步骤设置状态和ID，并解析 depends_on
+	stepNumberToID := make(map[int]contracts.ID)
+	for i := range plan.Steps {
+		plan.Steps[i].ID = contracts.ID(uuid.NewString())
+		plan.Steps[i].Status = contracts.PlanStepStatusPending
+		stepNumberToID[plan.Steps[i].StepNumber] = plan.Steps[i].ID
+	}
+
+	for i := range plan.Steps {
+		var resolvedDeps []contracts.ID
+		for _, dep := range plan.Steps[i].DependsOn {
+			if stepNum, err := strconv.Atoi(string(dep)); err == nil {
+				if depID, ok := stepNumberToID[stepNum]; ok {
+					resolvedDeps = append(resolvedDeps, depID)
+				}
+			} else {
+				resolvedDeps = append(resolvedDeps, dep)
+			}
+		}
+		plan.Steps[i].DependsOn = resolvedDeps
+	}
+
+	return &plan, nil
+}
+
+// buildPrompt 构建 Planner 提示词。
+func (s *PlannerService) buildPrompt(request contracts.AgentRunRequest) string {
+	var sb strings.Builder
+
+	sb.WriteString("你是一个任务规划专家。根据用户查询和上下文，生成结构化的执行计划。\n\n")
+
+	// 添加可用工具信息
+	sb.WriteString("## 可用工具\n")
+	if len(request.Context.AllowedTools) > 0 {
+		for _, tool := range request.Context.AllowedTools {
+			sb.WriteString("- " + tool + "\n")
+		}
+	} else {
+		sb.WriteString("无可用工具\n")
+	}
+	sb.WriteString("\n")
+
+	// 添加上下文信息
+	sb.WriteString("## 上下文信息\n")
+	sb.WriteString(request.Context.ToPromptWithTagsCompact())
+	sb.WriteString("\n\n")
+
+	// 添加输出格式说明（含 JSON Schema 示例）
+	sb.WriteString("## 输出格式\n")
+	sb.WriteString("必须输出有效的 JSON 格式，不要包含任何其他文本。\n")
+	sb.WriteString("计划步骤数不超过 " + fmt.Sprintf("%d", request.Config.MaxPlanSteps) + " 步。\n\n")
+	sb.WriteString("严格按以下 JSON Schema 输出，字段类型不可更改：\n")
+	sb.WriteString("```json\n")
+	sb.WriteString(`{
+  "goal": "用户目标的一句话概括",
+  "final_answer": "最终答案文本（字符串）",
+  "steps": [
+    {
+      "step_number": 1,
+      "title": "步骤标题",
+      "description": "步骤详细描述",
+      "tool_name": "工具名称（字符串，不调用工具则为空字符串）",
+      "arguments": {},
+      "depends_on": []
+    }
+  ]
+}` + "\n")
+	sb.WriteString("```\n\n")
+	sb.WriteString("注意事项：\n")
+	sb.WriteString("- steps 是数组，每个元素是一个步骤对象\n")
+	sb.WriteString("- step_number 是整数，从 1 开始\n")
+	sb.WriteString("- tool_name 和 arguments 可选，不调用工具时 tool_name 设为空字符串 \"\"\n")
+	sb.WriteString("- depends_on 是字符串数组，元素为依赖步骤的 step_number（用字符串表示，如 [\"1\", \"2\"]），无依赖则为空数组 []\n")
+	sb.WriteString("- final_answer 必须设为空字符串 \"\"，实际答案由步骤执行后自动生成，不要在此处填写任何内容\n")
+
+	return sb.String()
+}
+
+// extractJSONFromText 从文本中提取 JSON 字符串。
+func extractJSONFromText(text string) string {
+	// 尝试找到 JSON 块（```json ... ```）
+	startIdx := strings.Index(text, "```json")
+	if startIdx != -1 {
+		startIdx += len("```json")
+		endIdx := strings.Index(text[startIdx:], "```")
+		if endIdx != -1 {
+			return strings.TrimSpace(text[startIdx : startIdx+endIdx])
 		}
 	}
 
-	// 检查依赖关系
-	for _, step := range plan.Steps {
-		for _, dep := range step.DependsOn {
-			if dep < 1 || dep >= step.StepNo {
-				return fmt.Errorf("step %d has invalid dependency %d", step.StepNo, dep)
+	// 尝试找到裸 JSON（{ ... }）
+	start := 0
+	for i, ch := range text {
+		if ch == '{' {
+			start = i
+			break
+		}
+	}
+
+	if start == 0 && len(text) > 0 && text[0] != '{' {
+		return ""
+	}
+
+	// 找到对应的闭合括号
+	depth := 0
+	for i := start; i < len(text); i++ {
+		if text[i] == '{' {
+			depth++
+		} else if text[i] == '}' {
+			depth--
+			if depth == 0 {
+				return text[start : i+1]
 			}
 		}
 	}
 
-	// 检查标题
-	for _, step := range plan.Steps {
-		if step.Title == "" {
-			return fmt.Errorf("step %d must have a title", step.StepNo)
-		}
-	}
-
-	return nil
-}
-
-// extractJSON 从文本中提取 JSON。
-func extractJSON(text string) string {
-	// 尝试找到 JSON 块
-	start := strings.Index(text, "```json")
-	if start != -1 {
-		start += len("```json")
-		end := strings.Index(text[start:], "```")
-		if end != -1 {
-			return strings.TrimSpace(text[start : start+end])
-		}
-	}
-
-	// 尝试找到 JSON 对象
-	start = strings.Index(text, "{")
-	if start != -1 {
-		end := strings.LastIndex(text, "}")
-		if end != -1 {
-			return text[start : end+1]
-		}
-	}
-
-	return text
-}
-
-// generateUUID 生成 UUID。
-func generateUUID() string {
-	return uuid.New().String()
+	return ""
 }

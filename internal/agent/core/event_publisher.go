@@ -28,10 +28,14 @@ type EventPublisher interface {
 	PublishToolCallCompleted(ctx context.Context, runID contracts.ID, callID contracts.ID, toolName string, success bool, summary string) error
 	// PublishAnswerDelta 发布流式回答增量事件。
 	PublishAnswerDelta(ctx context.Context, runID contracts.ID, delta string) error
-	// PublishPlanCreated 发布计划创建事件，携带完整的 Plan 结构供前端展示。
-	PublishPlanCreated(ctx context.Context, runID contracts.ID, plan contracts.Plan) error
-	// PublishPlanReplanned 发布计划重新规划事件，携带更新后的 Plan。
-	PublishPlanReplanned(ctx context.Context, runID contracts.ID, plan contracts.Plan) error
+	// PublishPlanCreated 发布计划创建事件。
+	PublishPlanCreated(ctx context.Context, runID contracts.ID, plan *contracts.Plan) error
+	// PublishPlanReplanned 发布计划重新规划事件。
+	PublishPlanReplanned(ctx context.Context, runID contracts.ID, plan *contracts.Plan) error
+	// PublishStepStarted 发布计划步骤开始事件。
+	PublishStepStarted(ctx context.Context, runID contracts.ID, stepNo int, title string) error
+	// PublishStepCompleted 发布计划步骤完成事件。
+	PublishStepCompleted(ctx context.Context, runID contracts.ID, stepNo int, title string, success bool) error
 }
 
 // NoopEventPublisher 用于未接入事件存储时保持执行链路可运行。
@@ -64,10 +68,16 @@ func (NoopEventPublisher) PublishToolCallCompleted(context.Context, contracts.ID
 	return nil
 }
 func (NoopEventPublisher) PublishAnswerDelta(context.Context, contracts.ID, string) error { return nil }
-func (NoopEventPublisher) PublishPlanCreated(context.Context, contracts.ID, contracts.Plan) error {
+func (NoopEventPublisher) PublishPlanCreated(context.Context, contracts.ID, *contracts.Plan) error {
 	return nil
 }
-func (NoopEventPublisher) PublishPlanReplanned(context.Context, contracts.ID, contracts.Plan) error {
+func (NoopEventPublisher) PublishPlanReplanned(context.Context, contracts.ID, *contracts.Plan) error {
+	return nil
+}
+func (NoopEventPublisher) PublishStepStarted(context.Context, contracts.ID, int, string) error {
+	return nil
+}
+func (NoopEventPublisher) PublishStepCompleted(context.Context, contracts.ID, int, string, bool) error {
 	return nil
 }
 
@@ -175,24 +185,49 @@ func (p *SequencedEventPublisher) PublishAnswerDelta(ctx context.Context, id con
 	return p.publish(ctx, id, contracts.EventAnswerDelta, map[string]any{"delta": delta})
 }
 
-func (p *SequencedEventPublisher) PublishPlanCreated(ctx context.Context, id contracts.ID, plan contracts.Plan) error {
-	// 构建计划创建的 payload，包含计划结构信息供前端渲染
+func (p *SequencedEventPublisher) PublishPlanCreated(ctx context.Context, id contracts.ID, plan *contracts.Plan) error {
+	steps := make([]map[string]any, len(plan.Steps))
+	for i, step := range plan.Steps {
+		steps[i] = map[string]any{
+			"step_no": i + 1,
+			"title":   step.Title,
+			"status":  step.Status,
+		}
+	}
 	return p.publish(ctx, id, contracts.EventPlanCreated, map[string]any{
-		"plan_id": plan.ID,
-		"version": plan.Version,
+		"version": plan.ReplanCount + 1,
 		"goal":    plan.Goal,
-		"steps":   plan.Steps,
-		"status":  plan.Status,
+		"steps":   steps,
 	})
 }
 
-func (p *SequencedEventPublisher) PublishPlanReplanned(ctx context.Context, id contracts.ID, plan contracts.Plan) error {
-	// 构建重新规划的 payload，包含更新后的计划和重新规划原因
+func (p *SequencedEventPublisher) PublishPlanReplanned(ctx context.Context, id contracts.ID, plan *contracts.Plan) error {
+	steps := make([]map[string]any, len(plan.Steps))
+	for i, step := range plan.Steps {
+		steps[i] = map[string]any{
+			"step_no": i + 1,
+			"title":   step.Title,
+			"status":  step.Status,
+		}
+	}
 	return p.publish(ctx, id, contracts.EventPlanReplanned, map[string]any{
-		"plan_id": plan.ID,
-		"version": plan.Version,
+		"version": plan.ReplanCount + 1,
 		"goal":    plan.Goal,
-		"steps":   plan.Steps,
-		"status":  plan.Status,
+		"steps":   steps,
+	})
+}
+
+func (p *SequencedEventPublisher) PublishStepStarted(ctx context.Context, id contracts.ID, stepNo int, title string) error {
+	return p.publish(ctx, id, contracts.EventPlanStepStarted, map[string]any{
+		"step_no": stepNo,
+		"title":   title,
+	})
+}
+
+func (p *SequencedEventPublisher) PublishStepCompleted(ctx context.Context, id contracts.ID, stepNo int, title string, success bool) error {
+	return p.publish(ctx, id, contracts.EventPlanStepCompleted, map[string]any{
+		"step_no": stepNo,
+		"title":   title,
+		"success": success,
 	})
 }

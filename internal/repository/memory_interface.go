@@ -50,7 +50,7 @@ type ListMemoryResult struct {
 type VectorSearchRequest struct {
 	UserID          string
 	KnowledgeBaseID *string
-	QueryVector     []byte
+	QueryVector     string
 	EmbeddingDim    int
 	TopK            int
 	MinImportance   float64

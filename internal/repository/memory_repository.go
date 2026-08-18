@@ -2,11 +2,16 @@ package repository
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
+	"strings"
 	"time"
 
 	"github.com/1090-f/Memora/internal/model/entity"
+	"github.com/1090-f/Memora/pkg/logger"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -23,9 +28,24 @@ func NewMemoryRepository(db *gorm.DB) MemoryRepository {
 
 // Create 创建新的记忆条目。
 func (r *memoryRepository) Create(ctx context.Context, memory *entity.Memory) error {
+	logger.Info("[记忆存储-Create] 开始存储记忆",
+		zap.String("user_id", memory.UserID),
+		zap.String("content", memory.Content),
+		zap.String("memory_type", memory.MemoryType),
+		zap.Int("embedding_dim", memory.EmbeddingDim),
+		zap.String("embedding_model_id", memory.EmbeddingModelID),
+	)
+
 	if err := r.db.WithContext(ctx).Create(memory).Error; err != nil {
+		logger.Error("[记忆存储-Create] 存储记忆失败",
+			zap.Error(err),
+		)
 		return fmt.Errorf("create memory: %w", err)
 	}
+
+	logger.Info("[记忆存储-Create] 存储记忆成功",
+		zap.String("memory_id", memory.ID),
+	)
 	return nil
 }
 
@@ -143,7 +163,7 @@ func (r *memoryRepository) SearchByVector(ctx context.Context, req VectorSearchR
 	// 构建查询，使用 pgvector 的余弦相似度操作符
 	query := r.db.WithContext(ctx).
 		Table("memories").
-		Select("memories.*, 1 - (memories.embedding <=> ?) as similarity", req.QueryVector).
+		Select(fmt.Sprintf("memories.*, 1 - (memories.embedding <=> '%s') as similarity", req.QueryVector)).
 		Where("user_id = ? AND status = 'active' AND embedding_dim = ?", req.UserID, req.EmbeddingDim)
 
 	if req.KnowledgeBaseID != nil {
@@ -157,11 +177,27 @@ func (r *memoryRepository) SearchByVector(ctx context.Context, req VectorSearchR
 	}
 
 	// 按相似度排序，取前 TopK
-	if err := query.Order("embedding <=> ?").Limit(req.TopK).Find(&results).Error; err != nil {
+	if err := query.Order(fmt.Sprintf("embedding <=> '%s' ASC", req.QueryVector)).Limit(req.TopK).Find(&results).Error; err != nil {
 		return nil, fmt.Errorf("vector search memories: %w", err)
 	}
 
 	return results, nil
+}
+
+// formatPgVector 将二进制向量转换为 PostgreSQL 向量格式
+func formatPgVector(data []byte) string {
+	// 将 []byte 转换为 []float64（little-endian IEEE 754 格式）
+	vec := make([]float64, len(data)/8)
+	for i := range vec {
+		bits := binary.LittleEndian.Uint64(data[i*8:])
+		vec[i] = math.Float64frombits(bits)
+	}
+
+	strs := make([]string, len(vec))
+	for i, v := range vec {
+		strs[i] = fmt.Sprintf("%f", v)
+	}
+	return "[" + strings.Join(strs, ",") + "]"
 }
 
 // SearchByKeyword 使用 ParadeDB pg_search 的 BM25 排序搜索记忆。

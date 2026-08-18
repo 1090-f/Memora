@@ -9,20 +9,30 @@ import (
 // AgentConfig 定义 Agent 执行参数的上限配置。
 type AgentConfig struct {
 	MaxReactRounds        int `json:"max_react_rounds"`         // ReAct 模式最大轮数
-	MaxPlanSteps          int `json:"max_plan_steps"`           // 计划（Plan）最大步骤数
-	MaxReplans            int `json:"max_replans"`              // 允许重新规划的最大次数
-	ReviewerRuns          int `json:"reviewer_runs"`            // 计划评审（Reviewer）运行次数
 	MaxToolCalls          int `json:"max_tool_calls"`           // 单次运行最大工具调用次数
 	MaxDocumentReadTokens int `json:"max_document_read_tokens"` // 单次文档读取最大 token
 	MaxToolResultBytes    int `json:"max_tool_result_bytes"`    // 工具结果最大字节数
 	MaxRunSeconds         int `json:"max_run_seconds"`          // 单次运行最大时长（秒）
 	MemoryTopK            int `json:"memory_top_k"`             // 记忆检索返回条数
+	// Plan-Execute 模式配置
+	MaxPlanSteps int `json:"max_plan_steps"` // Plan-Execute 最大步骤数 (default: 5)
+	MaxReplans   int `json:"max_replans"`    // Plan-Execute 最大重规划次数 (default: 1)
+	ReviewerRuns int `json:"reviewer_runs"`  // Plan-Execute 审查次数 (default: 1)
 }
 
 // DefaultAgentConfig 返回具有合理默认值的 AgentConfig。
 func DefaultAgentConfig() AgentConfig {
-	return AgentConfig{MaxReactRounds: 8, MaxPlanSteps: 5, MaxReplans: 1, ReviewerRuns: 1, MaxToolCalls: 10,
-		MaxDocumentReadTokens: 6000, MaxToolResultBytes: 1048576, MaxRunSeconds: 300, MemoryTopK: 8}
+	return AgentConfig{
+		MaxReactRounds:        8,
+		MaxToolCalls:          10,
+		MaxDocumentReadTokens: 6000,
+		MaxToolResultBytes:    1048576,
+		MaxRunSeconds:         300,
+		MemoryTopK:            8,
+		MaxPlanSteps:          5,
+		MaxReplans:            1,
+		ReviewerRuns:          1,
+	}
 }
 
 // AgentRunRequest 表示启动 Agent 执行运行的请求。

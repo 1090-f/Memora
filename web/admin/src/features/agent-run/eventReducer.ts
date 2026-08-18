@@ -19,8 +19,9 @@ const numberValue = (value: unknown, fallback = 0) => typeof value === 'number' 
 
 export type ResetAction = { type: 'RESET_AGENT_RUN_STATE' };
 export type QueueAction = { type: 'SET_AGENT_RUN_QUEUED' };
+export type CancelledAction = { type: 'SET_AGENT_RUN_CANCELLED' };
 export type HydrateAction = { type: 'HYDRATE_AGENT_RUN_STATE'; run: AgentRun };
-export type AgentRunAction = AgentEvent | ResetAction | QueueAction | HydrateAction;
+export type AgentRunAction = AgentEvent | ResetAction | QueueAction | CancelledAction | HydrateAction;
 
 export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction): AgentRunViewState {
   if (event.type === 'RESET_AGENT_RUN_STATE') {
@@ -28,6 +29,9 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
   }
   if (event.type === 'SET_AGENT_RUN_QUEUED') {
     return { ...initialAgentRunState, status: 'queued' };
+  }
+  if (event.type === 'SET_AGENT_RUN_CANCELLED') {
+    return { ...initialAgentRunState, status: 'cancelled', resumable: true };
   }
   if (event.type === 'HYDRATE_AGENT_RUN_STATE') {
     const run = event.run;
@@ -66,8 +70,8 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
         ...next,
         status: 'completed',
         resumable: false,
-        rounds: state.rounds.map((round) => round.status === 'running' ? { ...round, status: 'completed' } : round),
-        tools: state.tools.map((tool) => tool.status === 'running' ? { ...tool, status: 'completed' } : tool),
+        // Plan-Execute 模式没有 agent.answer.delta 事件，需从 final_result 填充 answer
+        answer: next.answer || stringValue(payload.final_result),
       };
     case 'agent.run.cancelled':
       return { ...next, status: 'cancelled', resumable: true };

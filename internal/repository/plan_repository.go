@@ -2,38 +2,42 @@ package repository
 
 import (
 	"context"
-	"time"
+	"fmt"
 
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
-// PlanRepository 定义 Plan 持久化的接口。
+// PlanRepository 定义计划数据访问接口。
 type PlanRepository interface {
-	// Create 创建新的 Plan。
+	// Create 创建计划。
 	Create(ctx context.Context, plan *entity.AgentPlan) error
-	// GetByID 根据 ID 获取 Plan。
-	GetByID(ctx context.Context, planID uuid.UUID) (*entity.AgentPlan, error)
-	// GetByRunID 根据 RunID 获取 Plan。
-	GetByRunID(ctx context.Context, runID uuid.UUID) (*entity.AgentPlan, error)
-	// Update 更新 Plan。
+	// FindByID 根据 ID 查找计划。
+	FindByID(ctx context.Context, planID uuid.UUID) (*entity.AgentPlan, error)
+	// FindByRunID 根据运行 ID 查找计划。
+	FindByRunID(ctx context.Context, runID uuid.UUID) (*entity.AgentPlan, error)
+	// Update 更新计划。
 	Update(ctx context.Context, plan *entity.AgentPlan) error
-	// UpdateStatus 更新 Plan 状态。
-	UpdateStatus(ctx context.Context, planID uuid.UUID, status string) error
-	// UpdateStepStatus 更新步骤状态。
-	UpdateStepStatus(ctx context.Context, planID uuid.UUID, stepNo int, status string) error
-	// UpdateStepResult 更新步骤执行结果。
-	UpdateStepResult(ctx context.Context, planID uuid.UUID, stepNo int, inputSummary string, outputSummary string, errorCode string, errorMessage string) error
-	// UpdateStepError 更新步骤错误信息。
-	UpdateStepError(ctx context.Context, planID uuid.UUID, stepNo int, errorCode string, errorMessage string) error
+	// Delete 删除计划。
+	Delete(ctx context.Context, planID uuid.UUID) error
+
+	// CreateStep 创建计划步骤。
+	CreateStep(ctx context.Context, step *entity.AgentPlanStep) error
+	// FindStepsByPlanID 查找计划的所有步骤。
+	FindStepsByPlanID(ctx context.Context, planID uuid.UUID) ([]entity.AgentPlanStep, error)
+	// UpdateStep 更新步骤。
+	UpdateStep(ctx context.Context, step *entity.AgentPlanStep) error
+	// DeleteStepsByPlanID 删除计划的所有步骤。
+	DeleteStepsByPlanID(ctx context.Context, planID uuid.UUID) error
+
 	// CreateExecutionLog 创建执行日志。
 	CreateExecutionLog(ctx context.Context, log *entity.AgentPlanExecutionLog) error
-	// GetExecutionLogs 获取执行日志。
-	GetExecutionLogs(ctx context.Context, planID uuid.UUID) ([]entity.AgentPlanExecutionLog, error)
+	// FindExecutionLogsByPlanID 查找计划的所有执行日志。
+	FindExecutionLogsByPlanID(ctx context.Context, planID uuid.UUID) ([]entity.AgentPlanExecutionLog, error)
 }
 
-// planRepository 是 PlanRepository 的 GORM 实现。
+// planRepository 是 PlanRepository 接口的 GORM 实现。
 type planRepository struct {
 	db *gorm.DB
 }
@@ -43,117 +47,114 @@ func NewPlanRepository(db *gorm.DB) PlanRepository {
 	return &planRepository{db: db}
 }
 
-// Create 创建新的 Plan。
+// Create 创建计划。
 func (r *planRepository) Create(ctx context.Context, plan *entity.AgentPlan) error {
-	return r.db.WithContext(ctx).Create(plan).Error
+	if err := r.db.WithContext(ctx).Create(plan).Error; err != nil {
+		return fmt.Errorf("create plan: %w", err)
+	}
+	return nil
 }
 
-// GetByID 根据 ID 获取 Plan。
-func (r *planRepository) GetByID(ctx context.Context, planID uuid.UUID) (*entity.AgentPlan, error) {
+// FindByID 根据 ID 查找计划。
+func (r *planRepository) FindByID(ctx context.Context, planID uuid.UUID) (*entity.AgentPlan, error) {
 	var plan entity.AgentPlan
 	err := r.db.WithContext(ctx).
-		Preload("Steps", func(db *gorm.DB) *gorm.DB {
-			return db.Order("step_no ASC")
-		}).
 		Where("id = ?", planID).
 		First(&plan).Error
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("find plan by id: %w", err)
 	}
 	return &plan, nil
 }
 
-// GetByRunID 根据 RunID 获取 Plan。
-func (r *planRepository) GetByRunID(ctx context.Context, runID uuid.UUID) (*entity.AgentPlan, error) {
+// FindByRunID 根据运行 ID 查找计划。
+func (r *planRepository) FindByRunID(ctx context.Context, runID uuid.UUID) (*entity.AgentPlan, error) {
 	var plan entity.AgentPlan
 	err := r.db.WithContext(ctx).
-		Preload("Steps", func(db *gorm.DB) *gorm.DB {
-			return db.Order("step_no ASC")
-		}).
-		Where("agent_run_id = ?", runID).
-		Order("version DESC").
+		Where("run_id = ?", runID).
+		Order("created_at DESC").
 		First(&plan).Error
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("find plan by run id: %w", err)
 	}
 	return &plan, nil
 }
 
-// Update 更新 Plan。
+// Update 更新计划。
 func (r *planRepository) Update(ctx context.Context, plan *entity.AgentPlan) error {
-	return r.db.WithContext(ctx).Save(plan).Error
-}
-
-// UpdateStatus 更新 Plan 状态。
-func (r *planRepository) UpdateStatus(ctx context.Context, planID uuid.UUID, status string) error {
-	return r.db.WithContext(ctx).
-		Model(&entity.AgentPlan{}).
-		Where("id = ?", planID).
-		Update("status", status).
-		Error
-}
-
-// UpdateStepStatus 更新步骤状态。
-func (r *planRepository) UpdateStepStatus(ctx context.Context, planID uuid.UUID, stepNo int, status string) error {
-	updates := map[string]interface{}{
-		"status": status,
+	if err := r.db.WithContext(ctx).Save(plan).Error; err != nil {
+		return fmt.Errorf("update plan: %w", err)
 	}
+	return nil
+}
 
-	// 根据状态设置时间戳
-	now := time.Now()
-	switch status {
-	case "running":
-		updates["started_at"] = now
-	case "completed", "failed", "skipped", "cancelled":
-		updates["ended_at"] = now
+// Delete 删除计划。
+func (r *planRepository) Delete(ctx context.Context, planID uuid.UUID) error {
+	// 先删除步骤
+	if err := r.DeleteStepsByPlanID(ctx, planID); err != nil {
+		return fmt.Errorf("delete plan steps: %w", err)
 	}
-
-	return r.db.WithContext(ctx).
-		Model(&entity.AgentPlanStep{}).
-		Where("plan_id = ? AND step_no = ?", planID, stepNo).
-		Updates(updates).
-		Error
+	// 再删除计划
+	if err := r.db.WithContext(ctx).Delete(&entity.AgentPlan{}, planID).Error; err != nil {
+		return fmt.Errorf("delete plan: %w", err)
+	}
+	return nil
 }
 
-// UpdateStepResult 更新步骤执行结果。
-func (r *planRepository) UpdateStepResult(ctx context.Context, planID uuid.UUID, stepNo int, inputSummary string, outputSummary string, errorCode string, errorMessage string) error {
-	return r.db.WithContext(ctx).
-		Model(&entity.AgentPlanStep{}).
-		Where("plan_id = ? AND step_no = ?", planID, stepNo).
-		Updates(map[string]interface{}{
-			"input_summary":  inputSummary,
-			"output_summary": outputSummary,
-			"error_code":     errorCode,
-			"error_message":  errorMessage,
-		}).
-		Error
+// CreateStep 创建计划步骤。
+func (r *planRepository) CreateStep(ctx context.Context, step *entity.AgentPlanStep) error {
+	if err := r.db.WithContext(ctx).Create(step).Error; err != nil {
+		return fmt.Errorf("create plan step: %w", err)
+	}
+	return nil
 }
 
-// UpdateStepError 更新步骤错误信息。
-func (r *planRepository) UpdateStepError(ctx context.Context, planID uuid.UUID, stepNo int, errorCode string, errorMessage string) error {
-	return r.db.WithContext(ctx).
-		Model(&entity.AgentPlanStep{}).
-		Where("plan_id = ? AND step_no = ?", planID, stepNo).
-		Updates(map[string]interface{}{
-			"error_code":    errorCode,
-			"error_message": errorMessage,
-			"status":        "failed",
-			"ended_at":      time.Now(),
-		}).
-		Error
+// FindStepsByPlanID 查找计划的所有步骤。
+func (r *planRepository) FindStepsByPlanID(ctx context.Context, planID uuid.UUID) ([]entity.AgentPlanStep, error) {
+	var steps []entity.AgentPlanStep
+	err := r.db.WithContext(ctx).
+		Where("plan_id = ?", planID).
+		Order("step_number ASC").
+		Find(&steps).Error
+	if err != nil {
+		return nil, fmt.Errorf("find plan steps: %w", err)
+	}
+	return steps, nil
+}
+
+// UpdateStep 更新步骤。
+func (r *planRepository) UpdateStep(ctx context.Context, step *entity.AgentPlanStep) error {
+	if err := r.db.WithContext(ctx).Save(step).Error; err != nil {
+		return fmt.Errorf("update plan step: %w", err)
+	}
+	return nil
+}
+
+// DeleteStepsByPlanID 删除计划的所有步骤。
+func (r *planRepository) DeleteStepsByPlanID(ctx context.Context, planID uuid.UUID) error {
+	if err := r.db.WithContext(ctx).Where("plan_id = ?", planID).Delete(&entity.AgentPlanStep{}).Error; err != nil {
+		return fmt.Errorf("delete plan steps: %w", err)
+	}
+	return nil
 }
 
 // CreateExecutionLog 创建执行日志。
 func (r *planRepository) CreateExecutionLog(ctx context.Context, log *entity.AgentPlanExecutionLog) error {
-	return r.db.WithContext(ctx).Create(log).Error
+	if err := r.db.WithContext(ctx).Create(log).Error; err != nil {
+		return fmt.Errorf("create execution log: %w", err)
+	}
+	return nil
 }
 
-// GetExecutionLogs 获取执行日志。
-func (r *planRepository) GetExecutionLogs(ctx context.Context, planID uuid.UUID) ([]entity.AgentPlanExecutionLog, error) {
+// FindExecutionLogsByPlanID 查找计划的所有执行日志。
+func (r *planRepository) FindExecutionLogsByPlanID(ctx context.Context, planID uuid.UUID) ([]entity.AgentPlanExecutionLog, error) {
 	var logs []entity.AgentPlanExecutionLog
 	err := r.db.WithContext(ctx).
 		Where("plan_id = ?", planID).
 		Order("created_at ASC").
 		Find(&logs).Error
-	return logs, err
+	if err != nil {
+		return nil, fmt.Errorf("find execution logs: %w", err)
+	}
+	return logs, nil
 }

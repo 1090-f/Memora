@@ -11,6 +11,7 @@ import (
 
 	"github.com/1090-f/Memora/internal/agent/core"
 	"github.com/1090-f/Memora/internal/contracts"
+	"github.com/1090-f/Memora/internal/repository"
 )
 
 // ADKReactRunner 是基于 Eino ADK ChatModelAgent 的 ReAct 运行器。
@@ -22,6 +23,8 @@ type ADKReactRunner struct {
 	SystemPromptBuilder func(ctx context.Context, agentRun contracts.AgentRunRequest) (string, error)
 	// Config 默认配置。
 	Config contracts.AgentConfig
+	// ToolCallRepo 用于持久化工具调用记录。
+	ToolCallRepo repository.ToolCallRepository
 }
 
 // NewADKReactRunner 创建 ADK 驱动的 React 运行器。
@@ -100,8 +103,10 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 	}
 
 	// 6. 创建 ADK ChatModelAgent
-	// 中间件顺序：SafeToolMiddleware 在最外层（捕获所有工具调用的错误并发布失败事件），
-	// AgentMiddleware 在内层（事件发布、引用收集、预算控制）。
+	// 中间件顺序：
+	//   SafeToolMiddleware（最外层）：捕获所有工具调用的错误并发布失败事件
+	//   ToolCallRecorderMiddleware（中间层）：持久化每次工具调用的详细信息到 tool_calls 表
+	//   AgentMiddleware（最内层）：事件发布、引用收集、预算控制
 	chatModelAgent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
 		Name:          "assistant",
 		Description:   "A helpful assistant that can use tools to help users.",
@@ -113,6 +118,10 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 			&SafeToolMiddleware{
 				EventPublisher: eventPublisher,
 				RunID:          request.RunID,
+			},
+			&ToolCallRecorderMiddleware{
+				ToolCallRepo: r.ToolCallRepo,
+				RunID:        request.RunID,
 			},
 			middleware,
 		},

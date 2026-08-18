@@ -2,207 +2,127 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
-	"text/template"
-	"time"
 
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/pkg/logger"
 	"go.uber.org/zap"
-	"gopkg.in/yaml.v3"
 )
 
-// ReviewerPromptConfig 定义 Reviewer Prompt 配置。
-type ReviewerPromptConfig struct {
-	System string `yaml:"system"`
-	User   string `yaml:"user"`
-}
-
-// ReviewerService 实现 contracts.PlanReviewer 接口。
+// ReviewerService 负责审查计划执行结果的完整性和正确性。
 type ReviewerService struct {
 	modelFactory contracts.ModelFactory
-	promptConfig ReviewerPromptConfig
-	stateStore   PlanStateStore
-	onUsage      PlanUsageCallback // 可选：token 消耗回调
-}
-
-// SetUsageCallback 设置 token 消耗回调。
-func (s *ReviewerService) SetUsageCallback(cb PlanUsageCallback) {
-	s.onUsage = cb
 }
 
 // NewReviewerService 创建 ReviewerService 实例。
-func NewReviewerService(modelFactory contracts.ModelFactory, promptConfigPath string, stateStore PlanStateStore) (*ReviewerService, error) {
-	// 读取 Prompt 配置
-	config, err := loadReviewerPromptConfig(promptConfigPath)
-	if err != nil {
-		return nil, fmt.Errorf("load reviewer prompt config: %w", err)
-	}
-
+func NewReviewerService(modelFactory contracts.ModelFactory) *ReviewerService {
 	return &ReviewerService{
 		modelFactory: modelFactory,
-		promptConfig: *config,
-		stateStore:   stateStore,
-	}, nil
+	}
 }
 
-// loadReviewerPromptConfig 加载 Reviewer Prompt 配置。
-func loadReviewerPromptConfig(path string) (*ReviewerPromptConfig, error) {
-	// 读取文件内容
-	data, err := os.ReadFile(path)
+// Review 审查计划执行结果。
+func (s *ReviewerService) Review(ctx context.Context, plan *contracts.Plan, request contracts.AgentRunRequest) (*contracts.ReviewerResult, error) {
+	// 1. 构建审查提示词
+	prompt := s.buildReviewPrompt(plan, request)
+
+	// 2. 获取 ChatModel
+	chatModel, err := s.modelFactory.GetChatModel(ctx, contracts.ID(request.Context.ChatModelID))
 	if err != nil {
-		return nil, fmt.Errorf("read reviewer prompt config: %w", err)
+		logger.Error("Reviewer 获取 ChatModel 失败", zap.Error(err))
+		return nil, fmt.Errorf("get chat model: %w", err)
 	}
 
-	var config ReviewerPromptConfig
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("unmarshal reviewer prompt config: %w", err)
-	}
-
-	return &config, nil
-}
-
-// Review 实现 contracts.PlanReviewer 接口。
-func (s *ReviewerService) Review(ctx context.Context, agentContext contracts.AgentContext, plan contracts.Plan) (contracts.ReviewerResult, error) {
-	start := time.Now()
-
-	logger.Info("开始审查计划",
-		zap.String("plan_id", string(plan.ID)),
-		zap.String("goal", plan.Goal),
-	)
-
-	// 构建 Prompt
-	prompt, err := s.buildPrompt(plan)
-	if err != nil {
-		return contracts.ReviewerResult{}, fmt.Errorf("build prompt: %w", err)
-	}
-
-	// 调用模型
-	model, err := s.modelFactory.GetChatModel(ctx, contracts.ID(agentContext.ChatModelID))
-	if err != nil {
-		return contracts.ReviewerResult{}, fmt.Errorf("get chat model: %w", err)
-	}
-
-	response, err := model.Generate(ctx, contracts.ChatRequest{
+	// 3. 构建请求
+	chatRequest := contracts.ChatRequest{
 		Messages: []contracts.ChatMessage{
-			{Role: "system", Content: s.promptConfig.System},
-			{Role: "user", Content: prompt},
+			{Role: "system", Content: prompt},
+			{Role: "user", Content: plan.FinalAnswer},
 		},
-	})
+	}
+
+	// 4. 调用 LLM
+	response, err := chatModel.Generate(ctx, chatRequest)
 	if err != nil {
-		return contracts.ReviewerResult{}, fmt.Errorf("chat with model: %w", err)
+		logger.Error("Reviewer LLM 调用失败", zap.Error(err))
+		return nil, fmt.Errorf("review: %w", err)
 	}
 
-	// 记录 token 消耗
-	if s.onUsage != nil {
-		s.onUsage(response.Usage.InputTokens, response.Usage.OutputTokens, response.Usage.TotalTokens)
-	}
-
-	// 解析响应
-	result, err := s.parseResponse(response.Content)
-	if err != nil {
-		return contracts.ReviewerResult{}, fmt.Errorf("parse response: %w", err)
-	}
-
-	// 记录审查结果
-	if err := s.stateStore.RecordReview(ctx, plan.ID, result); err != nil {
-		logger.Error("Failed to record review result",
-			zap.Error(err),
-			zap.String("plan_id", string(plan.ID)),
-		)
-	}
-
-	logger.Info("计划审查完成",
-		zap.String("plan_id", string(plan.ID)),
-		zap.String("result", result.Result),
-		zap.Duration("elapsed", time.Since(start)),
+	logger.Info("Reviewer LLM 响应",
+		zap.String("content", response.Content),
 	)
 
-	return result, nil
-}
+	// 5. 解析简单格式：PASS 或 FAIL
+	content := strings.TrimSpace(response.Content)
+	contentUpper := strings.ToUpper(content)
 
-// buildPrompt 构建 Prompt。
-func (s *ReviewerService) buildPrompt(plan contracts.Plan) (string, error) {
-	tmpl, err := template.New("reviewer").Parse(s.promptConfig.User)
-	if err != nil {
-		return "", fmt.Errorf("parse template: %w", err)
+	if strings.HasPrefix(contentUpper, "PASS") || strings.Contains(contentUpper, "PASS") {
+		return &contracts.ReviewerResult{
+			Approved:   true,
+			Issues:     "",
+			Suggestion: "",
+		}, nil
 	}
 
-	// 构建步骤结果
-	stepsResult := s.buildStepsResult(plan)
-
-	// 构建完成判据
-	completionCriteria := strings.Join(plan.CompletionCriteria, "\n- ")
-
-	data := struct {
-		Goal               string
-		CompletionCriteria string
-		StepsResult        string
-	}{
-		Goal:               plan.Goal,
-		CompletionCriteria: completionCriteria,
-		StepsResult:        stepsResult,
-	}
-
-	var buf strings.Builder
-	if err := tmpl.Execute(&buf, data); err != nil {
-		return "", fmt.Errorf("execute template: %w", err)
-	}
-
-	return buf.String(), nil
-}
-
-// buildStepsResult 构建步骤结果。
-func (s *ReviewerService) buildStepsResult(plan contracts.Plan) string {
-	var result strings.Builder
-
-	for _, step := range plan.Steps {
-		result.WriteString(fmt.Sprintf("步骤 %d: %s\n", step.StepNo, step.Title))
-		result.WriteString(fmt.Sprintf("  状态: %s\n", step.Status))
-		if step.Description != "" {
-			result.WriteString(fmt.Sprintf("  描述: %s\n", step.Description))
+	// FAIL 格式：FAIL: 具体问题
+	if strings.HasPrefix(contentUpper, "FAIL") {
+		issues := content
+		if idx := strings.Index(content, ":"); idx > 0 {
+			issues = strings.TrimSpace(content[idx+1:])
 		}
-		if step.CompletionCriteria != "" {
-			result.WriteString(fmt.Sprintf("  完成判据: %s\n", step.CompletionCriteria))
-		}
-		result.WriteString("\n")
+		return &contracts.ReviewerResult{
+			Approved:   false,
+			Issues:     issues,
+			Suggestion: "",
+		}, nil
 	}
 
-	return result.String()
-}
-
-// parseResponse 解析模型响应。
-func (s *ReviewerService) parseResponse(response string) (contracts.ReviewerResult, error) {
-	// 提取 JSON
-	jsonStr := extractJSON(response)
-	if jsonStr == "" {
-		return contracts.ReviewerResult{}, fmt.Errorf("no JSON found in response")
-	}
-
-	// 解析 JSON
-	var result struct {
-		Result  string `json:"result"`
-		Summary string `json:"summary"`
-	}
-
-	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-		return contracts.ReviewerResult{}, fmt.Errorf("unmarshal review result: %w", err)
-	}
-
-	// 验证结果
-	if result.Result == "" {
-		result.Result = "completed"
-	}
-
-	if result.Summary == "" {
-		result.Summary = "计划审查完成"
-	}
-
-	return contracts.ReviewerResult{
-		Result:  result.Result,
-		Summary: result.Summary,
+	// 默认通过
+	logger.Warn("Reviewer 返回格式未知，默认通过",
+		zap.String("response", content),
+	)
+	return &contracts.ReviewerResult{
+		Approved:   true,
+		Issues:     "",
+		Suggestion: "",
 	}, nil
+}
+
+// buildReviewPrompt 构建审查提示词。
+func (s *ReviewerService) buildReviewPrompt(plan *contracts.Plan, request contracts.AgentRunRequest) string {
+	var sb strings.Builder
+
+	sb.WriteString("你是一个任务审查专家。请审查计划执行结果。\n\n")
+
+	// 添加计划目标
+	sb.WriteString("## 计划目标\n")
+	sb.WriteString(plan.Goal + "\n\n")
+
+	// 添加执行结果（简化版，只包含关键信息）
+	sb.WriteString("## 执行结果\n")
+	for _, step := range plan.Steps {
+		sb.WriteString(fmt.Sprintf("- 步骤%d: %s [%s]\n", step.StepNumber, step.Title, string(step.Status)))
+		if step.Output != "" {
+			// 截断过长的输出
+			output := step.Output
+			if len(output) > 200 {
+				output = output[:200] + "..."
+			}
+			sb.WriteString("  输出: " + output + "\n")
+		}
+	}
+	sb.WriteString("\n")
+
+	// 添加最终答案
+	sb.WriteString("## 最终答案\n")
+	sb.WriteString(plan.FinalAnswer + "\n\n")
+
+	// 添加用户原始问题
+	sb.WriteString("## 用户原始问题\n")
+	sb.WriteString(request.Context.Query + "\n\n")
+
+	sb.WriteString("请判断结果是否完整回答了问题。")
+
+	return sb.String()
 }
