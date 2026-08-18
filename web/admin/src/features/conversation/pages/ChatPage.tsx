@@ -383,6 +383,9 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
 
       const response = await createAgentRun({ knowledge_base_id: kbId, conversation_id: id, query });
       replayAbortRef.current?.abort();
+      // 记录 run_id，切换会话返回时 replay 逻辑才能恢复运行中的状态
+      conversationRunIdsRef.current[id] = response.run_id;
+      const streamConversationId = id;
       currentRunId.current = response.run_id;
       setActiveRunId(response.run_id);
       hydratedRunIdRef.current = response.run_id;
@@ -393,7 +396,9 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
       abortRef.current = controller;
       await streamAgentEvents(`${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${response.run_id}/events`, {
         signal: controller.signal,
-        onEvent: dispatchRun,
+        onEvent: (event) => {
+          if (activeConversationIdRef.current === streamConversationId) dispatchRun(event);
+        },
       });
         const completedRun = await getAgentRun(response.run_id);
       // Plan-Execute: SSE 完成事件可能先于 DB 写入，短暂延时后重试
@@ -403,11 +408,15 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
         const retried = await getAgentRun(response.run_id);
         answer = retried.final_result || runStateRef.current.answer;
       }
-      if (answer) {
-        setMessages((current) => [...current, {
-          id: crypto.randomUUID(), role: 'assistant', content: answer, agent_run_id: response.run_id,
-          status: completedRun.status || 'completed', citations: normalizeCitations(runStateRef.current.citations), created_at: new Date().toISOString(),
-        }]);
+      if (answer && activeConversationIdRef.current === streamConversationId) {
+        updateMessages((current) => {
+          // Guard: 避免同一 run 重复追加助手消息（切换会话后可能被 replay 逻辑重复写入）
+          if (current.some((m) => m.agent_run_id === response.run_id && m.role === 'assistant')) return current;
+          return [...current, {
+            id: crypto.randomUUID(), role: 'assistant', content: answer, agent_run_id: response.run_id,
+            status: completedRun.status || 'completed', citations: normalizeCitations(runStateRef.current.citations), created_at: new Date().toISOString(),
+          }];
+        });
       }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '智能问答请求失败');

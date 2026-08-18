@@ -23,6 +23,7 @@ type Service struct {
 
 	mu     sync.Mutex
 	cancel map[contracts.ID]context.CancelFunc
+	mode   map[contracts.ID]contracts.ExecutionMode
 }
 
 // NewService 创建带路由功能的 Agent 运行服务。
@@ -46,6 +47,7 @@ func NewService(
 		citationCollector: citationCollector,
 		repository:        repository,
 		cancel:            make(map[contracts.ID]context.CancelFunc),
+		mode:              make(map[contracts.ID]contracts.ExecutionMode),
 	}
 }
 
@@ -70,6 +72,7 @@ func (s *Service) Run(ctx context.Context, request contracts.AgentRunRequest) (c
 	defer func() {
 		s.mu.Lock()
 		delete(s.cancel, request.RunID)
+		delete(s.mode, request.RunID)
 		s.mu.Unlock()
 	}()
 
@@ -77,11 +80,8 @@ func (s *Service) Run(ctx context.Context, request contracts.AgentRunRequest) (c
 	decision, err := s.router.Route(runCtx, request.Context)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			// context 已被 Cancel() 取消，不再继续执行
-			return contracts.AgentRunResult{}, &contracts.AgentRunError{
-				ExecutionMode: contracts.ExecutionReact,
-				Err:           context.Canceled,
-			}
+			// context 已被 Cancel() 取消，且尚未决策出模式，不再继续执行
+			return contracts.AgentRunResult{}, context.Canceled
 		}
 		// Router 其他失败时降级为 React
 		decision = contracts.RouterDecision{
@@ -92,13 +92,19 @@ func (s *Service) Run(ctx context.Context, request contracts.AgentRunRequest) (c
 			CreatedAt:     time.Now(),
 		}
 	}
+
+	// 记录已确定的执行模式，供 Cancel 在取消时回填 execution_mode。
+	s.mu.Lock()
+	s.mode[request.RunID] = decision.ExecutionMode
+	s.mu.Unlock()
+
 	// 发布路由决策事件（使用原始 ctx 而非 runCtx，确保事件能正常发布）
 	_ = s.eventPublisher.PublishRouterSelected(ctx, request.RunID, decision)
 
 	// 2. 分发前再次检查 context 是否已被取消（防止路由返回后、分发前取消）
 	if runCtx.Err() != nil {
 		return contracts.AgentRunResult{}, &contracts.AgentRunError{
-			ExecutionMode: contracts.ExecutionReact,
+			ExecutionMode: decision.ExecutionMode,
 			Err:           context.Canceled,
 		}
 	}
@@ -182,9 +188,12 @@ func (s *Service) runPlanExecute(ctx context.Context, request contracts.AgentRun
 // Worker 协程可能已完成执行并误将状态覆盖为 failed。
 func (s *Service) Cancel(ctx context.Context, runID, userID contracts.ID) error {
 	// 1. 先取消正在执行的 context（无论 DB 更新是否成功都要执行）
+	// 同时读取已决策出的执行模式；若尚未决策则为空，不写入 execution_mode。
 	s.mu.Lock()
 	cancel := s.cancel[runID]
+	executionMode := s.mode[runID]
 	delete(s.cancel, runID)
+	delete(s.mode, runID)
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -192,7 +201,7 @@ func (s *Service) Cancel(ctx context.Context, runID, userID contracts.ID) error 
 
 	// 2. 再更新 DB 状态（非关键路径，失败不应阻塞取消操作）
 	if s.repository != nil {
-		_ = s.repository.Cancel(ctx, runID, userID)
+		_ = s.repository.Cancel(ctx, runID, userID, string(executionMode))
 	}
 
 	// 3. 发布取消事件

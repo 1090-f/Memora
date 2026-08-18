@@ -446,7 +446,8 @@ type agentRunRepoAdapter struct {
 }
 
 // Cancel 通过用户 ID 和运行 ID 取消运行，委托给 repository.MarkCancelled。
-func (a *agentRunRepoAdapter) Cancel(ctx context.Context, runID, userID contracts.ID) error {
+// executionMode 为空表示在 Router 决策出模式前取消，不写入执行模式。
+func (a *agentRunRepoAdapter) Cancel(ctx context.Context, runID, userID contracts.ID, executionMode string) error {
 	uid, err := uuid.Parse(string(userID))
 	if err != nil {
 		return fmt.Errorf("解析用户 ID 失败: %w", err)
@@ -455,7 +456,7 @@ func (a *agentRunRepoAdapter) Cancel(ctx context.Context, runID, userID contract
 	if err != nil {
 		return fmt.Errorf("解析运行 ID 失败: %w", err)
 	}
-	return a.repo.MarkCancelled(ctx, uid, rid)
+	return a.repo.MarkCancelled(ctx, uid, rid, executionMode)
 }
 
 // Retry 基于已有运行创建新的排队运行，返回新运行 ID。

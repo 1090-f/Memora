@@ -176,15 +176,22 @@ func (r *agentRunRepository) MarkFailed(ctx context.Context, runID uuid.UUID, er
 }
 
 // MarkCancelled 更新运行状态为 cancelled（需同时验证用户 ID 确保所有者可取消）。
-func (r *agentRunRepository) MarkCancelled(ctx context.Context, userID, runID uuid.UUID) error {
+// executionMode 为空表示在 Router 决策出模式前取消，此时不写入 execution_mode。
+// duration_ms 由数据库根据 started_at 与当前时间计算，尚未开始执行（queued）时为 0。
+func (r *agentRunRepository) MarkCancelled(ctx context.Context, userID, runID uuid.UUID, executionMode string) error {
 	now := time.Now().UTC()
+	updates := map[string]interface{}{
+		"status":      "cancelled",
+		"ended_at":    now,
+		"duration_ms": gorm.Expr("COALESCE(EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000, 0)::bigint"),
+	}
+	if executionMode != "" {
+		updates["execution_mode"] = executionMode
+	}
 	result := r.db.WithContext(ctx).
 		Model(&entity.AgentRun{}).
 		Where("id = ? AND user_id = ? AND status IN ('queued', 'running')", runID, userID).
-		Updates(map[string]interface{}{
-			"status":   "cancelled",
-			"ended_at": now,
-		})
+		Updates(updates)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -201,8 +208,9 @@ func (r *agentRunRepository) MarkCancelledAdmin(ctx context.Context, runID uuid.
 		Model(&entity.AgentRun{}).
 		Where("id = ? AND status IN ('queued', 'running')", runID).
 		Updates(map[string]interface{}{
-			"status":   "cancelled",
-			"ended_at": now,
+			"status":      "cancelled",
+			"ended_at":    now,
+			"duration_ms": gorm.Expr("COALESCE(EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000, 0)::bigint"),
 		}).Error
 }
 

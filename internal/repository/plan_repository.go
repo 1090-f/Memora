@@ -71,7 +71,7 @@ func (r *planRepository) FindByID(ctx context.Context, planID uuid.UUID) (*entit
 func (r *planRepository) FindByRunID(ctx context.Context, runID uuid.UUID) (*entity.AgentPlan, error) {
 	var plan entity.AgentPlan
 	err := r.db.WithContext(ctx).
-		Where("run_id = ?", runID).
+		Where("agent_run_id = ?", runID).
 		Order("created_at DESC").
 		First(&plan).Error
 	if err != nil {
