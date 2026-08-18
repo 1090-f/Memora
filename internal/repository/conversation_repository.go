@@ -98,6 +98,7 @@ func (r *conversationRepository) Update(ctx context.Context, conversation *entit
 }
 
 // Delete 软删除会话，同时删除关联的所有数据。
+// 删除顺序严格按照外键依赖关系：先删子表数据，再删父表数据。
 func (r *conversationRepository) Delete(ctx context.Context, id, userID string) error {
 	now := time.Now().UTC()
 
@@ -119,31 +120,87 @@ func (r *conversationRepository) Delete(ctx context.Context, id, userID string) 
 			return fmt.Errorf("解析会话ID失败: %w", err)
 		}
 
-		// 2. 删除 tool_calls（引用 agent_runs）
-		if err := tx.Where("agent_run_id IN (?)",
-			tx.Model(&entity.AgentRun{}).Select("id").Where("conversation_id = ?", conversationUUID),
-		).Delete(&entity.ToolCall{}).Error; err != nil {
-			return fmt.Errorf("删除工具调用记录失败: %w", err)
+		// ============================================================
+		// 2. 获取该会话下所有 agent_run_id（预查 ID 避免嵌套子查询问题）
+		// ============================================================
+		var runIDs []uuid.UUID
+		if err := tx.Model(&entity.AgentRun{}).
+			Where("conversation_id = ?", conversationUUID).
+			Pluck("id", &runIDs).Error; err != nil {
+			return fmt.Errorf("查询运行记录失败: %w", err)
 		}
 
-		// 3. 解除 messages 对 agent_runs 的引用（agent_run_id 可以为 NULL）
+		if len(runIDs) > 0 {
+			// ============================================================
+			// 3. 获取这些 agent_run 下所有 agent_plan_id
+			// ============================================================
+			var planIDs []uuid.UUID
+			if err := tx.Model(&entity.AgentPlan{}).
+				Where("agent_run_id IN ?", runIDs).
+				Pluck("id", &planIDs).Error; err != nil {
+				return fmt.Errorf("查询计划记录失败: %w", err)
+			}
+
+			if len(planIDs) > 0 {
+				// 4. 删除 agent_plan_execution_logs（FK → agent_plans, 有 ON DELETE CASCADE）
+				if err := tx.Where("plan_id IN ?", planIDs).
+					Delete(&entity.AgentPlanExecutionLog{}).Error; err != nil {
+					return fmt.Errorf("删除计划执行日志失败: %w", err)
+				}
+
+				// 5. 删除 agent_plan_steps（FK → agent_plans, 无 CASCADE）
+				if err := tx.Where("plan_id IN ?", planIDs).
+					Delete(&entity.AgentPlanStep{}).Error; err != nil {
+					return fmt.Errorf("删除计划步骤失败: %w", err)
+				}
+
+				// 6. 删除 agent_plans（FK → agent_runs, 无 CASCADE）
+				if err := tx.Where("id IN ?", planIDs).
+					Delete(&entity.AgentPlan{}).Error; err != nil {
+					return fmt.Errorf("删除关联的计划失败: %w", err)
+				}
+			}
+
+			// 7. 删除 tool_calls（FK → agent_runs, 无 CASCADE）
+			if err := tx.Where("agent_run_id IN ?", runIDs).
+				Delete(&entity.ToolCall{}).Error; err != nil {
+				return fmt.Errorf("删除工具调用记录失败: %w", err)
+			}
+
+			// 8. 删除 agent_events（FK → agent_runs, ON DELETE CASCADE）
+			if err := tx.Where("run_id IN ?", runIDs).
+				Delete(&entity.AgentEvent{}).Error; err != nil {
+				return fmt.Errorf("删除运行事件失败: %w", err)
+			}
+
+			// 9. 解除 memories 对 agent_runs 的引用（source_agent_run_id 可以为 NULL）
+			if err := tx.Model(&entity.Memory{}).
+				Where("source_agent_run_id IN ?", runIDs).
+				Update("source_agent_run_id", nil).Error; err != nil {
+				return fmt.Errorf("解除记忆的agent运行引用失败: %w", err)
+			}
+		}
+
+		// 10. 解除 messages 对 agent_runs 的引用（agent_run_id 可以为 NULL）
 		if err := tx.Model(&entity.Message{}).
 			Where("conversation_id = ?", id).
 			Update("agent_run_id", nil).Error; err != nil {
 			return fmt.Errorf("解除消息的agent运行引用失败: %w", err)
 		}
 
-		// 4. 删除 agent_runs（此时没有任何表引用它了）
-		if err := tx.Where("conversation_id = ?", conversationUUID).Delete(&entity.AgentRun{}).Error; err != nil {
+		// 11. 删除 agent_runs（此时所有引用它的表都已被清理）
+		if err := tx.Where("conversation_id = ?", conversationUUID).
+			Delete(&entity.AgentRun{}).Error; err != nil {
 			return fmt.Errorf("删除关联的agent运行记录失败: %w", err)
 		}
 
-		// 5. 删除 messages（此时 agent_runs 已被删除）
-		if err := tx.Where("conversation_id = ?", id).Delete(&entity.Message{}).Error; err != nil {
+		// 12. 删除 messages（此时 agent_runs 已被删除，无引用约束）
+		if err := tx.Where("conversation_id = ?", id).
+			Delete(&entity.Message{}).Error; err != nil {
 			return fmt.Errorf("删除关联的消息失败: %w", err)
 		}
 
-		// 6. 软删除会话
+		// 13. 软删除会话
 		result := tx.Model(&entity.Conversation{}).
 			Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, userID).
 			Updates(map[string]interface{}{

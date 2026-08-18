@@ -9,7 +9,7 @@ import (
 // AgentPlan 表示 Agent 执行计划的数据库实体。
 type AgentPlan struct {
 	ID          uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
-	RunID       uuid.UUID `gorm:"type:uuid;not null;index" json:"run_id"`
+	RunID       uuid.UUID `gorm:"column:agent_run_id;type:uuid;not null;index" json:"run_id"`
 	Goal        string    `gorm:"type:text;not null" json:"goal"`
 	MaxSteps    int       `gorm:"not null;default:5" json:"max_steps"`
 	ReplanCount int       `gorm:"not null;default:0" json:"replan_count"`
