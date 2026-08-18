@@ -71,7 +71,6 @@ export function DocumentProcessingPanel({ document, processing }: {
 }) {
   const queryClient = useQueryClient();
   const effectiveStatus = processing?.processing_status ?? document.processing_status;
-  const failureReason = processing?.failure_reason || document.failure_reason;
   const failureStep = processing?.failure_step || document.failure_step;
   const activeIndexVersion = processing?.active_index_version ?? document.active_index_version;
 
@@ -105,7 +104,6 @@ export function DocumentProcessingPanel({ document, processing }: {
     { label: '原文件名称', value: document.original_file_name || document.title },
     { label: '格式', value: document.mime_type || (document.content_format === 'markdown' ? 'text/markdown' : 'text/plain') },
     { label: '最近处理时间', value: formatTime(document.updated_at) },
-    { label: '失败原因', value: failureReason ? `${failureStep ? `步骤 ${failureStep}；` : ''}${failureReason}` : null, danger: Boolean(failureReason) },
   ];
   const indexRows: Array<{ label: string; value?: string | null }> = [
     { label: '索引模式', value: document.index_mode === 'hybrid' ? '混合索引' : document.index_mode === 'keyword' ? '关键词索引' : '未建立索引' },
