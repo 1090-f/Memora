@@ -73,7 +73,7 @@ func readFileContent(path string) ([]byte, error) {
 // Extract 从Agent回答中提取记忆并存储。
 // 注意：此函数是同步执行的，调用者应该在 goroutine 中调用以避免阻塞。
 func (e *memoryExtractor) Extract(ctx context.Context, agentContext contracts.AgentContext, answer string) error {
-	logger.Info("[记忆提取-Extract] 开始提取记忆",
+	logger.Debug("[记忆提取-Extract] 开始提取记忆",
 		zap.String("user_id", string(agentContext.UserID)),
 		zap.String("chat_model_id", agentContext.ChatModelID),
 		zap.String("query", agentContext.Query),
@@ -94,7 +94,7 @@ func (e *memoryExtractor) Extract(ctx context.Context, agentContext contracts.Ag
 		return err
 	}
 
-	logger.Info("[记忆提取-Extract] 提取记忆成功",
+	logger.Debug("[记忆提取-Extract] 提取记忆成功",
 		zap.String("query", agentContext.Query),
 	)
 	return nil
@@ -102,13 +102,13 @@ func (e *memoryExtractor) Extract(ctx context.Context, agentContext contracts.Ag
 
 // extractAndStore 执行提取和存储。
 func (e *memoryExtractor) extractAndStore(ctx context.Context, agentContext contracts.AgentContext, answer string) error {
-	logger.Info("[记忆提取-extractAndStore] 开始提取和存储",
+	logger.Debug("[记忆提取-extractAndStore] 开始提取和存储",
 		zap.String("user_id", string(agentContext.UserID)),
 		zap.String("chat_model_id", agentContext.ChatModelID),
 	)
 
 	// 1. 调用LLM提取候选记忆
-	logger.Info("[记忆提取-extractAndStore] 步骤1: 调用LLM提取候选记忆")
+	logger.Debug("[记忆提取-extractAndStore] 步骤1: 调用LLM提取候选记忆")
 	items, err := e.extractCandidates(ctx, agentContext.ChatModelID, agentContext.Query, answer)
 	if err != nil {
 		logger.Error("[记忆提取-extractAndStore] LLM提取候选记忆失败", zap.Error(err))
@@ -116,32 +116,32 @@ func (e *memoryExtractor) extractAndStore(ctx context.Context, agentContext cont
 	}
 
 	if len(items) == 0 {
-		logger.Info("[记忆提取-extractAndStore] 未提取到候选记忆",
+		logger.Debug("[记忆提取-extractAndStore] 未提取到候选记忆",
 			zap.String("query", agentContext.Query),
 		)
 		return nil
 	}
 
-	logger.Info("[记忆提取-extractAndStore] 提取到候选记忆",
+	logger.Debug("[记忆提取-extractAndStore] 提取到候选记忆",
 		zap.String("query", agentContext.Query),
 		zap.Int("count", len(items)),
 	)
 
 	// 2. 调用MemoryManager处理
-	logger.Info("[记忆提取-extractAndStore] 步骤2: 调用MemoryManager处理")
+	logger.Debug("[记忆提取-extractAndStore] 步骤2: 调用MemoryManager处理")
 	userID := string(agentContext.UserID)
 	if err := e.memoryManager.Process(ctx, userID, items); err != nil {
 		logger.Error("[记忆提取-extractAndStore] MemoryManager处理失败", zap.Error(err))
 		return fmt.Errorf("process memories: %w", err)
 	}
 
-	logger.Info("[记忆提取-extractAndStore] MemoryManager处理成功")
+	logger.Debug("[记忆提取-extractAndStore] MemoryManager处理成功")
 	return nil
 }
 
 // extractCandidates 调用LLM提取候选记忆。
 func (e *memoryExtractor) extractCandidates(ctx context.Context, chatModelID string, query, answer string) ([]contracts.MemoryItem, error) {
-	logger.Info("[记忆提取-extractCandidates] 开始提取候选记忆",
+	logger.Debug("[记忆提取-extractCandidates] 开始提取候选记忆",
 		zap.String("chat_model_id", chatModelID),
 		zap.String("query", query),
 	)
@@ -167,12 +167,12 @@ func (e *memoryExtractor) extractCandidates(ctx context.Context, chatModelID str
 		return nil, fmt.Errorf("execute template: %w", err)
 	}
 
-	logger.Info("[记忆提取-extractCandidates] Prompt构建完成",
+	logger.Debug("[记忆提取-extractCandidates] Prompt构建完成",
 		zap.Int("prompt_length", userPrompt.Len()),
 	)
 
 	// 获取ChatModel
-	logger.Info("[记忆提取-extractCandidates] 获取ChatModel")
+	logger.Debug("[记忆提取-extractCandidates] 获取ChatModel")
 	model, err := e.modelFactory.GetChatModel(ctx, contracts.ID(chatModelID))
 	if err != nil {
 		logger.Error("[记忆提取-extractCandidates] 获取ChatModel失败", zap.Error(err))
@@ -180,7 +180,7 @@ func (e *memoryExtractor) extractCandidates(ctx context.Context, chatModelID str
 	}
 
 	// 调用LLM
-	logger.Info("[记忆提取-extractCandidates] 调用LLM提取记忆")
+	logger.Debug("[记忆提取-extractCandidates] 调用LLM提取记忆")
 	response, err := model.Generate(ctx, contracts.ChatRequest{
 		Messages: []contracts.ChatMessage{
 			{Role: "system", Content: e.promptConfig.System},
@@ -192,7 +192,7 @@ func (e *memoryExtractor) extractCandidates(ctx context.Context, chatModelID str
 		return nil, fmt.Errorf("chat with model: %w", err)
 	}
 
-	logger.Info("[记忆提取-extractCandidates] LLM调用成功",
+	logger.Debug("[记忆提取-extractCandidates] LLM调用成功",
 		zap.Int("response_length", len(response.Content)),
 		zap.String("response_preview", truncateString(response.Content, 500)),
 	)
@@ -207,7 +207,7 @@ func (e *memoryExtractor) extractCandidates(ctx context.Context, chatModelID str
 		return nil, fmt.Errorf("parse memory items: %w", err)
 	}
 
-	logger.Info("[记忆提取-extractCandidates] 提取候选记忆完成",
+	logger.Debug("[记忆提取-extractCandidates] 提取候选记忆完成",
 		zap.Int("items_count", len(items)),
 	)
 

@@ -205,12 +205,18 @@ func (s *PlannerService) buildPrompt(request contracts.AgentRunRequest) string {
   ]
 }` + "\n")
 	sb.WriteString("```\n\n")
-	sb.WriteString("注意事项：\n")
+	sb.WriteString("核心规划原则：\n")
+	sb.WriteString("1. 任何需要外部信息的步骤（如搜索网页、读取文档、查询数据等），必须调用对应工具获取原始数据，禁止在未获取数据的情况下直接推理或生成事实性内容。\n")
+	sb.WriteString("2. 所有事实性内容必须来自工具返回的结果，禁止凭空编造或基于推测生成。\n")
+	sb.WriteString("3. 如果用户问题涉及 URL 或外部资源，必须使用对应工具读取完整内容后再总结。\n")
+	sb.WriteString("\n")
+	sb.WriteString("字段说明：\n")
 	sb.WriteString("- steps 是数组，每个元素是一个步骤对象\n")
 	sb.WriteString("- step_number 是整数，从 1 开始\n")
-	sb.WriteString("- tool_name 和 arguments 可选，不调用工具时 tool_name 设为空字符串 \"\"\n")
-	sb.WriteString("- depends_on 是字符串数组，元素为依赖步骤的 step_number（用字符串表示，如 [\"1\", \"2\"]），无依赖则为空数组 []\n")
-	sb.WriteString("- final_answer 必须设为空字符串 \"\"，实际答案由步骤执行后自动生成，不要在此处填写任何内容\n")
+	sb.WriteString("- tool_name：需要调用工具时填写工具名称，不调用工具时设为空字符串 \"\"\n")
+	sb.WriteString("- arguments：工具调用参数（JSON 对象），不调用工具时设为空对象 {}\n")
+	sb.WriteString("- depends_on：依赖步骤的 step_number 字符串数组（如 [\"1\", \"2\"]），无依赖则为空数组 []\n")
+	sb.WriteString("- final_answer：必须设为空字符串 \"\"，实际答案由步骤执行后自动生成\n")
 
 	return sb.String()
 }

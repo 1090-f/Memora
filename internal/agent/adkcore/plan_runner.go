@@ -3,6 +3,7 @@ package adkcore
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -120,8 +121,8 @@ func (g *PlanExecuteGraph) generateFinalAnswer(plan *contracts.Plan, request con
 	var answers []string
 	for _, step := range plan.Steps {
 		if step.Status == contracts.PlanStepStatusCompleted && step.Output != "" {
-			// 跳过工具调用的原始输出（通常是 JSON）
-			if !isToolOutput(step.Output) {
+			// 跳过工具调用的原始输出（通常是 JSON）和模板占位符/无关内容块
+			if !isToolOutput(step.Output) && !isBoilerplateOutput(step.Output) {
 				answers = append(answers, step.Output)
 			}
 		}
@@ -170,7 +171,85 @@ func isToolOutput(text string) bool {
 		(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]"))
 }
 
-// stripMarkdown 去除 markdown 格式，返回纯文本
+// isBoilerplateOutput 检查是否是模板占位符或无关内容块。
+// MCP 工具可能返回包含占位符的 Markdown 模板，这些不应作为最终答案。
+func isBoilerplateOutput(text string) bool {
+	// 1. 检测模板占位符（中括号包裹的提示文本）
+	placeholderPatterns := []string{
+		"[请在此处填入",
+		"[通常位于",
+		"[一句话描述",
+		"[具体解决",
+		"[在此处填写",
+		"[例如：",
+		"[详细背景",
+		"[主要能力",
+		"[依赖的系统",
+		"[pip/npm/docker",
+		"[代码片段或",
+		"[关键配置",
+		"[接口列表",
+		"[MVC/MVVM",
+		"[核心功能",
+		"[典型使用",
+		"[插件/模块",
+		"[是否持续维护",
+		"[相关工具",
+		"[相关教程",
+		"[具体解决的问题或满足的需求]",
+		"[最新发布版本号",
+		"[最后更新时间",
+		"[详细背景和目标]",
+	}
+	for _, p := range placeholderPatterns {
+		if strings.Contains(text, p) {
+			return true
+		}
+	}
+
+	// 2. 检测通用模板标题（MCP 工具返回的标准化报告模板）
+	boilerplateHeaders := []string{
+		"GitHub网页内容分析结果",
+		"项目内容总结",
+		"任务执行结果：结构化报告",
+		"标准化分析模板",
+		"注：实际分析需根据",
+		"注：以上为总结模板",
+		"（注：以上为总结模板",
+		"实际内容需根据具体项目填充",
+		"此处为标准化分析模板",
+	}
+	for _, h := range boilerplateHeaders {
+		if strings.Contains(text, h) {
+			return true
+		}
+	}
+
+	// 3. 检测占位符密度过高（超过30%的行是占位符）
+	lines := strings.Split(text, "\n")
+	if len(lines) > 5 {
+		placeholderCount := 0
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
+			// 检查行内是否包含占位符标记
+			if strings.Contains(trimmed, "[") && strings.Contains(trimmed, "]") &&
+				(strings.Contains(trimmed, "填写") || strings.Contains(trimmed, "描述") ||
+					strings.Contains(trimmed, "例如") || strings.Contains(trimmed, "位于")) {
+				placeholderCount++
+			}
+		}
+		if float64(placeholderCount)/float64(len(lines)) > 0.3 {
+			return true
+		}
+	}
+
+	return false
+}
+
+// stripMarkdown 去除 markdown 格式，返回纯文本，并规范化格式。
 func stripMarkdown(text string) string {
 	result := text
 
@@ -191,11 +270,29 @@ func stripMarkdown(text string) string {
 	// 去除代码块标记
 	result = strings.ReplaceAll(result, "```", "")
 
-	// 去除列表标记
+	// 去除分隔线
+	result = strings.ReplaceAll(result, "---", "")
+	result = strings.ReplaceAll(result, "***", "")
+	result = strings.ReplaceAll(result, "___", "")
+
+	// 去除列表标记和冗余内容
 	lines := strings.Split(result, "\n")
 	var cleanLines []string
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
+
+		// 跳过空行（后续会合并连续空行）
+		if trimmed == "" {
+			cleanLines = append(cleanLines, "")
+			continue
+		}
+
+		// 去除冗余引导语前缀
+		trimmed = stripRedundantPrefix(trimmed)
+		if trimmed == "" {
+			continue
+		}
+
 		// 去除无序列表标记
 		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
 			trimmed = trimmed[2:]
@@ -217,7 +314,30 @@ func stripMarkdown(text string) string {
 		cleanLines = append(cleanLines, trimmed)
 	}
 
-	return strings.Join(cleanLines, "\n")
+	// 合并连续空行为单个空行
+	result = strings.Join(cleanLines, "\n")
+	result = regexp.MustCompile(`\n{3,}`).ReplaceAllString(result, "\n\n")
+
+	return strings.TrimSpace(result)
+}
+
+// stripRedundantPrefix 去除冗余的引导语前缀。
+func stripRedundantPrefix(text string) string {
+	redundantPrefixes := []string{
+		"检索结果：",
+		"检索结果:",
+		"注：",
+		"注:",
+		"备注：",
+		"备注:",
+	}
+	for _, prefix := range redundantPrefixes {
+		if strings.HasPrefix(text, prefix) {
+			text = strings.TrimPrefix(text, prefix)
+			text = strings.TrimSpace(text)
+		}
+	}
+	return text
 }
 
 // executePlan 执行计划中的所有步骤（DAG 并行）。

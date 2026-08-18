@@ -11,7 +11,9 @@ import (
 
 // InitPostgres 初始化PostgreSQL数据库连接并配置连接池参数
 func InitPostgres(ctx context.Context, cfg *config.DatabaseConfig) (*gorm.DB, error) {
-	db, err := gorm.Open(postgres.Open(cfg.URL), &gorm.Config{})
+	db, err := gorm.Open(postgres.Open(cfg.URL), &gorm.Config{
+		Logger: NewGormLogger(),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("打开 PostgreSQL 连接失败: %w", err)
 	}

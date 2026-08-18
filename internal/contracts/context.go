@@ -100,13 +100,9 @@ func (c AgentContext) ToPromptWithTags() string {
 }
 
 // ToPromptWithTagsCompact 将 AgentContext 转换为紧凑的标签格式（用于 token 有限的场景）。
+// 注意：SystemPrompt 不在此处注入 —— 它只属于 system role，不应作为上下文文本传递给 Planner。
 func (c AgentContext) ToPromptWithTagsCompact() string {
 	var prompt string
-
-	// 系统提示词
-	if c.SystemPrompt != "" {
-		prompt += c.SystemPrompt + "\n\n"
-	}
 
 	// 会话历史（只取最后 3 条，节省 token）
 	if len(c.Conversation.Messages) > 0 {

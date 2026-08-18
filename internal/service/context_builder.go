@@ -108,7 +108,7 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 	}
 
 	// 2. 构建基础上下文（固定插槽顺序）
-	logger.Info("Agent 配置从数据库加载",
+	logger.Debug("Agent 配置从数据库加载",
 		zap.Int("max_plan_steps", agentConfig.MaxPlanSteps),
 		zap.Int("max_replans", agentConfig.MaxReplans),
 		zap.Int("reviewer_runs", agentConfig.ReviewerRuns),
@@ -228,7 +228,9 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 	memRes := <-memCh
 	if memRes.err != nil {
 		// 记忆检索失败不影响核心功能，降级处理
-		fmt.Printf("警告: 记忆检索失败，降级处理: %v\n", memRes.err)
+		logger.Warn("记忆检索失败，降级处理",
+			zap.Error(memRes.err),
+		)
 		agentCtx.Memories = nil
 	} else {
 		agentCtx.Memories = memRes.memories
@@ -238,7 +240,9 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 	retrievalRes := <-retrievalCh
 	if retrievalRes.err != nil {
 		// 检索失败不影响核心功能，降级处理
-		fmt.Printf("警告: 知识状态检索失败，降级处理: %v\n", retrievalRes.err)
+		logger.Warn("知识状态检索失败，降级处理",
+			zap.Error(retrievalRes.err),
+		)
 		agentCtx.KnowledgeStatus = ""
 	} else {
 		agentCtx.KnowledgeStatus = retrievalRes.knowledgeStatus

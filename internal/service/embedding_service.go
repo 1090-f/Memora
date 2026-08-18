@@ -32,7 +32,7 @@ func (s *embeddingService) Embed(ctx context.Context, userID string, text string
 
 // EmbedWithModelID 将文本转换为向量，并返回使用的模型ID。
 func (s *embeddingService) EmbedWithModelID(ctx context.Context, userID string, text string) ([]float64, string, error) {
-	logger.Info("[Embedding-EmbedWithModelID] 开始向量化",
+	logger.Debug("[Embedding-EmbedWithModelID] 开始向量化",
 		zap.String("user_id", userID),
 		zap.Int("text_length", len(text)),
 	)
@@ -50,7 +50,7 @@ func (s *embeddingService) EmbedWithModelID(ctx context.Context, userID string, 
 	}
 
 	// 按用户获取默认的 embedding 模型配置
-	logger.Info("[Embedding-EmbedWithModelID] 步骤1: 获取用户默认 embedding 模型配置")
+	logger.Debug("[Embedding-EmbedWithModelID] 步骤1: 获取用户默认 embedding 模型配置")
 	config, err := s.models.FindDefaultByUserAndType(ctx, userID, "embedding")
 	if err != nil {
 		logger.Error("[Embedding-EmbedWithModelID] 获取 embedding 模型配置失败",
@@ -59,13 +59,13 @@ func (s *embeddingService) EmbedWithModelID(ctx context.Context, userID string, 
 		)
 		return nil, "", fmt.Errorf("find default embedding model for user %s: %w", userID, err)
 	}
-	logger.Info("[Embedding-EmbedWithModelID] 获取 embedding 模型配置成功",
+	logger.Debug("[Embedding-EmbedWithModelID] 获取 embedding 模型配置成功",
 		zap.String("model_id", config.ID),
 		zap.String("model_name", config.Name),
 	)
 
 	// 获取 EmbeddingModel
-	logger.Info("[Embedding-EmbedWithModelID] 步骤2: 获取 EmbeddingModel")
+	logger.Debug("[Embedding-EmbedWithModelID] 步骤2: 获取 EmbeddingModel")
 	model, err := s.modelFactory.GetEmbeddingModel(ctx, contracts.ID(config.ID))
 	if err != nil {
 		logger.Error("[Embedding-EmbedWithModelID] 获取 EmbeddingModel 失败", zap.Error(err))
@@ -73,7 +73,7 @@ func (s *embeddingService) EmbedWithModelID(ctx context.Context, userID string, 
 	}
 
 	// 调用模型进行向量化
-	logger.Info("[Embedding-EmbedWithModelID] 步骤3: 调用模型进行向量化")
+	logger.Debug("[Embedding-EmbedWithModelID] 步骤3: 调用模型进行向量化")
 	vectors, err := model.Embed(ctx, []string{text})
 	if err != nil {
 		logger.Error("[Embedding-EmbedWithModelID] 向量化失败", zap.Error(err))
@@ -91,7 +91,7 @@ func (s *embeddingService) EmbedWithModelID(ctx context.Context, userID string, 
 		result[i] = float64(v)
 	}
 
-	logger.Info("[Embedding-EmbedWithModelID] 向量化成功",
+	logger.Debug("[Embedding-EmbedWithModelID] 向量化成功",
 		zap.Int("vector_dim", len(result)),
 		zap.String("model_id", config.ID),
 	)
