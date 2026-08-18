@@ -57,3 +57,49 @@ func TestEffectiveResultCountRejectsWeakOnlyKeywordResults(t *testing.T) {
 		t.Fatalf("vector effective count = %d", got)
 	}
 }
+
+func TestKnowledgeStatusThreeState(t *testing.T) {
+	weak := &schema.Document{MetaData: map[string]any{
+		einoadapter.MetaKeywordMatchLevel: string(contracts.KeywordMatchWeak),
+	}}
+	strong := &schema.Document{MetaData: map[string]any{
+		einoadapter.MetaKeywordMatchLevel: string(contracts.KeywordMatchStrong),
+	}}
+	lowVector := &schema.Document{MetaData: map[string]any{
+		einoadapter.MetaVectorScore: 0.35,
+	}}
+	highVector := &schema.Document{MetaData: map[string]any{
+		einoadapter.MetaVectorScore: 0.6,
+	}}
+
+	// 数量不足 → insufficient。
+	if got := knowledgeStatus(nil, contracts.RetrievalHybrid, 0.3, 0.45, 1); got != "insufficient" {
+		t.Fatalf("empty -> %s, want insufficient", got)
+	}
+	if got := knowledgeStatus([]*schema.Document{weak}, contracts.RetrievalHybrid, 0.3, 0.45, 1); got != "insufficient" {
+		t.Fatalf("weak-only -> %s, want insufficient", got)
+	}
+	// 未启用阈值 → 两态，数量达标即 sufficient。
+	if got := knowledgeStatus([]*schema.Document{lowVector}, contracts.RetrievalVector, 0, 0, 1); got != "sufficient" {
+		t.Fatalf("threshold disabled -> %s, want sufficient", got)
+	}
+	// 向量模式：最高分低于 ambiguous_score → ambiguous。
+	if got := knowledgeStatus([]*schema.Document{lowVector}, contracts.RetrievalVector, 0.3, 0.45, 1); got != "ambiguous" {
+		t.Fatalf("low vector -> %s, want ambiguous", got)
+	}
+	if got := knowledgeStatus([]*schema.Document{lowVector, highVector}, contracts.RetrievalVector, 0.3, 0.45, 1); got != "sufficient" {
+		t.Fatalf("high vector -> %s, want sufficient", got)
+	}
+	// 混合模式：强关键词证据 → sufficient，即便向量分低。
+	if got := knowledgeStatus([]*schema.Document{strong, lowVector}, contracts.RetrievalHybrid, 0.3, 0.45, 1); got != "sufficient" {
+		t.Fatalf("strong keyword + low vector -> %s, want sufficient", got)
+	}
+	// 混合模式：弱关键词 + 低向量分 → ambiguous。
+	if got := knowledgeStatus([]*schema.Document{weak, lowVector}, contracts.RetrievalHybrid, 0.3, 0.45, 1); got != "ambiguous" {
+		t.Fatalf("weak keyword + low vector -> %s, want ambiguous", got)
+	}
+	// 混合模式：弱关键词 + 高向量分 → sufficient。
+	if got := knowledgeStatus([]*schema.Document{weak, highVector}, contracts.RetrievalHybrid, 0.3, 0.45, 1); got != "sufficient" {
+		t.Fatalf("weak keyword + high vector -> %s, want sufficient", got)
+	}
+}

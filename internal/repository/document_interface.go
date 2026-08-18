@@ -73,6 +73,9 @@ type DocumentChunkRepository interface {
 	ReadActive(ctx context.Context, userID, kbID, documentID, section string, fromChunk, limit int) ([]DocumentReadChunk, error)
 	// ListIndexVersions 返回指定文档的版本聚合信息并强制校验所有权。
 	ListIndexVersions(ctx context.Context, userID, documentID string) ([]DocumentIndexVersion, error)
+	// CleanupInactive 清理已软删除文档的全部 Chunk，以及超出保留版本的旧索引 Chunk。
+	// retention 为保留的旧版本数（0 表示只保留当前 active 版本）；返回删除数量。
+	CleanupInactive(ctx context.Context, retention int) (int64, error)
 }
 
 // ImportTaskRepository 定义导入任务数据访问接口。

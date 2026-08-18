@@ -1,9 +1,9 @@
 import CachedOutlined from '@mui/icons-material/CachedOutlined';
 import CheckCircleOutlineRounded from '@mui/icons-material/CheckCircleOutlineRounded';
 import CloseOutlined from '@mui/icons-material/CloseOutlined';
+import DeleteOutlined from '@mui/icons-material/DeleteOutlined';
 import DescriptionOutlined from '@mui/icons-material/DescriptionOutlined';
 import ErrorOutlineRounded from '@mui/icons-material/ErrorOutlineRounded';
-import MoreVertOutlined from '@mui/icons-material/MoreVertOutlined';
 import PendingActionsOutlined from '@mui/icons-material/PendingActionsOutlined';
 import PictureAsPdfOutlined from '@mui/icons-material/PictureAsPdfOutlined';
 import RefreshOutlined from '@mui/icons-material/RefreshOutlined';
@@ -120,8 +120,8 @@ function WorkspaceFeatureDialog({ open, onClose, icon, title, description, child
       slotProps={{
         paper: {
           sx: {
-            width: { xs: 'calc(100% - 24px)', md: 'min(1180px, calc(100% - 96px))' },
-            height: { xs: 'calc(100% - 24px)', md: 'min(82vh, 860px)' },
+            width: { xs: 'calc(100% - 24px)', md: 'min(1500px, calc(100% - 48px))' },
+            height: { xs: 'calc(100% - 24px)', md: 'min(94vh, 980px)' },
             maxHeight: { xs: 'calc(100% - 24px)', md: 'calc(100% - 64px)' },
             borderRadius: { xs: 2.5, md: 3.5 },
             border: '1px solid #e1e5ed',
@@ -141,7 +141,7 @@ function WorkspaceFeatureDialog({ open, onClose, icon, title, description, child
           <IconButton aria-label={`关闭${title}`} onClick={onClose}><CloseOutlined /></IconButton>
         </Stack>
       </DialogTitle>
-      <DialogContent sx={{ p: { xs: 2, md: 3 }, bgcolor: '#f8faff' }}>
+      <DialogContent sx={{ p: { xs: 2, md: 4 }, bgcolor: '#fff' }}>
         {children}
       </DialogContent>
     </Dialog>
@@ -324,7 +324,7 @@ function DocumentList({
                   <CachedOutlined sx={{ fontSize: 17 }} />
                 </IconButton>
               </Tooltip>
-              <Tooltip title="删除文档"><IconButton size="small" onClick={(event) => { event.stopPropagation(); onDelete(document); }}><MoreVertOutlined sx={{ fontSize: 18 }} /></IconButton></Tooltip>
+              <Tooltip title="删除文档"><IconButton size="small" onClick={(event) => { event.stopPropagation(); onDelete(document); }}><DeleteOutlined sx={{ fontSize: 18 }} /></IconButton></Tooltip>
             </Stack>
           </Box>
         );
@@ -702,7 +702,7 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
         onClose={() => setSelectedId(null)}
         icon={<DescriptionOutlined />}
         title={documentQuery.data?.title || '文档详情'}
-        description="查看文档内容、来源与处理状态。"
+        description="查看文档内容，支持表格预览与数据浏览"
       >
         {documentQuery.isPending && <LoadingState label="正在加载文档" />}
         {documentQuery.error && <ErrorState error={documentQuery.error as Error} onRetry={() => void documentQuery.refetch()} />}

@@ -6,7 +6,6 @@ import MemoryOutlined from '@mui/icons-material/MemoryOutlined';
 import MenuBookOutlined from '@mui/icons-material/MenuBookOutlined';
 import MenuOpenOutlined from '@mui/icons-material/MenuOpenOutlined';
 import MenuOutlined from '@mui/icons-material/MenuOutlined';
-import NotificationsNoneOutlined from '@mui/icons-material/NotificationsNoneOutlined';
 import QuestionAnswerOutlined from '@mui/icons-material/QuestionAnswerOutlined';
 import TimelineOutlined from '@mui/icons-material/TimelineOutlined';
 import type { SvgIconProps } from '@mui/material';
@@ -295,14 +294,6 @@ export function AppShell() {
           <GlobalKnowledgeBaseSearch inputRef={searchInputRef} />
         </div>
         <div className="ml-auto hidden items-center gap-5 lg:flex">
-          <button
-            type="button"
-            aria-label="通知"
-            className="relative flex h-10 w-10 items-center justify-center rounded-xl text-slate-700 transition hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30"
-          >
-            <NotificationsNoneOutlined className="h-6 w-6" />
-            <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-blue-500 ring-2 ring-white" />
-          </button>
           {user && (
             <Link
               to="/settings/profile"

@@ -48,6 +48,9 @@ type VectorRepository interface {
 	SearchCosine(ctx context.Context, params VectorSearchParams) ([]*VectorHit, error)
 	// DeleteByVersion 删除文档指定索引版本的向量。
 	DeleteByVersion(ctx context.Context, documentID string, indexVersion int) error
+	// CleanupInactive 清理已软删除文档的全部向量，以及超出保留版本的旧索引向量。
+	// retention 为保留的旧版本数（0 表示只保留当前 active 版本）；返回删除数量。
+	CleanupInactive(ctx context.Context, retention int) (int64, error)
 }
 
 // vectorRepository 是 VectorRepository 的 GORM 实现。
@@ -156,4 +159,23 @@ func (r *vectorRepository) DeleteByVersion(ctx context.Context, documentID strin
 		return fmt.Errorf("删除向量失败: %w", err)
 	}
 	return nil
+}
+
+// CleanupInactive 清理已软删除文档的全部向量，以及超出保留版本的旧索引向量。
+// 可见性只由 active_index_version 控制；仅删除 version < active_index_version - retention 的旧版本，
+// 正在构建的新版本（active 为 NULL 或 active+1）不受影响。
+func (r *vectorRepository) CleanupInactive(ctx context.Context, retention int) (int64, error) {
+	if retention < 0 {
+		retention = 0
+	}
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Exec(`
+		DELETE FROM document_vectors dv
+		USING documents d
+		WHERE dv.document_id = d.id
+		  AND (d.deleted_at IS NOT NULL
+		       OR (d.active_index_version IS NOT NULL AND dv.index_version < d.active_index_version - ?))`, retention)
+	if result.Error != nil {
+		return 0, fmt.Errorf("清理旧索引向量失败: %w", result.Error)
+	}
+	return result.RowsAffected, nil
 }

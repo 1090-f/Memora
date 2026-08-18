@@ -7,7 +7,7 @@ import (
 	"github.com/1090-f/Memora/internal/model/entity"
 )
 
-// KnowledgeBaseImportTrendPoint 表示某个 UTC 自然日创建的导入任务数量。
+// KnowledgeBaseImportTrendPoint 表示某个 UTC 自然日创建的文档数量。
 type KnowledgeBaseImportTrendPoint struct {
 	Day   time.Time
 	Count int64

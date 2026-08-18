@@ -32,6 +32,7 @@ type Manager struct {
 	previewConsumer  config.PreviewConsumerConfig
 	previewEnabled   bool
 	outboxCfg        config.OutboxConfig
+	cleanup          config.IndexCleanupConfig
 	name             string
 }
 
@@ -45,12 +46,13 @@ func NewManager(
 	consumer config.DocumentConsumerConfig,
 	previewCfg config.PreviewConfig,
 	outboxCfg config.OutboxConfig,
+	cleanupCfg config.IndexCleanupConfig,
 ) *Manager {
 	return &Manager{
 		redis: redisClient, tasks: tasks, previews: previews, outbox: outbox,
 		processor: processor, previewProcessor: previewProcessor,
 		consumer: consumer, previewConsumer: previewCfg.Consumer, previewEnabled: previewCfg.Enabled,
-		outboxCfg: outboxCfg, name: consumerName(),
+		outboxCfg: outboxCfg, cleanup: cleanupCfg, name: consumerName(),
 	}
 }
 
@@ -92,8 +94,14 @@ func (m *Manager) Run(ctx context.Context) error {
 	if m.previewEnabled {
 		workerCount += 1 + m.previewConsumer.Concurrency
 	}
+	if m.cleanup.Enabled {
+		workerCount++
+	}
 	wg.Add(workerCount)
 	go func() { defer wg.Done(); m.publishLoop(ctx) }()
+	if m.cleanup.Enabled {
+		go func() { defer wg.Done(); m.cleanupLoop(ctx) }()
+	}
 	if m.consumer.Enabled {
 		go func() { defer wg.Done(); m.reclaimLoop(ctx) }()
 		for i := 0; i < m.consumer.Concurrency; i++ {
@@ -133,6 +141,38 @@ func (m *Manager) publishLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
+	}
+}
+
+// cleanupLoop 周期性清理旧索引版本与已删除文档的 Chunk/向量。
+func (m *Manager) cleanupLoop(ctx context.Context) {
+	interval := m.cleanup.Interval
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.runCleanup(ctx)
+		}
+	}
+}
+
+// runCleanup 执行一次旧索引清理，带独立超时，失败仅记录日志不影响其他后台任务。
+func (m *Manager) runCleanup(ctx context.Context) {
+	if m.processor == nil {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	if n, err := m.processor.CleanupInactiveIndexes(cleanupCtx, m.cleanup.Retention); err != nil {
+		logger.Error("旧索引版本清理失败", zap.Error(err))
+	} else if n > 0 {
+		logger.Info("旧索引版本清理完成", zap.Int64("deleted", n), zap.Int("retention", m.cleanup.Retention))
 	}
 }
 

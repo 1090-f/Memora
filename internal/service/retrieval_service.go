@@ -68,6 +68,7 @@ func (s *retrievalService) Retrieve(ctx context.Context, request contracts.Retri
 		KeywordTopK: cfg.KeywordTopK, VectorTopK: cfg.VectorTopK, RRFK: cfg.RRFK, RRFTopK: cfg.RRFTopK,
 		RerankerTopK: cfg.RerankerTopK, RerankerThreshold: cfg.RerankerThreshold,
 		MinimumEffectiveResult: cfg.MinimumEffectiveRate, MinVectorScore: cfg.MinVectorScore,
+		AmbiguousScore: cfg.AmbiguousScore,
 	}
 	rerankerModelID := cfg.RerankerModelID
 	if rerankerModelID == nil {

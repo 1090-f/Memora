@@ -17,6 +17,7 @@ bin/
 *.test
 *.out
 .gocache/
+.gocache-codex/
 .gomodcache/
 
 # Python

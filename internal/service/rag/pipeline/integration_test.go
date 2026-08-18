@@ -78,12 +78,13 @@ func TestIntegrationRetrievalPipelineEndToEnd(t *testing.T) {
 	}
 
 	embedder := &scriptedEmbedder{vectors: map[string][]float64{
-		"default": {1, 0, 0}, // 与索引向量同向，余弦相似度 = 1
-		"far":     {0, 0, 1}, // 与索引向量正交，余弦相似度 = 0
+		"default": {1, 0, 0},         // 与索引向量同向，余弦相似度 = 1
+		"far":     {0, 0, 1},         // 与索引向量正交，余弦相似度 = 0
+		"mid":     {0.35, 0.9367, 0}, // 余弦相似度 ≈ 0.35，位于 [min_vector_score, ambiguous_score) 区间
 	}}
 	config := contracts.SearchConfig{
 		KeywordTopK: 10, VectorTopK: 10, RRFK: 60, RRFTopK: 10,
-		MinimumEffectiveResult: 1, MinVectorScore: 0.3,
+		MinimumEffectiveResult: 1, MinVectorScore: 0.3, AmbiguousScore: 0.45,
 	}
 
 	// 高相似度查询：关键词与向量均命中，应返回 sufficient 且带引用。
@@ -123,5 +124,21 @@ func TestIntegrationRetrievalPipelineEndToEnd(t *testing.T) {
 	}
 	if result.KnowledgeStatus != "insufficient" {
 		t.Fatalf("无答案查询应 insufficient，实际 %s, items=%d", result.KnowledgeStatus, len(result.Items))
+	}
+
+	// 边界查询（修复 3 扩展）：向量相似度 0.35 通过召回阈值但低于 ambiguous_score，
+	// 关键词不命中 → 应 ambiguous（资料存在但无法明确支持结论）。
+	result, err = graph.Run(ctx, RetrievalInput{
+		Request: contracts.RetrievalRequest{
+			UserID: contracts.ID(userID), KnowledgeBaseID: contracts.ID(kbID),
+			Query: "mid", Mode: contracts.RetrievalHybrid, TopK: 5, Config: config,
+		},
+		Embedder: embedder, EmbeddingModelID: modelID,
+	})
+	if err != nil {
+		t.Fatalf("边界混合检索失败: %v", err)
+	}
+	if result.KnowledgeStatus != "ambiguous" {
+		t.Fatalf("边界查询应 ambiguous，实际 %s, items=%d", result.KnowledgeStatus, len(result.Items))
 	}
 }

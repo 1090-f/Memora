@@ -617,11 +617,13 @@ P0 不提供 Memory 手工新增和手工修改内容接口，Memory 默认由 M
   "reranker_threshold": 0.35,
   "minimum_effective_results": 1,
   "min_vector_score": 0.3,
+  "ambiguous_score": 0.45,
   "reranker_model_id": "uuid"
 }
 ```
 
 `min_vector_score` 是向量相似度最低阈值（0~1），召回层过滤低于该分数的结果，0 表示不启用过滤；用于知识充分性判断，避免低质量向量结果被判定为 sufficient。
+`ambiguous_score` 是"资料存在但依据不明确"判定阈值（0~1，建议高于 min_vector_score）：向量/混合检索中，当有效结果数量达标但最高向量相似度仍低于该值时，知识状态判为 `ambiguous`（介于 sufficient 与 insufficient 之间），0 表示不启用三态判定。
 
 ### `PUT /knowledge-bases/{kb_id}/search-config`
 

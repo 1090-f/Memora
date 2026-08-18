@@ -55,6 +55,12 @@ outbox:
   poll_interval: 500ms
   batch_size: 100
 
+# 旧索引版本后台清理（删除已软删除文档与超出保留版本的旧索引 Chunk/向量）
+index_cleanup:
+  enabled: true
+  interval: 1h
+  retention: 1            # 保留的旧版本数（0 表示只保留当前 active 版本）
+
 # 文档视觉预览（独立于解析/索引流水线）
 preview:
   enabled: true

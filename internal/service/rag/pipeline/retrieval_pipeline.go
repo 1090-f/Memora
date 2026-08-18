@@ -195,10 +195,8 @@ func NewRetrievalPipeline(keyword, vector retriever.Retriever, citations citatio
 		if minimum <= 0 {
 			minimum = 1
 		}
-		state.status = "insufficient"
-		if effectiveResultCount(state.finalDocs, state.input.Request.Mode, state.input.Request.Config.MinVectorScore) >= minimum {
-			state.status = "sufficient"
-		}
+		state.status = knowledgeStatus(state.finalDocs, state.input.Request.Mode,
+			state.input.Request.Config.MinVectorScore, state.input.Request.Config.AmbiguousScore, minimum)
 		return state, nil
 	})
 	if err := g.AddLambdaNode("knowledge_evaluate", evaluate); err != nil {
@@ -383,6 +381,66 @@ func effectiveResultCount(docs []*schema.Document, mode contracts.RetrievalMode,
 		}
 	}
 	return count
+}
+
+// knowledgeStatus 计算知识充分性三态：insufficient / ambiguous / sufficient。
+// 规则（对应需求 4.8.5）：
+//   - 有效结果数不足 → insufficient（无结果或数量不足）；
+//   - 未启用质量阈值（min_vector_score/ambiguous_score <= 0）时保持两态，数量达标即 sufficient；
+//   - 向量模式：最高向量相似度低于 ambiguous_score → ambiguous；
+//   - 混合模式：存在强关键词证据（exact/strong）→ sufficient；否则最高向量相似度低于 ambiguous_score → ambiguous。
+func knowledgeStatus(docs []*schema.Document, mode contracts.RetrievalMode, minVectorScore, ambiguousScore float64, minimum int) string {
+	if effectiveResultCount(docs, mode, minVectorScore) < minimum {
+		return "insufficient"
+	}
+	if minVectorScore <= 0 || ambiguousScore <= 0 {
+		return "sufficient"
+	}
+	switch mode {
+	case contracts.RetrievalVector:
+		if maxVectorScore(docs) < ambiguousScore {
+			return "ambiguous"
+		}
+		return "sufficient"
+	case contracts.RetrievalHybrid:
+		if hasStrongKeywordEvidence(docs) {
+			return "sufficient"
+		}
+		if maxVectorScore(docs) < ambiguousScore {
+			return "ambiguous"
+		}
+		return "sufficient"
+	default:
+		return "sufficient"
+	}
+}
+
+// maxVectorScore 返回结果集中最高的向量相似度；无向量分时返回 -1。
+func maxVectorScore(docs []*schema.Document) float64 {
+	best := -1.0
+	found := false
+	for _, doc := range docs {
+		meta := doc.MetaData
+		if _, ok := meta[einoadapter.MetaVectorScore]; !ok {
+			continue
+		}
+		score := einoadapter.GetMetaFloat(meta, einoadapter.MetaVectorScore)
+		if !found || score > best {
+			best, found = score, true
+		}
+	}
+	return best
+}
+
+// hasStrongKeywordEvidence 判断结果集是否包含明确的强关键词匹配证据。
+func hasStrongKeywordEvidence(docs []*schema.Document) bool {
+	for _, doc := range docs {
+		level := contracts.KeywordMatchLevel(einoadapter.GetMetaString(doc.MetaData, einoadapter.MetaKeywordMatchLevel))
+		if level == contracts.KeywordMatchExact || level == contracts.KeywordMatchStrong {
+			return true
+		}
+	}
+	return false
 }
 
 func cloneMeta(input map[string]any) map[string]any {

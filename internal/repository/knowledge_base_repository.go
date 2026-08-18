@@ -146,9 +146,11 @@ func (r *knowledgeBaseRepository) GetDashboardSnapshot(ctx context.Context, user
 		Day   time.Time `gorm:"column:day"`
 		Count int64     `gorm:"column:count"`
 	}
-	if err := db.Model(&entity.ImportTask{}).
+	// 文档库展示的是已经进入知识库的文档；不要依赖 import_tasks，避免历史导入
+	// 或其他入口创建的文档因没有任务记录而在趋势中显示为 0。
+	if err := db.Model(&entity.Document{}).
 		Select("DATE(created_at) AS day, COUNT(*) AS count").
-		Where("user_id = ? AND knowledge_base_id = ? AND created_at >= ?", userID, kbID, since).
+		Where("user_id = ? AND knowledge_base_id = ? AND created_at >= ? AND deleted_at IS NULL", userID, kbID, since).
 		Group("DATE(created_at)").Order("day ASC").Scan(&trendRows).Error; err != nil {
 		return nil, fmt.Errorf("聚合知识库导入趋势失败: %w", err)
 	}
