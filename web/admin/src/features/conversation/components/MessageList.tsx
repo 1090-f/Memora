@@ -137,7 +137,7 @@ export function MessageList({ messages, streamingAnswer, agentRunState, agentRun
   return (
     <Stack spacing={2.2} alignItems="center" sx={{ flex: 1, overflow: 'auto', px: { xs: 2, md: 4 }, py: 3, bgcolor: '#fff' }}>
       <Stack spacing={2.2} sx={{ width: '100%', maxWidth: 980, flexShrink: 0 }}>
-      {messages.map((message, idx) => (
+      {messages.map((message) => (
         <Box key={message.id}>
         {/* Historical agent run process — shown above completed assistant messages */}
         {(() => {
@@ -146,11 +146,11 @@ export function MessageList({ messages, streamingAnswer, agentRunState, agentRun
           return message.role === 'assistant' && effectiveRunId && message.id !== retryingMessageId
             && runState && runState.status !== 'idle' && (
             <Box sx={{ mb: 1.5 }}>
-              <InlineAgentRun state={runState} />
+              <InlineAgentRun state={runState} runId={effectiveRunId ?? undefined} />
             </Box>
           );
         })()}
-        {message.role === 'assistant' && message.id === retryingMessageId && <InlineAgentRun state={agentRunState} />}
+        {message.role === 'assistant' && message.id === retryingMessageId && <InlineAgentRun state={agentRunState} runId={agentRunId ?? undefined} />}
         {message.id !== retryingMessageId && !(hidePreviousAssistantReply && message.id === lastAssistantMsg?.id) && <Stack direction={message.role === 'user' ? 'row-reverse' : 'row'} spacing={1.2} alignItems="flex-start" sx={{ mt: message.role === 'assistant' && message.id === retryingMessageId ? 1.2 : 0, width: message.role === 'assistant' ? '100%' : 'fit-content', ml: message.role === 'user' ? 'auto' : 0, maxWidth: message.role === 'user' ? '78%' : '100%' }}> 
           <Box sx={{ width: 34, height: 34, flexShrink: 0, borderRadius: message.role === 'user' ? '50%' : 2, display: 'grid', placeItems: 'center', color: '#fff', background: message.role === 'user' ? 'linear-gradient(145deg,#5683f7,#5862e9)' : 'linear-gradient(145deg,#697af6,#704de5)', boxShadow: '0 7px 16px rgba(75,74,220,.2)', fontSize: 12 }}>
             {message.role === 'user' ? 'A' : <SmartToyOutlined sx={{ fontSize: 20 }} />}
@@ -219,7 +219,7 @@ export function MessageList({ messages, streamingAnswer, agentRunState, agentRun
             <Typography sx={{ color: '#8c97aa', fontSize: 10.5, mt: 0.5, textAlign: message.role === 'user' ? 'right' : 'left' }}>{new Date(message.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</Typography>
           </Box>
         </Stack>}
-        {message.id === lastUserMessage?.id && shouldShowRunUnderUser && <InlineAgentRun state={agentRunState} />}
+        {message.id === lastUserMessage?.id && shouldShowRunUnderUser && <InlineAgentRun state={agentRunState} runId={agentRunId ?? undefined} />}
         </Box>
        ))}
       {streamingAnswer && (

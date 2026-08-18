@@ -1,7 +1,10 @@
 // Package response 定义 API 响应 DTO，遵循 snake_case JSON 命名约定。
 package response
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // AgentRunResponse 表示 Agent 运行详情的响应。
 // 用于展示运行状态、路由决策、执行轨迹和最终结果。
@@ -62,4 +65,25 @@ type CreateAgentRunResponse struct {
 type RetryAgentRunResponse struct {
 	NewRunID string `json:"new_run_id"` // NewRunID 新创建的运行 ID
 	Status   string `json:"status"`     // Status 初始状态（queued）
+}
+
+// ToolCallResponse 表示 Agent 运行中单次工具调用的详情。
+// 用于在运行链路中查看某条工具调用的输入输出与执行元数据。
+type ToolCallResponse struct {
+	ID                string          `json:"id"`                           // ID 工具调用记录 ID
+	ToolName          string          `json:"tool_name"`                    // ToolName 工具名称
+	ToolType          string          `json:"tool_type"`                    // ToolType 工具类型（internal / mcp）
+	Status            string          `json:"status"`                       // Status 调用状态（succeeded / failed / ...）
+	ReactRoundNo      *int            `json:"react_round_no,omitempty"`     // ReactRoundNo ReAct 执行轮次编号
+	InputSummary      string          `json:"input_summary,omitempty"`      // InputSummary 工具输入参数（原子入参）
+	OutputSummary     string          `json:"output_summary,omitempty"`     // OutputSummary 工具输出结果
+	ArgumentsRedacted json.RawMessage `json:"arguments_redacted,omitempty"` // ArgumentsRedacted 脱敏参数快照
+	ResultMeta        json.RawMessage `json:"result_meta,omitempty"`        // ResultMeta 结果元数据
+	ResponseBytes     *int64          `json:"response_bytes,omitempty"`     // ResponseBytes 原始响应字节数
+	IsTruncated       bool            `json:"is_truncated"`                 // IsTruncated 结果是否被截断
+	ErrorCode         *string         `json:"error_code,omitempty"`         // ErrorCode 失败错误码
+	ErrorMessage      *string         `json:"error_message,omitempty"`      // ErrorMessage 失败错误信息
+	DurationMs        *int64          `json:"duration_ms,omitempty"`        // DurationMs 调用耗时（毫秒）
+	StartedAt         time.Time       `json:"started_at"`                   // StartedAt 调用开始时间
+	EndedAt           *time.Time      `json:"ended_at,omitempty"`           // EndedAt 调用结束时间
 }
