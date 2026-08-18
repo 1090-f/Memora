@@ -12,6 +12,6 @@ type AgentCore = contracts.AgentRunService
 // RunRepository 只定义 Agent Service 生命周期需要的持久化动作。
 // 具体 SQL、用户归属和并发条件更新由 internal/repository 实现。
 type RunRepository interface {
-	Cancel(ctx context.Context, runID, userID contracts.ID) error
+	Cancel(ctx context.Context, runID, userID contracts.ID, executionMode string) error
 	Retry(ctx context.Context, runID, userID contracts.ID) (contracts.ID, error)
 }

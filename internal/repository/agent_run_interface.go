@@ -41,7 +41,8 @@ type AgentRunRepository interface {
 	MarkFailed(ctx context.Context, runID uuid.UUID, errorCode, errorMessage, executionMode string, durationMs int64, inputTokens, outputTokens, totalTokens int) error
 
 	// MarkCancelled 更新运行状态为 cancelled（需同时验证用户 ID 确保所有者可取消）。
-	MarkCancelled(ctx context.Context, userID, runID uuid.UUID) error
+	// executionMode 为空表示在 Router 决策出模式前取消，此时不写入执行模式。
+	MarkCancelled(ctx context.Context, userID, runID uuid.UUID, executionMode string) error
 
 	// SetAssistantMessageID 设置运行记录的助手消息 ID（运行完成后调用）。
 	SetAssistantMessageID(ctx context.Context, runID uuid.UUID, assistantMessageID uuid.UUID) error
