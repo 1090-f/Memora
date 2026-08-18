@@ -27,6 +27,7 @@ import ReplayOutlined from '@mui/icons-material/ReplayOutlined';
 import clsx from 'clsx';
 import { queryKeys } from '@/api/queryKeys';
 import { errorMessage } from '@/api/errors';
+import { ActionNotice } from '@/components/shared/ActionNotice';
 import { importFiles, scanImportTask, startImportTask, uploadTaskAttachments } from '../api';
 import { flattenDirectories } from '../directoryOptions';
 import type { DirectoryNode, ImageScanResult, ImageRefStatus, ImportUploadResponse } from '../types';
@@ -417,7 +418,7 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
       </DialogTitle>
       <DialogContent sx={{ p: 0 }}>
         <Stack spacing={2} sx={{ p: 3 }}>
-        {notice && <Alert severity="success" onClose={() => setNotice('')}>{notice}</Alert>}
+        <ActionNotice message={notice} onClose={() => setNotice('')} />
         {validationError && <Alert severity="warning" onClose={() => setValidationError('')}>{validationError}</Alert>}
         {uploadMutation.error && !cancelled && <Alert severity="error">{errorMessage(uploadMutation.error)}</Alert>}
         {startMutation.error && <Alert severity="error">开始导入失败：{errorMessage(startMutation.error)}</Alert>}

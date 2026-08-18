@@ -118,7 +118,9 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
       pendingConversationNavigationRef.current = null;
       return;
     }
-    // 切换会话不终止正在运行的 Agent；返回原会话时通过 run_id 重新订阅事件。
+    // 只断开当前页面的事件订阅，不取消服务端仍在执行的 Agent。
+    abortRef.current?.abort();
+    abortRef.current = null;
     replayAbortRef.current?.abort();
     replayAbortRef.current = null;
     setActiveConversationId(conversationId);
@@ -133,6 +135,11 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
     setHistoricalRunStates({});
     historicalHydratedRef.current = new Set();
   }, [kbId, conversationId]);
+
+  useEffect(() => () => {
+    abortRef.current?.abort();
+    replayAbortRef.current?.abort();
+  }, []);
 
   const knowledgeBasesQuery = useQuery({
     queryKey: queryKeys.knowledgeBases,

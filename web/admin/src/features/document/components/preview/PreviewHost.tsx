@@ -7,7 +7,8 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { errorMessage } from '@/api/errors';
-import { getDocumentTextPreview } from '../../api';
+import { queryKeys } from '@/api/queryKeys';
+import { getDocumentTextPreviewById } from '../../api';
 import type { DocumentPreview, PreviewFallback, PreviewStatus, PreviewType } from '../../types';
 import { ImageViewer } from './ImageViewer';
 import { MarkdownViewer } from './MarkdownViewer';
@@ -147,17 +148,18 @@ function ModeContent({ documentId, mode, title, error, onRetry, retrying }: {
     case 'pdf': return <PdfViewer documentId={documentId} contentUrl={mode.contentUrl} title={title} />;
     case 'image': return <ImageViewer documentId={documentId} contentUrl={mode.contentUrl} title={title} />;
     case 'table': return <TableViewer documentId={documentId} contentUrl={mode.contentUrl} />;
-    case 'markdown': return <TextResourceViewer documentId={documentId} contentUrl={mode.contentUrl} markdown />;
-    case 'text': return <TextResourceViewer documentId={documentId} contentUrl={mode.contentUrl} markdown={false} />;
+    case 'markdown': return <TextResourceViewer documentId={documentId} markdown />;
+    case 'text': return <TextResourceViewer documentId={documentId} markdown={false} />;
     default: return <Box py={4} textAlign="center"><Typography color="text.secondary">该预览方式暂不支持。</Typography></Box>;
   }
 }
 
-function TextResourceViewer({ documentId, contentUrl, markdown }: { documentId: string; contentUrl: string; markdown: boolean }) {
+function TextResourceViewer({ documentId, markdown }: { documentId: string; markdown: boolean }) {
   const query = useQuery({
-    queryKey: ['documents', documentId, 'preview-text', contentUrl],
-    queryFn: () => getDocumentTextPreview(contentUrl),
+    queryKey: queryKeys.documentPreviewText(documentId),
+    queryFn: () => getDocumentTextPreviewById(documentId),
     retry: false,
+    staleTime: 5 * 60_000,
   });
   if (query.isPending) return <Typography color="text.secondary">正在读取完整解析正文…</Typography>;
   if (query.error) return <Alert severity="warning">正文读取失败：{errorMessage(query.error)}</Alert>;

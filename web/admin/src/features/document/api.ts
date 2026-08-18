@@ -40,6 +40,9 @@ const descriptorPath = (url: string) => url.startsWith('/api/v1/') ? url.slice('
 export const getDocumentTextPreview = (contentUrl: string) =>
   apiRequest<DocumentTextPreview>({ url: descriptorPath(contentUrl) });
 
+export const getDocumentTextPreviewById = (documentId: string) =>
+  apiRequest<DocumentTextPreview>({ url: `/documents/${documentId}/preview/text` });
+
 export const getDocumentTablePreview = (contentUrl: string, params: { sheet_index: number; row_offset: number; row_limit?: number }) =>
   apiRequest<DocumentTablePreview>({ url: descriptorPath(contentUrl), params });
 

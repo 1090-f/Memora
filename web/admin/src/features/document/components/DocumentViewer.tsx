@@ -40,7 +40,7 @@ export function DocumentViewer({ document, processing }: { document: Document; p
   const failureStep = processing?.failure_step || document.failure_step;
   const effectiveStatus = processing?.processing_status ?? document.processing_status;
   const descriptorQuery = useQuery({
-    queryKey: [...queryKeys.documentContent(document.id), 'preview-descriptor', document.content_version],
+    queryKey: queryKeys.documentPreview(document.id),
     queryFn: () => getDocumentPreview(document.id),
     retry: false,
     refetchInterval: (query) => {

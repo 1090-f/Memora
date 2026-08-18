@@ -8,6 +8,7 @@ import { useState } from 'react';
 import { capabilities, type CapabilityStatus } from '@/app/capabilities';
 import { queryKeys } from '@/api/queryKeys';
 import { EmptyState } from '@/components/shared/EmptyState';
+import { ActionNotice } from '@/components/shared/ActionNotice';
 import { ErrorState } from '@/components/shared/ErrorState';
 import { LoadingState } from '@/components/shared/LoadingState';
 import { UnavailableState } from '@/components/shared/UnavailableState';
@@ -171,8 +172,11 @@ export function McpPageContent({ status }: { status: CapabilityStatus }) {
 
   return <Stack spacing={3}>
     <Stack direction="row" alignItems="center"><BoxTitle /><Button variant="contained" startIcon={<AddOutlined />} onClick={() => setImportOpen(true)}>导入 MCP 服务</Button></Stack>
-    {notice && <Alert onClose={() => setNotice('')} severity={notice.startsWith('连接失败') ? 'error' : 'success'}>{notice}</Alert>}
-    {actionError && <Alert severity="error" onClose={() => setActionError(null)}>操作失败：{actionError.message}</Alert>}
+    <ActionNotice
+      message={actionError ? `操作失败：${actionError.message}` : notice}
+      severity={actionError || notice.startsWith('连接失败') ? 'error' : 'success'}
+      onClose={() => { setNotice(''); setActionError(null); }}
+    />
     {query.isPending && <LoadingState label="正在加载 MCP 服务" />}
     {query.error && <ErrorState error={query.error as Error} onRetry={() => void query.refetch()} />}
     {!query.isPending && !query.error && query.data?.servers.length === 0 && <EmptyState title="暂无 MCP Server" description="导入 Claude Desktop、Cursor 或 Trae 格式的 MCP 配置。" action={<Button variant="contained" onClick={() => setImportOpen(true)}>导入配置</Button>} />}

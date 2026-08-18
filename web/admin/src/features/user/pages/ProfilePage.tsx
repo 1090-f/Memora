@@ -9,6 +9,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { queryKeys } from '@/api/queryKeys';
 import { ErrorState } from '@/components/shared/ErrorState';
+import { ActionNotice } from '@/components/shared/ActionNotice';
 import { LoadingState } from '@/components/shared/LoadingState';
 import { updateStoredUser } from '@/features/auth/session';
 import { listKnowledgeBases } from '@/features/knowledge-base/api';
@@ -146,7 +147,7 @@ export function ProfilePage() {
           <Typography component="h2" sx={{ color: '#111c3a', fontSize: { xs: 27, md: 31 }, fontWeight: 700, lineHeight: 1.2 }}>个人资料设置</Typography>
           <Typography sx={{ color: '#66728c', fontSize: 14, mt: 0.75 }}>管理您的个人信息和账户安全设置，确保账户信息准确完整。</Typography>
         </Box>
-        {profileMessage && <Alert severity="success" onClose={() => setProfileMessage('')} sx={{ minWidth: 300, border: '1px solid #d7ebdd', bgcolor: '#fbfffc', boxShadow: '0 8px 24px rgba(31,90,48,.08)' }}>{profileMessage}</Alert>}
+        <ActionNotice message={profileMessage} onClose={() => setProfileMessage('')} />
       </Stack>
 
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: '400px minmax(0, 800px)' }, gap: 2, alignItems: 'stretch', justifyContent: 'center' }}>

@@ -41,6 +41,7 @@ import { errorMessage } from '@/api/errors';
 import { queryKeys } from '@/api/queryKeys';
 import { capabilities, type CapabilityStatus } from '@/app/capabilities';
 import { EmptyState } from '@/components/shared/EmptyState';
+import { ActionNotice } from '@/components/shared/ActionNotice';
 import { ErrorState } from '@/components/shared/ErrorState';
 import { LoadingState } from '@/components/shared/LoadingState';
 import { UnavailableState } from '@/components/shared/UnavailableState';
@@ -54,7 +55,9 @@ import {
   deleteDocument,
   getDirectoryTree,
   getDocument,
+  getDocumentPreview,
   getDocumentProcessing,
+  getDocumentTextPreviewById,
   listDocuments,
   listImportTasks,
   moveDocument,
@@ -73,6 +76,7 @@ import {
   type DocumentStatusFilter,
 } from '../status';
 import type {
+  Document,
   DocumentListItem,
   DocumentProcessingStatus,
   DocumentSourceType,
@@ -232,6 +236,7 @@ function DocumentList({
   onSelect,
   onDelete,
   onMove,
+  onWarm,
   onRetry,
   onReindex,
   onDocumentsChange,
@@ -242,9 +247,10 @@ function DocumentList({
   status: DocumentStatusFilter;
   sourceType: '' | DocumentSourceType;
   selectedId: string | null;
-  onSelect: (id: string) => void;
+  onSelect: (document: DocumentListItem) => void;
   onDelete: (document: DocumentListItem) => void;
   onMove: (document: DocumentListItem) => void;
+  onWarm: (document: DocumentListItem) => void;
   onRetry: (document: DocumentListItem) => void;
   onReindex: (document: DocumentListItem) => void;
   onDocumentsChange?: (items: DocumentListItem[], total: number) => void;
@@ -295,8 +301,10 @@ function DocumentList({
             key={document.id}
             role="button"
             tabIndex={0}
-            onClick={() => onSelect(document.id)}
-            onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(document.id); } }}
+            onMouseEnter={() => onWarm(document)}
+            onFocus={() => onWarm(document)}
+            onClick={() => onSelect(document)}
+            onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(document); } }}
             sx={{
               display: 'grid',
               gridTemplateColumns: 'minmax(210px, 1.8fr) 70px 90px 105px 122px',
@@ -323,7 +331,7 @@ function DocumentList({
             />
             <Typography sx={{ fontSize: 12, color: '#65728a' }}>{new Date(document.updated_at).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })}</Typography>
             <Stack direction="row" spacing={0}>
-              <Tooltip title="打开文档"><IconButton size="small" onClick={(event) => { event.stopPropagation(); onSelect(document.id); }}><VisibilityOutlined sx={{ fontSize: 17 }} /></IconButton></Tooltip>
+              <Tooltip title="打开文档"><IconButton size="small" onClick={(event) => { event.stopPropagation(); onSelect(document); }}><VisibilityOutlined sx={{ fontSize: 17 }} /></IconButton></Tooltip>
               <Tooltip title={document.processing_status === 'failed' ? '重试处理' : '重新建立索引'}>
                 <IconButton size="small" onClick={(event) => { event.stopPropagation(); if (document.processing_status === 'failed') onRetry(document); else onReindex(document); }} disabled={isProcessing(document.processing_status)}>
                   <CachedOutlined sx={{ fontSize: 17 }} />
@@ -428,8 +436,11 @@ function ImportTasks({ kbId, onOpenDocument, embedded = false }: {
         )}
         <Button size="small" startIcon={<RefreshOutlined />} onClick={() => void query.refetch()}>刷新</Button>
       </Stack>
-      {cleanupNotice && <Alert severity="success" sx={{ mb: 1 }} onClose={() => setCleanupNotice('')}>{cleanupNotice}</Alert>}
-      {cleanupError && <Alert severity="error" sx={{ mb: 1 }} onClose={() => setCleanupError(null)}>清理失败：{errorMessage(cleanupError)}</Alert>}
+      <ActionNotice
+        message={cleanupError ? `清理失败：${errorMessage(cleanupError)}` : cleanupNotice}
+        severity={cleanupError ? 'error' : 'success'}
+        onClose={() => { setCleanupNotice(''); setCleanupError(null); }}
+      />
       {retry.error && <Alert severity="error" sx={{ mb: 1 }}>{errorMessage(retry.error)}</Alert>}
       {tasks.length === 0 && <EmptyState title="暂无导入任务" description="通过“导入知识”添加文件。" />}
       {tasks.length > 0 && (
@@ -492,6 +503,7 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('documents');
   const [directoryId, setDirectoryId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(documentId ?? null);
+  const [selectedSummary, setSelectedSummary] = useState<DocumentListItem | null>(null);
   const [keyword, setKeyword] = useState('');
   const [processingStatus, setProcessingStatus] = useState<DocumentStatusFilter>('');
   const [sourceType, setSourceType] = useState<'' | DocumentSourceType>('');
@@ -521,21 +533,38 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
     queryFn: () => getDirectoryTree(kbId),
     enabled,
   });
+  const selectedDocumentPlaceholder: Document | undefined = selectedSummary?.id === selectedId ? {
+    id: selectedSummary.id,
+    knowledge_base_id: kbId,
+    directory_id: selectedSummary.directory_id,
+    title: selectedSummary.title,
+    source_type: selectedSummary.source_type,
+    processing_status: selectedSummary.processing_status,
+    index_mode: selectedSummary.index_mode,
+    file_size: selectedSummary.file_size,
+    content_version: 0,
+    chunk_version: 0,
+    created_at: selectedSummary.created_at,
+    updated_at: selectedSummary.updated_at,
+  } : undefined;
   const documentQuery = useQuery({
     queryKey: queryKeys.document(selectedId ?? ''),
     queryFn: () => getDocument(selectedId as string),
     enabled: enabled && Boolean(selectedId),
+    placeholderData: selectedDocumentPlaceholder,
+    staleTime: 30_000,
     refetchInterval: (result) => isProcessing(result.state.data?.processing_status)
       ? activeRefreshInterval
-      : idleRefreshInterval,
+      : false,
   });
   const processingQuery = useQuery({
     queryKey: queryKeys.documentProcessing(selectedId ?? ''),
     queryFn: () => getDocumentProcessing(selectedId as string),
     enabled: enabled && Boolean(selectedId),
+    staleTime: 30_000,
     refetchInterval: (result) => isProcessing(result.state.data?.processing_status)
       ? activeRefreshInterval
-      : idleRefreshInterval,
+      : false,
   });
 
   const createDir = useMutation({
@@ -578,7 +607,10 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
       void queryClient.invalidateQueries({ queryKey: queryKeys.documents(kbId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.importTasks(kbId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBaseDashboard(kbId) });
-      if (selectedId === documentIdValue) setSelectedId(null);
+      if (selectedId === documentIdValue) {
+        setSelectedId(null);
+        setSelectedSummary(null);
+      }
       setDeleteOpen(false);
       setNotice('文档已删除');
     },
@@ -597,6 +629,24 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
   });
 
   const directoryOptions = flattenDirectories(treeQuery.data ?? []);
+
+  function warmDocument(document: DocumentListItem) {
+    void queryClient.prefetchQuery({
+      queryKey: queryKeys.document(document.id),
+      queryFn: () => getDocument(document.id),
+      staleTime: 30_000,
+    });
+    void queryClient.prefetchQuery({
+      queryKey: queryKeys.documentPreview(document.id),
+      queryFn: () => getDocumentPreview(document.id),
+      staleTime: 30_000,
+    });
+    void queryClient.prefetchQuery({
+      queryKey: queryKeys.documentPreviewText(document.id),
+      queryFn: () => getDocumentTextPreviewById(document.id),
+      staleTime: 5 * 60_000,
+    });
+  }
 
   const directoryCount = treeQuery.data?.reduce((count, node) => {
     const countNode = (current: typeof node): number => 1 + current.children.reduce((sum, child) => sum + countNode(child), 0);
@@ -629,8 +679,11 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
         <Button startIcon={<UploadFileOutlined />} variant="contained" disabled={!enabled} onClick={() => setImportOpen(true)} sx={{ borderRadius: 2.5, height: 42, px: 2.2, background: 'linear-gradient(135deg, #3e65f3, #5546e8)', boxShadow: '0 8px 20px rgba(72,82,224,.2)' }}>导入知识</Button>
       </Stack>
 
-      {notice && <Alert severity="success" onClose={() => setNotice('')}>{notice}</Alert>}
-      {actionError && <Alert severity="error" onClose={() => setActionError(null)}>操作失败：{errorMessage(actionError)}</Alert>}
+      <ActionNotice
+        message={actionError ? `操作失败：${errorMessage(actionError)}` : notice}
+        severity={actionError ? 'error' : 'success'}
+        onClose={() => { setNotice(''); setActionError(null); }}
+      />
 
       {!enabled && (
         <UnavailableState title="文档后端待接入" description="当前不会加载目录、文档或导入任务。" capability="document" />
@@ -699,7 +752,12 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
                         status={processingStatus}
                         sourceType={sourceType}
                         selectedId={selectedId}
-                        onSelect={setSelectedId}
+                        onSelect={(document) => {
+                          warmDocument(document);
+                          setSelectedSummary(document);
+                          setSelectedId(document.id);
+                        }}
+                        onWarm={warmDocument}
                         onDelete={(document) => {
                           setDeleteTarget(document);
                           setDeleteOpen(true);
@@ -717,16 +775,16 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
               </Box>
             )}
 
-            {workspaceTab === 'imports' && <ImportTasks kbId={kbId} onOpenDocument={setSelectedId} embedded />}
+            {workspaceTab === 'imports' && <ImportTasks kbId={kbId} onOpenDocument={(id) => { setSelectedSummary(null); setSelectedId(id); }} embedded />}
           </Paper>
         </>
       )}
 
       <WorkspaceFeatureDialog
         open={selectedId !== null}
-        onClose={() => setSelectedId(null)}
+        onClose={() => { setSelectedId(null); setSelectedSummary(null); }}
         icon={<DescriptionOutlined />}
-        title={documentQuery.data?.title || '文档详情'}
+        title={documentQuery.data?.title || selectedSummary?.title || '文档详情'}
         description="查看文档内容，支持表格预览与数据浏览"
       >
         {documentQuery.isPending && <LoadingState label="正在加载文档" />}
