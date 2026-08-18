@@ -25,6 +25,8 @@ type ADKReactRunner struct {
 	Config contracts.AgentConfig
 	// ToolCallRepo 用于持久化工具调用记录。
 	ToolCallRepo repository.ToolCallRepository
+	// ToolSpecLookup 用于解析工具类型（internal / mcp），可选。
+	ToolSpecLookup ToolSpecLookup
 }
 
 // NewADKReactRunner 创建 ADK 驱动的 React 运行器。
@@ -32,11 +34,15 @@ func NewADKReactRunner(
 	modelFactory func(ctx context.Context, modelConfigID contracts.ID) (model.BaseModel[*schema.Message], error),
 	systemPromptBuilder func(ctx context.Context, request contracts.AgentRunRequest) (string, error),
 	config contracts.AgentConfig,
+	toolCallRepo repository.ToolCallRepository,
+	toolSpecLookup ToolSpecLookup,
 ) *ADKReactRunner {
 	return &ADKReactRunner{
 		ModelFactory:        modelFactory,
 		SystemPromptBuilder: systemPromptBuilder,
 		Config:              config,
+		ToolCallRepo:        toolCallRepo,
+		ToolSpecLookup:      toolSpecLookup,
 	}
 }
 
@@ -120,8 +126,9 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 				RunID:          request.RunID,
 			},
 			&ToolCallRecorderMiddleware{
-				ToolCallRepo: r.ToolCallRepo,
-				RunID:        request.RunID,
+				ToolCallRepo:   r.ToolCallRepo,
+				RunID:          request.RunID,
+				ToolSpecLookup: r.ToolSpecLookup,
 			},
 			middleware,
 		},

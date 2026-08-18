@@ -8,19 +8,25 @@ import (
 
 	agenttools "github.com/1090-f/Memora/internal/agent/tools"
 	"github.com/1090-f/Memora/internal/contracts"
+	"github.com/1090-f/Memora/internal/model/entity"
+	"github.com/1090-f/Memora/internal/repository"
+	"github.com/google/uuid"
 )
 
 // PlanExecutor 负责执行计划中的步骤。
 type PlanExecutor struct {
 	toolExecutor *agenttools.Executor
 	modelFactory contracts.ModelFactory
+	toolCallRepo repository.ToolCallRepository
 }
 
 // NewPlanExecutor 创建 PlanExecutor 实例。
-func NewPlanExecutor(toolExecutor *agenttools.Executor, modelFactory contracts.ModelFactory) *PlanExecutor {
+// toolCallRepo 用于记录步骤中工具调用的详情到 tool_calls 表（可空）。
+func NewPlanExecutor(toolExecutor *agenttools.Executor, modelFactory contracts.ModelFactory, toolCallRepo repository.ToolCallRepository) *PlanExecutor {
 	return &PlanExecutor{
 		toolExecutor: toolExecutor,
 		modelFactory: modelFactory,
+		toolCallRepo: toolCallRepo,
 	}
 }
 
@@ -50,7 +56,19 @@ func (e *PlanExecutor) ExecuteStep(ctx context.Context, step *contracts.PlanStep
 			Arguments: json.RawMessage(arguments),
 		}
 
+		// 记录工具调用详情（调用开始 → 结束）。
+		callStartedAt := time.Now().UTC()
+		var callID uuid.UUID
+		recording := false
+		if e.toolCallRepo != nil {
+			callID, recording = e.createToolCall(ctx, toolCtx, &call, callStartedAt)
+		}
+
 		result, err := e.toolExecutor.InvokeContext(ctx, toolCtx, call)
+		if recording {
+			e.finishToolCall(ctx, callID, callStartedAt, result, err)
+		}
+
 		if err != nil {
 			step.Status = contracts.PlanStepStatusFailed
 			step.Error = err.Error()
@@ -141,4 +159,61 @@ func (e *PlanExecutor) ExecuteSteps(ctx context.Context, steps []contracts.PlanS
 	}
 
 	return errs
+}
+
+// createToolCall 创建一条 status = running 的工具调用记录。
+// 返回调用 ID 与是否成功创建；仓库缺失或运行 ID 非法时不创建记录并返回 false。
+func (e *PlanExecutor) createToolCall(ctx context.Context, toolCtx contracts.ToolContext, call *contracts.ToolCall, startedAt time.Time) (uuid.UUID, bool) {
+	runID, err := uuid.Parse(string(toolCtx.AgentRunID))
+	if err != nil {
+		return uuid.Nil, false
+	}
+
+	toolType := "internal"
+	var mcpServerID, mcpToolID *uuid.UUID
+	if spec, ok := e.toolExecutor.Spec(call.ToolName); ok && spec.Type == contracts.ToolTypeMCP {
+		toolType = "mcp"
+		if serverID, parseErr := uuid.Parse(spec.SourceID); parseErr == nil {
+			mcpServerID = &serverID
+		}
+		if toolID, parseErr := uuid.Parse(spec.MCPToolID); parseErr == nil {
+			mcpToolID = &toolID
+		}
+	}
+
+	callID := uuid.New()
+	toolCall := &entity.ToolCall{
+		ID:           callID,
+		AgentRunID:   runID,
+		ToolName:     call.ToolName,
+		ToolType:     toolType,
+		MCPServerID:  mcpServerID,
+		MCPToolID:    mcpToolID,
+		Status:       "running",
+		InputSummary: string(call.Arguments),
+		StartedAt:    startedAt,
+	}
+	_ = e.toolCallRepo.Create(ctx, toolCall) // 创建失败不阻塞工具调用
+
+	return callID, true
+}
+
+// finishToolCall 更新工具调用记录的执行结果。
+func (e *PlanExecutor) finishToolCall(ctx context.Context, callID uuid.UUID, startedAt time.Time, result string, toolErr error) {
+	if e.toolCallRepo == nil {
+		return
+	}
+
+	endedAt := time.Now().UTC()
+	durationMs := endedAt.Sub(startedAt).Milliseconds()
+
+	status := "succeeded"
+	var errorCode, errorMessage string
+	if toolErr != nil {
+		status = "failed"
+		errorCode = "tool_error"
+		errorMessage = toolErr.Error()
+	}
+
+	_ = e.toolCallRepo.UpdateResult(ctx, callID, status, result, errorCode, errorMessage, durationMs, false)
 }

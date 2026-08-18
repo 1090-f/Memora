@@ -55,6 +55,7 @@ type ToolSpec struct {
 	ReadOnly        bool            `json:"read_only"`              // 是否只读（非只读工具一律禁止调用）
 	Enabled         bool            `json:"enabled"`                // 是否启用（注册时的快照，用于快速路径校验）
 	SourceID        string          `json:"source_id,omitempty"`    // 工具所属资源标识（MCP 工具为 Server ID），供调用前动态可用性检查使用；内置工具为空
+	MCPToolID       string          `json:"mcp_tool_id,omitempty"`  // MCP 工具在 mcp_tools 表中的 ID（仅 MCP 工具）；内置工具为空
 	NetworkRequired bool            `json:"network_required"`       // 是否需要联网（联网被禁用时不可调用）
 	Timeout         time.Duration   `json:"timeout"`                // 单次调用超时时间
 	MaxCalls        int             `json:"max_calls"`              // 单次运行内允许的最大调用次数
