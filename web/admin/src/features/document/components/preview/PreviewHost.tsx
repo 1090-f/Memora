@@ -1,8 +1,10 @@
 import RefreshOutlined from '@mui/icons-material/RefreshOutlined';
+import ArticleOutlined from '@mui/icons-material/ArticleOutlined';
+import DescriptionOutlined from '@mui/icons-material/DescriptionOutlined';
 import TuneOutlined from '@mui/icons-material/TuneOutlined';
-import { Alert, Box, Button, Stack, Typography } from '@mui/material';
+import { Alert, Box, Button, Tab, Tabs, Typography } from '@mui/material';
 import { useQuery } from '@tanstack/react-query';
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { errorMessage } from '@/api/errors';
 import { getDocumentTextPreview } from '../../api';
@@ -88,57 +90,37 @@ export function PreviewHost({ descriptor, title, onRetry, retrying, processingCo
   const showProcessing = selectedKey === PROCESSING_KEY;
 
   return (
-    <Stack spacing={2}>
-      <Stack
-        direction="row"
-        alignItems="center"
-        spacing={0.5}
+    <Box>
+      <Tabs
+        value={showProcessing ? PROCESSING_KEY : selected?.key ?? false}
+        onChange={(_, value: string) => setSelectedKey(value)}
+        variant="scrollable"
+        scrollButtons="auto"
         sx={{
-          bgcolor: 'transparent',
-          pb: 0,
-          flexWrap: 'nowrap',
-          overflowX: 'auto',
+          minHeight: 48,
+          borderBottom: '1px solid #e6e9ef',
+          '& .MuiTab-root': { minHeight: 48, px: 2, color: '#65708a', fontWeight: 650 },
+          '& .Mui-selected': { color: '#4058e9' },
+          '& .MuiTabs-indicator': { height: 3, borderRadius: '3px 3px 0 0' },
         }}
       >
         {tabs.map((tab) => (
-          <Fragment key={tab.key}>
-            <Button
-              size="small"
-              sx={{ flexShrink: 0, minWidth: 0, px: 2, height: 46, borderRadius: '10px 10px 0 0', border: 0, color: selected?.key === tab.key && !showProcessing ? '#fff' : '#667085', fontWeight: 650, '&:hover': { border: 0, bgcolor: selected?.key === tab.key && !showProcessing ? '#484bd3' : '#f4f5ff' } }}
-              variant={selected?.key === tab.key && !showProcessing ? 'contained' : 'outlined'}
-              onClick={() => setSelectedKey(tab.key)}
-            >
-              {tab.title}{tab.mode ? statusSuffix(tab.mode.status) : ''}
-            </Button>
-            {tab.kind === 'parsed' && (
-              <Button
-                size="small"
-                sx={{ flexShrink: 0, minWidth: 0, px: 2, height: 46, borderRadius: '10px 10px 0 0', border: 0, color: showProcessing ? '#fff' : '#667085', fontWeight: 650, '&:hover': { border: 0, bgcolor: showProcessing ? '#484bd3' : '#f4f5ff' } }}
-                variant={showProcessing ? 'contained' : 'outlined'}
-                startIcon={<TuneOutlined />}
-                onClick={() => setSelectedKey(PROCESSING_KEY)}
-              >
-                处理详情
-              </Button>
-            )}
-          </Fragment>
+          <Tab
+            key={tab.key}
+            value={tab.key}
+            icon={tab.kind === 'parsed' ? <ArticleOutlined /> : <DescriptionOutlined />}
+            iconPosition="start"
+            label={`${tab.title}${tab.mode ? statusSuffix(tab.mode.status) : ''}`}
+          />
         ))}
-        {!tabs.some((tab) => tab.kind === 'parsed') && tabs.length > 0 && (
-          <Button
-            size="small"
-            sx={{ flexShrink: 0, minWidth: 0, px: 2, height: 46, borderRadius: '10px 10px 0 0', border: 0, color: showProcessing ? '#fff' : '#667085', fontWeight: 650, '&:hover': { border: 0, bgcolor: showProcessing ? '#484bd3' : '#f4f5ff' } }}
-            variant={showProcessing ? 'contained' : 'outlined'}
-            startIcon={<TuneOutlined />}
-            onClick={() => setSelectedKey(PROCESSING_KEY)}
-          >
-            处理详情
-          </Button>
-        )}
-      </Stack>
-      {showProcessing
-        ? processingContent
-        : (selected?.mode && <ModeContent documentId={descriptor.document_id} mode={selected.mode} title={title} error={descriptor.error?.message} onRetry={onRetry} retrying={retrying} />)}
-    </Stack>
+        {tabs.length > 0 && <Tab value={PROCESSING_KEY} icon={<TuneOutlined />} iconPosition="start" label="处理详情" />}
+      </Tabs>
+      <Box sx={{ pt: 2.5, minHeight: 360 }}>
+        {showProcessing
+          ? processingContent
+          : (selected?.mode && <ModeContent documentId={descriptor.document_id} mode={selected.mode} title={title} error={descriptor.error?.message} onRetry={onRetry} retrying={retrying} />)}
+      </Box>
+    </Box>
   );
 }
 

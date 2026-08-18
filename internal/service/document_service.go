@@ -585,6 +585,37 @@ func (s *documentService) Delete(ctx context.Context, userID, documentID string)
 	return nil
 }
 
+// Move 将文档移动到同一知识库中的目标目录。
+func (s *documentService) Move(ctx context.Context, userID, documentID string, directoryID *string) error {
+	doc, err := s.docs.FindByID(ctx, userID, documentID)
+	if errors.Is(err, repository.ErrDocumentNotFound) {
+		return apperrors.ErrNotFound
+	}
+	if err != nil {
+		return apperrors.New(contracts.ErrInternal, err)
+	}
+	var targetID *string
+	if directoryID != nil && strings.TrimSpace(*directoryID) != "" {
+		directory, findErr := s.dirs.FindByIDInKB(ctx, userID, doc.KnowledgeBaseID, strings.TrimSpace(*directoryID))
+		if errors.Is(findErr, repository.ErrDirectoryNotFound) {
+			return apperrors.ErrInvalidArgument
+		}
+		if findErr != nil {
+			return apperrors.New(contracts.ErrInternal, findErr)
+		}
+		id := directory.ID
+		targetID = &id
+	}
+	if err := s.docs.Move(ctx, userID, documentID, targetID); err != nil {
+		if errors.Is(err, repository.ErrDocumentNotFound) {
+			return apperrors.ErrNotFound
+		}
+		return apperrors.New(contracts.ErrInternal, err)
+	}
+	logger.Info("文档已移动", zap.String("user_id", userID), zap.String("document_id", documentID), zap.Stringp("directory_id", targetID))
+	return nil
+}
+
 // UploadFiles 文件导入：先创建 import_tasks，再流式上传 MinIO，最后更新任务对象信息。
 // 校验阶段（扩展名/大小/数量/归属）全部通过后才开始创建任务；
 // 上传阶段任一文件失败时，补偿删除已创建但未完成的任务与已上传对象。

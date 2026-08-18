@@ -128,6 +128,25 @@ func (r *documentRepository) SoftDelete(ctx context.Context, userID, documentID 
 	return nil
 }
 
+// Move 更新文档所属目录，并显式刷新更新时间。
+func (r *documentRepository) Move(ctx context.Context, userID, documentID string, directoryID *string) error {
+	var directoryValue any
+	if directoryID != nil {
+		directoryValue = *directoryID
+	}
+	updates := map[string]any{"directory_id": directoryValue, "updated_at": time.Now().UTC()}
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.Document{}).
+		Where("id = ? AND user_id = ? AND deleted_at IS NULL", documentID, userID).
+		Updates(updates)
+	if result.Error != nil {
+		return fmt.Errorf("移动文档失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrDocumentNotFound
+	}
+	return nil
+}
+
 // FindBySourceHash 按用户、知识库与源哈希查询未删除文档。
 func (r *documentRepository) FindBySourceHash(ctx context.Context, userID, kbID, sourceHash string) (*entity.Document, error) {
 	// 按文件哈希判重（duplicate_policy=skip 用），限定同一用户同一知识库且未删除。

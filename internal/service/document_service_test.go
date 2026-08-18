@@ -46,6 +46,75 @@ func TestDocumentIndexMode(t *testing.T) {
 	}
 }
 
+type moveDocumentRepo struct {
+	repository.DocumentRepository
+	document *entity.Document
+	movedTo  *string
+	moved    bool
+}
+
+func (r *moveDocumentRepo) FindByID(_ context.Context, _, _ string) (*entity.Document, error) {
+	return r.document, nil
+}
+
+func (r *moveDocumentRepo) Move(_ context.Context, _, _ string, directoryID *string) error {
+	r.moved = true
+	r.movedTo = directoryID
+	return nil
+}
+
+type moveDirectoryRepo struct {
+	repository.DocumentDirectoryRepository
+	directory *entity.DocumentDirectory
+	err       error
+}
+
+func (r *moveDirectoryRepo) FindByIDInKB(_ context.Context, _, _, _ string) (*entity.DocumentDirectory, error) {
+	return r.directory, r.err
+}
+
+func TestMoveDocumentValidatesTargetDirectory(t *testing.T) {
+	t.Run("moves into directory in same knowledge base", func(t *testing.T) {
+		docs := &moveDocumentRepo{document: &entity.Document{KnowledgeBaseID: "kb-1"}}
+		dirs := &moveDirectoryRepo{directory: &entity.DocumentDirectory{BaseEntity: entity.BaseEntity{ID: "dir-1"}}}
+		svc := &documentService{docs: docs, dirs: dirs}
+		target := "dir-1"
+
+		if err := svc.Move(context.Background(), "user-1", "doc-1", &target); err != nil {
+			t.Fatalf("Move() error = %v", err)
+		}
+		if !docs.moved || docs.movedTo == nil || *docs.movedTo != target {
+			t.Fatalf("Move() target = %v, want %q", docs.movedTo, target)
+		}
+	})
+
+	t.Run("rejects directory outside document knowledge base", func(t *testing.T) {
+		docs := &moveDocumentRepo{document: &entity.Document{KnowledgeBaseID: "kb-1"}}
+		dirs := &moveDirectoryRepo{err: repository.ErrDirectoryNotFound}
+		svc := &documentService{docs: docs, dirs: dirs}
+		target := "foreign-dir"
+
+		if err := svc.Move(context.Background(), "user-1", "doc-1", &target); err == nil {
+			t.Fatal("Move() error = nil, want invalid target error")
+		}
+		if docs.moved {
+			t.Fatal("Move() updated document after target validation failed")
+		}
+	})
+
+	t.Run("moves out of directory", func(t *testing.T) {
+		docs := &moveDocumentRepo{document: &entity.Document{KnowledgeBaseID: "kb-1"}}
+		svc := &documentService{docs: docs}
+
+		if err := svc.Move(context.Background(), "user-1", "doc-1", nil); err != nil {
+			t.Fatalf("Move() error = %v", err)
+		}
+		if !docs.moved || docs.movedTo != nil {
+			t.Fatalf("Move() target = %v, want nil", docs.movedTo)
+		}
+	})
+}
+
 func TestRewriteMarkdownImageRefs(t *testing.T) {
 	assets := []parser.Asset{
 		{ID: "asset-aaaa", SourceRef: "img/logo.png", ObjectKey: "o1", MIMEType: "image/png"},

@@ -60,6 +60,13 @@ export const getRenderedDocument = (documentId: string) =>
 export const deleteDocument = (documentId: string) =>
   apiRequest<{ deleted: boolean }>({ url: `/documents/${documentId}`, method: 'DELETE' });
 
+export const moveDocument = (documentId: string, directoryId?: string) =>
+  apiRequest<{ moved: boolean }>({
+    url: `/documents/${documentId}/directory`,
+    method: 'PATCH',
+    data: { directory_id: directoryId || null },
+  });
+
 export const importFiles = (
   kbId: string,
   formData: FormData,

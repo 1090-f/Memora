@@ -3,6 +3,7 @@ import CheckCircleOutlineRounded from '@mui/icons-material/CheckCircleOutlineRou
 import CloseOutlined from '@mui/icons-material/CloseOutlined';
 import DeleteOutlined from '@mui/icons-material/DeleteOutlined';
 import DescriptionOutlined from '@mui/icons-material/DescriptionOutlined';
+import DriveFileMoveOutlined from '@mui/icons-material/DriveFileMoveOutlined';
 import ErrorOutlineRounded from '@mui/icons-material/ErrorOutlineRounded';
 import PendingActionsOutlined from '@mui/icons-material/PendingActionsOutlined';
 import PictureAsPdfOutlined from '@mui/icons-material/PictureAsPdfOutlined';
@@ -56,6 +57,7 @@ import {
   getDocumentProcessing,
   listDocuments,
   listImportTasks,
+  moveDocument,
   reindexDocument,
   retryDocumentProcessing,
   retryImportTask,
@@ -64,6 +66,7 @@ import {
 import { DocumentViewer } from '../components/DocumentViewer';
 import { ImportDrawer } from '../components/ImportDrawer';
 import { KnowledgeTree } from '../components/KnowledgeTree';
+import { flattenDirectories } from '../directoryOptions';
 import {
   documentStatusFilterParams,
   documentStatusOptions,
@@ -228,6 +231,7 @@ function DocumentList({
   selectedId,
   onSelect,
   onDelete,
+  onMove,
   onRetry,
   onReindex,
   onDocumentsChange,
@@ -240,6 +244,7 @@ function DocumentList({
   selectedId: string | null;
   onSelect: (id: string) => void;
   onDelete: (document: DocumentListItem) => void;
+  onMove: (document: DocumentListItem) => void;
   onRetry: (document: DocumentListItem) => void;
   onReindex: (document: DocumentListItem) => void;
   onDocumentsChange?: (items: DocumentListItem[], total: number) => void;
@@ -279,7 +284,7 @@ function DocumentList({
 
   return (
     <Box>
-      <Box sx={{ display: 'grid', gridTemplateColumns: 'minmax(210px, 1.8fr) 70px 90px 105px 92px', alignItems: 'center', minHeight: 44, px: 2, bgcolor: '#fbfcff', borderBottom: '1px solid #edf0f5', color: '#71809a', fontSize: 12 }}>
+      <Box sx={{ display: 'grid', gridTemplateColumns: 'minmax(210px, 1.8fr) 70px 90px 105px 122px', alignItems: 'center', minHeight: 44, px: 2, bgcolor: '#fbfcff', borderBottom: '1px solid #edf0f5', color: '#71809a', fontSize: 12 }}>
         <span>文件名</span><span>类型</span><span>状态</span><span>更新时间</span><span>操作</span>
       </Box>
       {documents.map((document) => {
@@ -294,7 +299,7 @@ function DocumentList({
             onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(document.id); } }}
             sx={{
               display: 'grid',
-              gridTemplateColumns: 'minmax(210px, 1.8fr) 70px 90px 105px 92px',
+              gridTemplateColumns: 'minmax(210px, 1.8fr) 70px 90px 105px 122px',
               alignItems: 'center',
               minHeight: 54,
               px: 2,
@@ -324,6 +329,7 @@ function DocumentList({
                   <CachedOutlined sx={{ fontSize: 17 }} />
                 </IconButton>
               </Tooltip>
+              <Tooltip title="移动文档"><IconButton size="small" onClick={(event) => { event.stopPropagation(); onMove(document); }}><DriveFileMoveOutlined sx={{ fontSize: 18 }} /></IconButton></Tooltip>
               <Tooltip title="删除文档"><IconButton size="small" onClick={(event) => { event.stopPropagation(); onDelete(document); }}><DeleteOutlined sx={{ fontSize: 18 }} /></IconButton></Tooltip>
             </Stack>
           </Box>
@@ -491,6 +497,8 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
   const [sourceType, setSourceType] = useState<'' | DocumentSourceType>('');
   const [deleteTarget, setDeleteTarget] = useState<DocumentListItem | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [moveTarget, setMoveTarget] = useState<DocumentListItem | null>(null);
+  const [moveDirectoryId, setMoveDirectoryId] = useState('');
   const [notice, setNotice] = useState('');
   const [actionError, setActionError] = useState<Error | null>(null);
   const queryClient = useQueryClient();
@@ -576,6 +584,19 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
     },
     onError: (error) => setActionError(error as Error),
   });
+  const moveDoc = useMutation({
+    mutationFn: ({ documentId: targetDocumentId, targetDirectoryId }: { documentId: string; targetDirectoryId?: string }) => moveDocument(targetDocumentId, targetDirectoryId),
+    onSuccess: (_, variables) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.documents(kbId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.document(variables.documentId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.knowledgeBaseDashboard(kbId) });
+      setMoveTarget(null);
+      setNotice('文档已移动');
+    },
+    onError: (error) => setActionError(error as Error),
+  });
+
+  const directoryOptions = flattenDirectories(treeQuery.data ?? []);
 
   const directoryCount = treeQuery.data?.reduce((count, node) => {
     const countNode = (current: typeof node): number => 1 + current.children.reduce((sum, child) => sum + countNode(child), 0);
@@ -683,6 +704,10 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
                           setDeleteTarget(document);
                           setDeleteOpen(true);
                         }}
+                        onMove={(document) => {
+                          setMoveTarget(document);
+                          setMoveDirectoryId(document.directory_id ?? '');
+                        }}
                         onRetry={(document) => retryDoc.mutate(document.id)}
                         onReindex={(document) => reindex.mutate(document.id)}
                       />
@@ -728,6 +753,24 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
         <KnowledgeBaseSettingsContent status={capabilities.knowledgeBase} kbId={kbId} embedded />
       </WorkspaceFeatureDialog>
       <ImportDrawer open={importOpen} onClose={() => setImportOpen(false)} disabled={!enabled} kbId={kbId} directories={treeQuery.data ?? []} />
+      <Dialog open={moveTarget !== null} onClose={moveDoc.isPending ? undefined : () => setMoveTarget(null)} fullWidth maxWidth="xs">
+        <DialogTitle>移动文档</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ mb: 2, color: 'text.secondary' }}>选择“{moveTarget?.title}”的新目录。</Typography>
+          <TextField select fullWidth size="small" label="目标目录" value={moveDirectoryId} onChange={(event) => setMoveDirectoryId(event.target.value)}>
+            <MenuItem value="">未归入目录</MenuItem>
+            {directoryOptions.map((directory) => (
+              <MenuItem key={directory.id} value={directory.id} disabled={directory.id === moveTarget?.directory_id}>
+                {'　'.repeat(directory.depth)}{directory.name}
+              </MenuItem>
+            ))}
+          </TextField>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setMoveTarget(null)} disabled={moveDoc.isPending}>取消</Button>
+          <Button variant="contained" disabled={moveDoc.isPending || moveDirectoryId === (moveTarget?.directory_id ?? '')} onClick={() => moveTarget && moveDoc.mutate({ documentId: moveTarget.id, targetDirectoryId: moveDirectoryId || undefined })}>移动</Button>
+        </DialogActions>
+      </Dialog>
       <Dialog
         open={deleteOpen}
         onClose={removeDoc.isPending ? undefined : () => setDeleteOpen(false)}

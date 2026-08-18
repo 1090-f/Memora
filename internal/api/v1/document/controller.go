@@ -277,6 +277,25 @@ func (ctrl *Controller) Delete(c *gin.Context) {
 	response.Success(c, http.StatusOK, gin.H{"deleted": true})
 }
 
+// Move 将文档移动到同一知识库中的目标目录。
+func (ctrl *Controller) Move(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	var req request.MoveDocumentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+	if err := ctrl.docs.Move(c.Request.Context(), user.ID, c.Param("document_id"), req.DirectoryID); err != nil {
+		response.Failure(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"moved": true})
+}
+
 // UploadFiles 文件导入，支持多文件上传到指定知识库。
 // 请求格式：multipart/form-data，字段 "files" 为文件列表，可选字段 "directory_id" 和 "import_mode"。
 // import_mode=folder_archive 时，单个 ZIP 是文件夹传输容器，ZIP 内每个文档会创建独立 ImportTask。
