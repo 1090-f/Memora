@@ -36,8 +36,15 @@ type Executor struct {
 // NewExecutor 创建绑定指定注册表的执行器。
 func NewExecutor(registry *Registry) *Executor { return &Executor{registry: registry} }
 
-// Spec 返回指定名称工具的规格快照；工具未注册或注册表不可用时返回 false。
-// 供上层（如 PlanExecutor）在执行工具前判断工具类型（internal / mcp）等元信息。
+// SetAvailabilityChecker 注入调用前动态可用性检查器（双层校验的第二层）。
+// 第一层校验：Agent 启动前通过 MCPToolRefresher 刷新工具列表，只注册已启用的工具。
+// 第二层校验：工具实际调用前通过本检查器再次向数据库查询实时启用状态。
+// 内置工具可省略；注入后 Executor 会对带 SourceID 的工具（MCP）在真正执行前动态复检。
+func (e *Executor) SetAvailabilityChecker(checker ToolAvailabilityChecker) {
+	e.available = checker
+}
+
+// Spec 返回工具的运行规格，供上层执行器实施按工具调用次数限制。
 func (e *Executor) Spec(name string) (contracts.ToolSpec, bool) {
 	if e == nil || e.registry == nil {
 		return contracts.ToolSpec{}, false
@@ -49,12 +56,12 @@ func (e *Executor) Spec(name string) (contracts.ToolSpec, bool) {
 	return value.Spec(), true
 }
 
-// SetAvailabilityChecker 注入调用前动态可用性检查器（双层校验的第二层）。
-// 第一层校验：Agent 启动前通过 MCPToolRefresher 刷新工具列表，只注册已启用的工具。
-// 第二层校验：工具实际调用前通过本检查器再次向数据库查询实时启用状态。
-// 内置工具可省略；注入后 Executor 会对带 SourceID 的工具（MCP）在真正执行前动态复检。
-func (e *Executor) SetAvailabilityChecker(checker ToolAvailabilityChecker) {
-	e.available = checker
+// Specs returns a stable snapshot for Plan-Execute tool selection.
+func (e *Executor) Specs() []contracts.ToolSpec {
+	if e == nil || e.registry == nil {
+		return nil
+	}
+	return e.registry.Specs()
 }
 
 // Execute 统一执行前置授权、参数大小/合法性、超时和结果归一化检查。

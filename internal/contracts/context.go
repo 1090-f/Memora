@@ -25,13 +25,15 @@ type AgentContext struct {
 	Query           string `json:"query"`             // 用户查询
 
 	// 系统配置（来自 AgentConfig）
-	SystemPrompt   string          `json:"system_prompt"`    // 系统提示词
-	ChatModelID    string          `json:"chat_model_id"`    // ChatModelID 关联的对话模型配置 ID
-	NetworkEnabled bool            `json:"network_enabled"`  // 是否允许联网搜索
-	MemoryEnabled  bool            `json:"memory_enabled"`   // 是否启用记忆功能
-	MaxReactRounds int             `json:"max_react_rounds"` // ReAct 模式最大轮数
-	AllowedTools   []string        `json:"allowed_tools"`    // 允许使用的工具白名单
-	ToolsConfig    adk.ToolsConfig `json:"-"`                // 当前运行可用的 ADK 工具配置
+	SystemPrompt     string            `json:"system_prompt"`     // 系统提示词
+	ChatModelID      string            `json:"chat_model_id"`     // ChatModelID 关联的对话模型配置 ID
+	NetworkEnabled   bool              `json:"network_enabled"`   // 是否允许联网搜索
+	MemoryEnabled    bool              `json:"memory_enabled"`    // 是否启用记忆功能
+	MaxReactRounds   int               `json:"max_react_rounds"`  // ReAct 模式最大轮数
+	AllowedTools     []string          `json:"allowed_tools"`     // 允许使用的工具白名单
+	ToolDescriptions map[string]string `json:"tool_descriptions"` // 工具名到描述的映射，供 Planner 生成计划时参考
+	AvailableTools   []ToolSpec        `json:"-"`
+	ToolsConfig      adk.ToolsConfig   `json:"-"` // 当前运行可用的 ADK 工具配置
 
 	// Plan-Execute 模式配置（来自 AgentConfig）
 	MaxPlanSteps int `json:"max_plan_steps"` // Plan-Execute 最大步骤数 (default: 5)

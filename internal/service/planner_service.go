@@ -67,11 +67,15 @@ func (s *PlannerService) Plan(ctx context.Context, request contracts.AgentRunReq
 	plan.MaxSteps = request.Config.MaxPlanSteps
 	plan.MaxReplans = request.Config.MaxReplans
 	plan.Status = contracts.PlanStatusPending
-	plan.FinalAnswer = "" // 清空：实际答案由步骤执行后生成
+	// 不再强制清空 FinalAnswer：当步骤执行无法产出有效答案时（如缺少外部工具），
+	// 保留 Planner LLM 基于先验知识生成的 final_answer 作为兜底，避免返回空答案。
 	plan.CreatedAt = time.Now()
 	plan.UpdatedAt = time.Now()
 
 	// 8. 验证步骤数
+	if len(plan.Steps) == 0 {
+		return nil, fmt.Errorf("plan has no steps")
+	}
 	if len(plan.Steps) > plan.MaxSteps {
 		return nil, fmt.Errorf("plan has %d steps, max allowed is %d", len(plan.Steps), plan.MaxSteps)
 	}
@@ -137,6 +141,11 @@ func (s *PlannerService) PlanWithPrompt(ctx context.Context, request contracts.A
 		return nil, fmt.Errorf("unmarshal plan: %w", err)
 	}
 
+	// 5a. Replan 场景不允许空步骤
+	if len(plan.Steps) == 0 {
+		return nil, fmt.Errorf("replan produced 0 steps")
+	}
+
 	// 6. 为每个步骤设置状态和ID，并解析 depends_on
 	stepNumberToID := make(map[int]contracts.ID)
 	for i := range plan.Steps {
@@ -168,16 +177,22 @@ func (s *PlannerService) buildPrompt(request contracts.AgentRunRequest) string {
 
 	sb.WriteString("你是一个任务规划专家。根据用户查询和上下文，生成结构化的执行计划。\n\n")
 
-	// 添加可用工具信息
+	// 添加可用工具信息（包含名称和描述）
 	sb.WriteString("## 可用工具\n")
 	if len(request.Context.AllowedTools) > 0 {
 		for _, tool := range request.Context.AllowedTools {
-			sb.WriteString("- " + tool + "\n")
+			desc := request.Context.ToolDescriptions[tool]
+			if desc != "" {
+				sb.WriteString(fmt.Sprintf("- %s: %s\n", tool, desc))
+			} else {
+				sb.WriteString("- " + tool + "\n")
+			}
 		}
 	} else {
 		sb.WriteString("无可用工具\n")
 	}
 	sb.WriteString("\n")
+	appendPlannerToolCatalog(&sb, request.Context.AvailableTools)
 
 	// 添加上下文信息
 	sb.WriteString("## 上下文信息\n")
@@ -198,6 +213,9 @@ func (s *PlannerService) buildPrompt(request contracts.AgentRunRequest) string {
       "step_number": 1,
       "title": "步骤标题",
       "description": "步骤详细描述",
+      "kind": "tool or reasoning",
+      "tool_policy": "required, preferred, or forbidden",
+      "required_capabilities": ["web.fetch"],
       "tool_name": "工具名称（字符串，不调用工具则为空字符串）",
       "arguments": {},
       "depends_on": []
@@ -205,6 +223,7 @@ func (s *PlannerService) buildPrompt(request contracts.AgentRunRequest) string {
   ]
 }` + "\n")
 	sb.WriteString("```\n\n")
+	appendPlanStepContract(&sb)
 	sb.WriteString("核心规划原则：\n")
 	sb.WriteString("1. 任何需要外部信息的步骤（如搜索网页、读取文档、查询数据等），必须调用对应工具获取原始数据，禁止在未获取数据的情况下直接推理或生成事实性内容。\n")
 	sb.WriteString("2. 所有事实性内容必须来自工具返回的结果，禁止凭空编造或基于推测生成。\n")
@@ -215,8 +234,9 @@ func (s *PlannerService) buildPrompt(request contracts.AgentRunRequest) string {
 	sb.WriteString("- step_number 是整数，从 1 开始\n")
 	sb.WriteString("- tool_name：需要调用工具时填写工具名称，不调用工具时设为空字符串 \"\"\n")
 	sb.WriteString("- arguments：工具调用参数（JSON 对象），不调用工具时设为空对象 {}\n")
+	sb.WriteString("- arguments may reference a dependency's real output with {{step_output:N}}; step N must also be listed in depends_on\n")
 	sb.WriteString("- depends_on：依赖步骤的 step_number 字符串数组（如 [\"1\", \"2\"]），无依赖则为空数组 []\n")
-	sb.WriteString("- final_answer：必须设为空字符串 \"\"，实际答案由步骤执行后自动生成\n")
+	sb.WriteString("- final_answer：默认设为空字符串 \"\"，实际答案由步骤执行后生成；仅当所有步骤均为纯推理步骤且无工具调用时，可在此字段直接给出最终答案\n")
 
 	return sb.String()
 }
