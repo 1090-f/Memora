@@ -102,7 +102,14 @@ type PlanStep struct {
 
 // ReviewerResult 审查结果
 type ReviewerResult struct {
-	Approved   bool   `json:"approved"`
-	Issues     string `json:"issues"`     // 存在的问题
-	Suggestion string `json:"suggestion"` // 改进建议
+	Approved   bool             `json:"approved"`
+	Issues     string           `json:"issues"`               // 存在的问题
+	Suggestion string           `json:"suggestion"`           // 改进建议
+	FactCheck  *FactCheckResult `json:"fact_check,omitempty"` // 事实核查结果
+}
+
+// FactCheckResult 事实核查结果
+type FactCheckResult struct {
+	Consistent        bool     `json:"consistent"`         // 事实是否一致
+	InconsistentFacts []string `json:"inconsistent_facts"` // 不一致的事实列表
 }

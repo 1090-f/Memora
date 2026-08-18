@@ -95,13 +95,13 @@ func readFile(path string) ([]byte, error) {
 
 // Process 处理候选记忆列表，自动去重、合并后存储。
 func (m *memoryManager) Process(ctx context.Context, userID string, items []contracts.MemoryItem) error {
-	logger.Info("[记忆处理-Process] 开始处理候选记忆",
+	logger.Debug("[记忆处理-Process] 开始处理候选记忆",
 		zap.String("user_id", userID),
 		zap.Int("items_count", len(items)),
 	)
 
 	for i, item := range items {
-		logger.Info("[记忆处理-Process] 处理第"+fmt.Sprintf("%d", i+1)+"条记忆",
+		logger.Debug("[记忆处理-Process] 处理第"+fmt.Sprintf("%d", i+1)+"条记忆",
 			zap.String("type", string(item.Type)),
 			zap.String("content", item.Content),
 			zap.Float64("importance", item.Importance),
@@ -114,18 +114,18 @@ func (m *memoryManager) Process(ctx context.Context, userID string, items []cont
 			// 单条失败不影响其他记忆
 			continue
 		}
-		logger.Info("[记忆处理-Process] 处理记忆成功",
+		logger.Debug("[记忆处理-Process] 处理记忆成功",
 			zap.String("content", item.Content),
 		)
 	}
 
-	logger.Info("[记忆处理-Process] 所有记忆处理完成")
+	logger.Debug("[记忆处理-Process] 所有记忆处理完成")
 	return nil
 }
 
 // processOne 处理单条记忆。
 func (m *memoryManager) processOne(ctx context.Context, userID string, item contracts.MemoryItem) error {
-	logger.Info("[记忆处理-processOne] 开始处理单条记忆",
+	logger.Debug("[记忆处理-processOne] 开始处理单条记忆",
 		zap.String("user_id", userID),
 		zap.String("type", string(item.Type)),
 		zap.String("content", item.Content),
@@ -133,12 +133,12 @@ func (m *memoryManager) processOne(ctx context.Context, userID string, item cont
 
 	// 1. 计算内容哈希
 	contentHash := computeContentHash(item.Content)
-	logger.Info("[记忆处理-processOne] 步骤1: 计算内容哈希",
+	logger.Debug("[记忆处理-processOne] 步骤1: 计算内容哈希",
 		zap.String("content_hash", contentHash),
 	)
 
 	// 2. 精确去重：通过content_hash查找
-	logger.Info("[记忆处理-processOne] 步骤2: 精确去重检查")
+	logger.Debug("[记忆处理-processOne] 步骤2: 精确去重检查")
 	var scopeID *string
 	if item.ScopeID != nil {
 		id := string(*item.ScopeID)
@@ -153,15 +153,15 @@ func (m *memoryManager) processOne(ctx context.Context, userID string, item cont
 
 	// 如果已存在完全相同的内容，更新重要性
 	if existing != nil {
-		logger.Info("[记忆处理-processOne] 发现重复记忆，更新重要性",
+		logger.Debug("[记忆处理-processOne] 发现重复记忆，更新重要性",
 			zap.String("existing_id", existing.ID),
 		)
 		return m.updateImportance(ctx, existing, item.Importance)
 	}
-	logger.Info("[记忆处理-processOne] 未发现重复记忆")
+	logger.Debug("[记忆处理-processOne] 未发现重复记忆")
 
 	// 3. 向量检索相似记忆
-	logger.Info("[记忆处理-processOne] 步骤3: 向量检索相似记忆")
+	logger.Debug("[记忆处理-processOne] 步骤3: 向量检索相似记忆")
 	similar, err := m.findSimilarMemories(ctx, userID, item)
 	if err != nil {
 		logger.Warn("[记忆处理-processOne] 检索相似记忆失败，降级为直接创建", zap.Error(err))
@@ -171,16 +171,16 @@ func (m *memoryManager) processOne(ctx context.Context, userID string, item cont
 
 	// 4. 如果没有相似记忆，直接创建
 	if len(similar) == 0 {
-		logger.Info("[记忆处理-processOne] 未找到相似记忆，直接创建")
+		logger.Debug("[记忆处理-processOne] 未找到相似记忆，直接创建")
 		return m.createMemory(ctx, userID, item)
 	}
 
-	logger.Info("[记忆处理-processOne] 找到相似记忆",
+	logger.Debug("[记忆处理-processOne] 找到相似记忆",
 		zap.Int("similar_count", len(similar)),
 	)
 
 	// 5. LLM判断去重方式
-	logger.Info("[记忆处理-processOne] 步骤5: LLM判断去重方式")
+	logger.Debug("[记忆处理-processOne] 步骤5: LLM判断去重方式")
 	decision, err := m.llmJudgeDedup(ctx, item, similar)
 	if err != nil {
 		logger.Warn("[记忆处理-processOne] LLM去重判断失败，降级为直接创建", zap.Error(err))
@@ -188,13 +188,13 @@ func (m *memoryManager) processOne(ctx context.Context, userID string, item cont
 		return m.createMemory(ctx, userID, item)
 	}
 
-	logger.Info("[记忆处理-processOne] LLM去重判断完成",
+	logger.Debug("[记忆处理-processOne] LLM去重判断完成",
 		zap.String("action", decision.Action),
 		zap.String("reason", decision.Reason),
 	)
 
 	// 6. 根据判断结果执行
-	logger.Info("[记忆处理-processOne] 步骤6: 执行去重决策")
+	logger.Debug("[记忆处理-processOne] 步骤6: 执行去重决策")
 	return m.executeDecision(ctx, userID, item, decision, similar)
 }
 
@@ -204,19 +204,19 @@ func (m *memoryManager) findSimilarMemories(
 	userID string,
 	item contracts.MemoryItem,
 ) ([]contracts.MemoryQueryResult, error) {
-	logger.Info("[记忆处理-findSimilarMemories] 开始查找相似记忆",
+	logger.Debug("[记忆处理-findSimilarMemories] 开始查找相似记忆",
 		zap.String("user_id", userID),
 		zap.String("content", item.Content),
 	)
 
 	// 向量化新记忆内容
-	logger.Info("[记忆处理-findSimilarMemories] 步骤1: 向量化查询内容")
+	logger.Debug("[记忆处理-findSimilarMemories] 步骤1: 向量化查询内容")
 	queryVector, err := m.embeddingSvc.Embed(ctx, userID, item.Content)
 	if err != nil {
 		logger.Error("[记忆处理-findSimilarMemories] 向量化查询内容失败", zap.Error(err))
 		return nil, fmt.Errorf("embed content: %w", err)
 	}
-	logger.Info("[记忆处理-findSimilarMemories] 向量化查询内容成功",
+	logger.Debug("[记忆处理-findSimilarMemories] 向量化查询内容成功",
 		zap.Int("vector_dim", len(queryVector)),
 	)
 
@@ -233,14 +233,14 @@ func (m *memoryManager) findSimilarMemories(
 	}
 
 	// 使用MemoryRetriever检索
-	logger.Info("[记忆处理-findSimilarMemories] 步骤2: 检索相似记忆")
+	logger.Debug("[记忆处理-findSimilarMemories] 步骤2: 检索相似记忆")
 	retriever := NewMemoryRetriever(m.memoryRepo, m.embeddingSvc)
 	results, err := retriever.Retrieve(ctx, query)
 	if err != nil {
 		logger.Error("[记忆处理-findSimilarMemories] 检索相似记忆失败", zap.Error(err))
 		return nil, fmt.Errorf("retrieve similar memories: %w", err)
 	}
-	logger.Info("[记忆处理-findSimilarMemories] 检索相似记忆成功",
+	logger.Debug("[记忆处理-findSimilarMemories] 检索相似记忆成功",
 		zap.Int("results_count", len(results)),
 	)
 
@@ -252,7 +252,7 @@ func (m *memoryManager) findSimilarMemories(
 		}
 	}
 
-	logger.Info("[记忆处理-findSimilarMemories] 过滤后相似记忆数量",
+	logger.Debug("[记忆处理-findSimilarMemories] 过滤后相似记忆数量",
 		zap.Int("filtered_count", len(filtered)),
 		zap.Float64("threshold", m.config.SimilarityThreshold),
 	)
@@ -361,20 +361,20 @@ func (m *memoryManager) executeDecision(
 
 // createMemory 创建新记忆。
 func (m *memoryManager) createMemory(ctx context.Context, userID string, item contracts.MemoryItem) error {
-	logger.Info("[记忆处理-createMemory] 开始创建新记忆",
+	logger.Debug("[记忆处理-createMemory] 开始创建新记忆",
 		zap.String("user_id", userID),
 		zap.String("type", string(item.Type)),
 		zap.String("content", item.Content),
 	)
 
 	// 向量化并获取使用的模型ID
-	logger.Info("[记忆处理-createMemory] 步骤1: 向量化内容")
+	logger.Debug("[记忆处理-createMemory] 步骤1: 向量化内容")
 	vector, modelID, err := m.embeddingSvc.EmbedWithModelID(ctx, userID, item.Content)
 	if err != nil {
 		logger.Error("[记忆处理-createMemory] 向量化失败", zap.Error(err))
 		return fmt.Errorf("embed content: %w", err)
 	}
-	logger.Info("[记忆处理-createMemory] 向量化成功",
+	logger.Debug("[记忆处理-createMemory] 向量化成功",
 		zap.Int("vector_dim", len(vector)),
 		zap.String("model_id", modelID),
 	)
@@ -396,13 +396,13 @@ func (m *memoryManager) createMemory(ctx context.Context, userID string, item co
 	}
 
 	// 存储到数据库
-	logger.Info("[记忆处理-createMemory] 步骤2: 存储到数据库")
+	logger.Debug("[记忆处理-createMemory] 步骤2: 存储到数据库")
 	if err := m.memoryRepo.Create(ctx, memory); err != nil {
 		logger.Error("[记忆处理-createMemory] 存储到数据库失败", zap.Error(err))
 		return fmt.Errorf("create memory: %w", err)
 	}
 
-	logger.Info("[记忆处理-createMemory] 创建新记忆成功",
+	logger.Debug("[记忆处理-createMemory] 创建新记忆成功",
 		zap.String("memory_id", memory.ID),
 		zap.String("content", item.Content),
 		zap.String("type", string(item.Type)),
