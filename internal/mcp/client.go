@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
@@ -145,7 +146,7 @@ func (c *mcpClient) CallTool(ctx context.Context, target MCPServerTarget, toolNa
 		return nil, fmt.Errorf("call MCP tool: %w", err)
 	}
 	if result.IsError {
-		return nil, fmt.Errorf("MCP tool returned an error")
+		return nil, fmt.Errorf("MCP tool returned an error: %s", toolErrorDetail(result))
 	}
 	data, err := json.Marshal(result)
 	if err != nil {
@@ -165,6 +166,30 @@ func (c *mcpClient) OpenSession(ctx context.Context, target MCPServerTarget, tim
 		return nil, err
 	}
 	return &mcpSession{cli: cli, cancel: cancel}, nil
+}
+
+// toolErrorDetail 从失败的 CallToolResult 中提取真实错误信息。
+// MCP 服务器在 isError=true 时通常在 content 文本块中返回错误描述，
+// 部分实现会放到 structuredContent 中；两者都没有时返回空串。
+func toolErrorDetail(result *mcp.CallToolResult) string {
+	var sb strings.Builder
+	for _, item := range result.Content {
+		if text, ok := item.(mcp.TextContent); ok && strings.TrimSpace(text.Text) != "" {
+			if sb.Len() > 0 {
+				sb.WriteString("; ")
+			}
+			sb.WriteString(strings.TrimSpace(text.Text))
+		}
+	}
+	if sb.Len() > 0 {
+		return sb.String()
+	}
+	if result.StructuredContent != nil {
+		if raw, err := json.Marshal(result.StructuredContent); err == nil && len(raw) > 0 {
+			return string(raw)
+		}
+	}
+	return ""
 }
 
 func (c *mcpClient) open(ctx context.Context, target MCPServerTarget) (*client.Client, error) {
