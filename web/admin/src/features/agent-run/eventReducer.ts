@@ -1,8 +1,9 @@
-import type { AgentEvent, AgentRun, AgentRunViewState } from './types';
+import type { AgentEvent, AgentRun, AgentRunViewState, AgentTimelineEntry } from './types';
 
 export const initialAgentRunState: AgentRunViewState = {
   highest_sequence: 0,
   status: 'idle',
+  timeline: [],
   answer: '',
   router: null,
   plan: null,
@@ -16,6 +17,38 @@ export const initialAgentRunState: AgentRunViewState = {
 
 const stringValue = (value: unknown, fallback = '') => typeof value === 'string' ? value : fallback;
 const numberValue = (value: unknown, fallback = 0) => typeof value === 'number' ? value : fallback;
+
+// 追加一条执行链路记录。
+function withEntry(state: AgentRunViewState, entry: AgentTimelineEntry): AgentRunViewState {
+  return { ...state, timeline: [...state.timeline, entry] };
+}
+
+// 从后往前查找最后一条满足条件的记录并原地更新，返回新数组。
+function updateLastEntry(
+  timeline: AgentTimelineEntry[],
+  predicate: (entry: AgentTimelineEntry) => boolean,
+  updater: (entry: AgentTimelineEntry) => AgentTimelineEntry,
+): AgentTimelineEntry[] {
+  for (let i = timeline.length - 1; i >= 0; i--) {
+    if (predicate(timeline[i])) {
+      const next = [...timeline];
+      next[i] = updater(timeline[i]);
+      return next;
+    }
+  }
+  return timeline;
+}
+
+// 追加或累计 answer 增量，保证 answer 只占一个时间点。
+function withAnswerDelta(state: AgentRunViewState, sequence: number, delta: string): AgentRunViewState {
+  const last = state.timeline[state.timeline.length - 1];
+  if (last && last.kind === 'answer') {
+    const next = [...state.timeline];
+    next[next.length - 1] = { ...last, delta: last.delta + delta };
+    return { ...state, timeline: next };
+  }
+  return withEntry(state, { kind: 'answer', sequence, delta });
+}
 
 export type ResetAction = { type: 'RESET_AGENT_RUN_STATE' };
 export type QueueAction = { type: 'SET_AGENT_RUN_QUEUED' };
@@ -62,21 +95,21 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
 
   switch (event.type) {
     case 'agent.run.queued':
-      return { ...next, status: 'queued', resumable: false };
+      return withEntry({ ...next, status: 'queued', resumable: false }, { kind: 'status', sequence: event.sequence, title: '排队中', status: 'queued' });
     case 'agent.run.started':
-      return { ...next, status: 'running', resumable: false, error: null, answer: '' };
+      return withEntry({ ...next, status: 'running', resumable: false, error: null, answer: '' }, { kind: 'status', sequence: event.sequence, title: '开始执行', status: 'running' });
     case 'agent.run.completed':
-      return {
+      return withEntry({
         ...next,
         status: 'completed',
         resumable: false,
         // Plan-Execute 模式没有 agent.answer.delta 事件，需从 final_result 填充 answer
         answer: next.answer || stringValue(payload.final_result),
-      };
+      }, { kind: 'status', sequence: event.sequence, title: '运行完成', status: 'completed' });
     case 'agent.run.cancelled':
-      return { ...next, status: 'cancelled', resumable: true };
+      return withEntry({ ...next, status: 'cancelled', resumable: true }, { kind: 'status', sequence: event.sequence, title: '运行已取消', status: 'cancelled' });
     case 'agent.run.failed':
-      return {
+      return withEntry({
         ...next,
         status: 'failed',
         resumable: true,
@@ -84,18 +117,29 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
           code: stringValue(payload.error_code, 'RUN_FAILED'),
           message: stringValue(payload.error_message, 'Agent 运行失败'),
         },
-      };
+      }, {
+        kind: 'status',
+        sequence: event.sequence,
+        title: '运行失败',
+        status: 'failed',
+        error_message: stringValue(payload.error_message),
+      });
     case 'agent.router.completed':
-      return {
+      return withEntry({
         ...next,
         router: {
           execution_mode: payload.execution_mode === 'plan_execute' ? 'plan_execute' : 'react',
           reason_summary: stringValue(payload.reason_summary),
         },
-      };
+      }, {
+        kind: 'router',
+        sequence: event.sequence,
+        execution_mode: payload.execution_mode === 'plan_execute' ? 'plan_execute' : 'react',
+        reason_summary: stringValue(payload.reason_summary),
+      });
     case 'agent.plan.created':
       // 初始化计划展示面板，包含版本号、目标、步骤列表等完整信息。
-      return {
+      return withEntry({
         ...next,
         plan: {
           version: numberValue(payload.version, 1),
@@ -108,11 +152,18 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
               }))
             : [],
         },
-      };
+      }, {
+        kind: 'plan_created',
+        sequence: event.sequence,
+        version: numberValue(payload.version, 1),
+        goal: stringValue(payload.goal),
+        step_count: Array.isArray(payload.steps) ? payload.steps.length : 0,
+        replanned: false,
+      });
     case 'agent.plan.replanned':
       // 计划重新规划后更新计划面板，版本号递增、步骤列表刷新。
       if (!state.plan) return next;
-      return {
+      return withEntry({
         ...next,
         plan: {
           version: numberValue(payload.version, state.plan.version),
@@ -125,15 +176,25 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
               }))
             : state.plan.steps,
         },
-      };
+      }, {
+        kind: 'plan_created',
+        sequence: event.sequence,
+        version: numberValue(payload.version, state.plan.version),
+        goal: stringValue(payload.goal),
+        step_count: Array.isArray(payload.steps) ? payload.steps.length : (state.plan.steps.length || 0),
+        replanned: true,
+      });
     case 'agent.step.started':
     case 'agent.step.completed':
     case 'agent.plan.step.started':
     case 'agent.plan.step.completed': {
       if (!state.plan) return next;
-      const stepStatus = event.type === 'agent.step.started' || event.type === 'agent.plan.step.started' ? 'running' : 'completed';
+      const started = event.type === 'agent.step.started' || event.type === 'agent.plan.step.started';
+      const stepStatus = started ? 'running' : payload.success === false ? 'failed' : 'completed';
       const stepNo = numberValue(payload.step_no);
-      return {
+      const version = state.plan.version;
+      const title = stringValue(payload.title, `步骤 ${stepNo}`);
+      const nextPlan = {
         ...next,
         plan: {
           ...state.plan,
@@ -142,11 +203,20 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
             : step),
         },
       };
+      if (started) {
+        return withEntry(nextPlan, { kind: 'plan_step', sequence: event.sequence, version, step_no: stepNo, title, status: 'running' });
+      }
+      const timeline = updateLastEntry(
+        nextPlan.timeline,
+        (entry): entry is Extract<AgentTimelineEntry, { kind: 'plan_step' }> => entry.kind === 'plan_step' && entry.version === version && entry.step_no === stepNo,
+        (entry) => ({ ...entry, status: stepStatus }),
+      );
+      return { ...nextPlan, timeline };
     }
     case 'agent.react.round.started':
       {
         const roundNo = numberValue(payload.round_no, numberValue(payload.round));
-        return {
+        return withEntry({
           ...next,
           rounds: [...state.rounds, {
             round_no: roundNo,
@@ -154,17 +224,29 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
             action_summary: stringValue(payload.action_summary),
             ...(payload.tool_name ? { tool_name: stringValue(payload.tool_name) } : {}),
           }],
-        };
+        }, {
+          kind: 'round',
+          sequence: event.sequence,
+          round_no: roundNo,
+          status: 'running',
+          action_summary: stringValue(payload.action_summary),
+        });
       }
     case 'agent.react.round.completed': {
       const roundNo = numberValue(payload.round_no, numberValue(payload.round));
-      return {
+      const nextState = {
         ...next,
         rounds: state.rounds.map((round) => round.round_no === roundNo ? { ...round, status: 'completed' } : round),
       };
+      const timeline = updateLastEntry(
+        nextState.timeline,
+        (entry): entry is Extract<AgentTimelineEntry, { kind: 'round' }> => entry.kind === 'round' && entry.round_no === roundNo,
+        (entry) => ({ ...entry, status: 'completed' }),
+      );
+      return { ...nextState, timeline };
     }
     case 'agent.tool.started':
-      return {
+      return withEntry({
         ...next,
         tools: [...state.tools, {
           tool_call_id: stringValue(payload.tool_call_id) || stringValue(payload.call_id),
@@ -172,23 +254,47 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
           status: 'running',
           input_summary: stringValue(payload.input_summary),
         }],
-      };
+      }, {
+        kind: 'tool',
+        sequence: event.sequence,
+        tool_call_id: stringValue(payload.tool_call_id) || stringValue(payload.call_id),
+        tool_name: stringValue(payload.tool_name),
+        status: 'running',
+        input_summary: stringValue(payload.input_summary),
+      });
     case 'agent.tool.completed':
     case 'agent.tool.call.failed': {
       const id = stringValue(payload.tool_call_id) || stringValue(payload.call_id);
-      return {
+      const succeeded = event.type === 'agent.tool.completed';
+      const toolStatus = succeeded ? 'completed' : 'failed';
+      const outputSummary = stringValue(payload.output_summary ?? payload.summary ?? payload.error_message);
+      const nextState = {
         ...next,
         tools: state.tools.map((tool) => tool.tool_call_id === id
-          ? { ...tool, status: event.type === 'agent.tool.completed' ? 'completed' : 'failed', output_summary: stringValue(payload.output_summary ?? payload.summary ?? payload.error_message) }
+          ? { ...tool, status: toolStatus, output_summary: outputSummary }
           : tool),
       };
+      const timeline = updateLastEntry(
+        nextState.timeline,
+        (entry): entry is Extract<AgentTimelineEntry, { kind: 'tool' }> => entry.kind === 'tool' && entry.tool_call_id === id,
+        (entry) => ({
+          ...entry,
+          status: toolStatus,
+          ...(outputSummary ? { output_summary: outputSummary } : {}),
+          ...(!succeeded ? { error_message: stringValue(payload.error_message) } : {}),
+        }),
+      );
+      return { ...nextState, timeline };
     }
     case 'agent.answer.delta':
-      return { ...next, answer: state.answer + stringValue(payload.delta) };
+      return { ...withAnswerDelta(next, event.sequence, stringValue(payload.delta)), answer: state.answer + stringValue(payload.delta) };
     case 'citation.created': {
       const { reasoning: _reasoning, ...visibleCitation } = payload;
       void _reasoning;
-      return { ...next, citations: [...state.citations, visibleCitation] };
+      return withEntry(
+        { ...next, citations: [...state.citations, visibleCitation] },
+        { kind: 'citation', sequence: event.sequence, citation: visibleCitation },
+      );
     }
     case 'usage.updated':
       return {

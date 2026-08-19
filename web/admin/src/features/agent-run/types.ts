@@ -83,9 +83,23 @@ export interface CreateAgentRunResponse {
   status: 'queued';
 }
 
+// AgentTimelineEntry 表示执行链路中的一条记录。
+// reducer 按事件 sequence 顺序追加，started/completed 合并为同一条目，
+// 渲染端按数组顺序严格还原真实执行顺序（工具与步骤/轮次穿插展示）。
+export type AgentTimelineEntry =
+  | { kind: 'status'; sequence: number; title: string; status: string; error_message?: string }
+  | { kind: 'router'; sequence: number; execution_mode: 'react' | 'plan_execute'; reason_summary: string }
+  | { kind: 'plan_created'; sequence: number; version: number; goal: string; step_count: number; replanned?: boolean }
+  | { kind: 'plan_step'; sequence: number; version: number; step_no: number; title: string; status: string; error_message?: string }
+  | { kind: 'round'; sequence: number; round_no: number; status: string; action_summary: string }
+  | { kind: 'tool'; sequence: number; tool_call_id: string; tool_name: string; status: string; input_summary?: string; output_summary?: string; error_message?: string }
+  | { kind: 'citation'; sequence: number; citation: Record<string, unknown> }
+  | { kind: 'answer'; sequence: number; delta: string };
+
 export interface AgentRunViewState {
   highest_sequence: number;
   status: AgentRunStatus;
+  timeline: AgentTimelineEntry[];
   answer: string;
   router: {
     execution_mode: 'react' | 'plan_execute';
