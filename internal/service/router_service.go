@@ -117,26 +117,164 @@ func (r *HybridRouter) Route(ctx context.Context, agentCtx contracts.AgentContex
 }
 
 // routeByRules 基于规则进行路由
+// 优先识别复杂任务，避免被简单关键词提前命中
 func (r *HybridRouter) routeByRules(agentCtx contracts.AgentContext) (contracts.ExecutionMode, float64, bool) {
 	query := strings.ToLower(agentCtx.Query)
 
-	// 规则 1: 包含明确的简单查询关键词 → React
-	if containsSimpleKeywords(query) {
-		return contracts.ExecutionReact, 0.85, true
-	}
-
-	// 规则 2: 包含计划类关键词 → Plan-Execute（优先于工具关键词，因为计划模式会自主调用工具）
-	if containsPlanKeywords(query) {
+	// 规则 1: 优先识别复杂任务特征 → Plan-Execute
+	// 复杂特征包括：多个动作、依赖关系、多工具协作、明确要求制定计划
+	if isComplexTask(query) {
 		return contracts.ExecutionPlanExecute, 0.8, true
 	}
 
-	// 规则 3: 包含工具调用关键词 → React（可能需要工具）
+	// 规则 2: 包含计划类关键词 → Plan-Execute（如果未被复杂特征检测覆盖）
+	if containsPlanKeywords(query) {
+		return contracts.ExecutionPlanExecute, 0.75, true
+	}
+
+	// 规则 3: 包含工具调用关键词 → React（可能需要工具，但不是多步骤复杂任务）
 	if containsToolKeywords(query) {
 		return contracts.ExecutionReact, 0.7, true
 	}
 
+	// 规则 4: 包含明确的简单查询关键词 → React
+	// 这些关键词明确表示简单查询，但必须在复杂特征检测之后
+	if containsSimpleKeywords(query) {
+		return contracts.ExecutionReact, 0.85, true
+	}
+
 	// 未匹配任何规则
 	return contracts.ExecutionReact, 0.5, false
+}
+
+// isComplexTask 检查是否为复杂任务
+// 复杂任务特征：多个动作、依赖关系、多工具协作、明确要求制定计划
+func isComplexTask(query string) bool {
+	// 特征 1: 包含多个动作词（表示需要多个步骤）
+	if hasMultipleActions(query) {
+		return true
+	}
+
+	// 特征 2: 包含依赖关系词（表示步骤之间有依赖）
+	if hasDependencyRelations(query) {
+		return true
+	}
+
+	// 特征 3: 包含多个工具调用词（表示需要多个工具协作）
+	if hasMultipleToolCalls(query) {
+		return true
+	}
+
+	// 特征 4: 明确要求制定计划
+	if explicitlyRequiresPlan(query) {
+		return true
+	}
+
+	// 特征 5: 包含多个问号（表示多个问题）
+	if hasMultipleQuestions(query) {
+		return true
+	}
+
+	return false
+}
+
+// hasMultipleActions 检查是否包含多个动作词
+func hasMultipleActions(query string) bool {
+	actionWords := []string{
+		"搜索", "查找", "查询", "检索",
+		"分析", "统计", "计算",
+		"总结", "概括", "归纳",
+		"对比", "比较", "区别",
+		"整理", "梳理", "分类",
+		"生成", "创建", "制作",
+		"编写", "撰写", "写",
+		"翻译", "解释", "说明",
+	}
+	count := 0
+	for _, word := range actionWords {
+		if strings.Contains(query, word) {
+			count++
+		}
+	}
+	return count >= 2
+}
+
+// hasDependencyRelations 检查是否包含依赖关系词
+func hasDependencyRelations(query string) bool {
+	dependencyWords := []string{
+		"然后", "接着", "之后", "最后",
+		"并且", "同时", "而且",
+		"之后再", "然后在", "接着再",
+		"搜索后", "分析后", "总结后",
+		"基于.*结果", "根据.*输出",
+	}
+	return containsAny(query, dependencyWords)
+}
+
+// hasMultipleToolCalls 检查是否包含多个工具调用词
+func hasMultipleToolCalls(query string) bool {
+	// 定义工具调用词组
+	toolGroups := []string{
+		"搜索", "查找", "查询", "检索",
+		"分析", "统计", "计算",
+		"总结", "概括", "归纳",
+		"对比", "比较", "区别",
+		"整理", "梳理", "分类",
+	}
+
+	// 检查是否包含多个不同的工具调用词
+	count := 0
+	for _, tool := range toolGroups {
+		if strings.Contains(query, tool) {
+			count++
+		}
+	}
+	return count >= 2
+}
+
+// explicitlyRequiresPlan 检查是否明确要求制定计划
+func explicitlyRequiresPlan(query string) bool {
+	// 定义计划相关关键词
+	planKeywords := []string{
+		"制定", "规划", "安排", "组织",
+		"计划", "方案", "流程", "步骤",
+		"分步", "逐步", "依次",
+	}
+
+	// 定义计划类型词
+	planTypes := []string{
+		"计划", "方案", "流程", "步骤",
+	}
+
+	// 检查是否同时包含计划动词和计划类型词
+	hasPlanVerb := false
+	hasPlanType := false
+
+	for _, verb := range planKeywords {
+		if strings.Contains(query, verb) {
+			hasPlanVerb = true
+			break
+		}
+	}
+
+	for _, planType := range planTypes {
+		if strings.Contains(query, planType) {
+			hasPlanType = true
+			break
+		}
+	}
+
+	// 如果同时包含计划动词和计划类型词，则认为是明确要求制定计划
+	if hasPlanVerb && hasPlanType {
+		return true
+	}
+
+	// 检查是否包含明确的计划请求词
+	explicitPlanRequests := []string{
+		"分步执行", "逐步执行", "依次执行",
+		"第一步", "第二步", "第三步",
+	}
+	return containsAny(query, explicitPlanRequests)
 }
 
 // containsPlanKeywords 检查是否包含计划类关键词

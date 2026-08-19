@@ -25,6 +25,7 @@ func NewPlannerService(modelFactory contracts.ModelFactory) *PlannerService {
 }
 
 // Plan 根据用户查询和上下文生成执行计划。
+// 支持超时、重试和工具能力校验。
 func (s *PlannerService) Plan(ctx context.Context, request contracts.AgentRunRequest) (*contracts.Plan, error) {
 	// 1. 构建提示词
 	prompt := s.buildPrompt(request)
@@ -43,68 +44,219 @@ func (s *PlannerService) Plan(ctx context.Context, request contracts.AgentRunReq
 		},
 	}
 
-	// 4. 调用 LLM
-	response, err := chatModel.Generate(ctx, chatRequest)
-	if err != nil {
-		return nil, fmt.Errorf("generate plan: %w", err)
-	}
+	// 4. 调用 LLM（支持超时和重试）
+	maxRetries := 1
+	var lastErr error
 
-	// 5. 提取 JSON
-	jsonStr := extractJSONFromText(response.Content)
-	if jsonStr == "" {
-		return nil, fmt.Errorf("no JSON found in LLM response")
-	}
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// 创建带超时的 context（Planner 专用超时：30 秒）
+		plannerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 
-	// 6. 解析计划
-	var plan contracts.Plan
-	if err := json.Unmarshal([]byte(jsonStr), &plan); err != nil {
-		return nil, fmt.Errorf("unmarshal plan: %w", err)
-	}
+		// 调用 LLM
+		response, err := chatModel.Generate(plannerCtx, chatRequest)
+		cancel() // 立即释放资源
 
-	// 7. 设置元数据
-	plan.ID = contracts.ID(uuid.NewString())
-	plan.RunID = request.RunID
-	plan.MaxSteps = request.Config.MaxPlanSteps
-	plan.MaxReplans = request.Config.MaxReplans
-	plan.Status = contracts.PlanStatusPending
-	// 不再强制清空 FinalAnswer：当步骤执行无法产出有效答案时（如缺少外部工具），
-	// 保留 Planner LLM 基于先验知识生成的 final_answer 作为兜底，避免返回空答案。
-	plan.CreatedAt = time.Now()
-	plan.UpdatedAt = time.Now()
-
-	// 8. 验证步骤数
-	if len(plan.Steps) == 0 {
-		return nil, fmt.Errorf("plan has no steps")
-	}
-	if len(plan.Steps) > plan.MaxSteps {
-		return nil, fmt.Errorf("plan has %d steps, max allowed is %d", len(plan.Steps), plan.MaxSteps)
-	}
-
-	// 9. 为每个步骤设置状态和ID
-	stepNumberToID := make(map[int]contracts.ID)
-	for i := range plan.Steps {
-		plan.Steps[i].ID = contracts.ID(uuid.NewString())
-		plan.Steps[i].Status = contracts.PlanStepStatusPending
-		stepNumberToID[plan.Steps[i].StepNumber] = plan.Steps[i].ID
-	}
-
-	// 10. 将 depends_on 中的步骤序号解析为对应的 step UUID
-	for i := range plan.Steps {
-		var resolvedDeps []contracts.ID
-		for _, dep := range plan.Steps[i].DependsOn {
-			if stepNum, err := strconv.Atoi(string(dep)); err == nil {
-				if depID, ok := stepNumberToID[stepNum]; ok {
-					resolvedDeps = append(resolvedDeps, depID)
-				}
-			} else {
-				// 如果不是数字，可能是已经解析过的 UUID，直接保留
-				resolvedDeps = append(resolvedDeps, dep)
+		if err != nil {
+			lastErr = err
+			// 如果是超时错误且还有重试次数，继续重试
+			if attempt < maxRetries && (plannerCtx.Err() == context.DeadlineExceeded || strings.Contains(err.Error(), "deadline exceeded")) {
+				continue
 			}
+			return nil, fmt.Errorf("generate plan (attempt %d/%d): %w", attempt+1, maxRetries+1, err)
 		}
-		plan.Steps[i].DependsOn = resolvedDeps
+
+		// 5. 提取 JSON
+		jsonStr := extractJSONFromText(response.Content)
+		if jsonStr == "" {
+			// JSON 提取失败，可能是 LLM 输出格式错误，重试
+			if attempt < maxRetries {
+				continue
+			}
+			return nil, fmt.Errorf("no JSON found in LLM response")
+		}
+
+		// 6. 解析计划
+		var plan contracts.Plan
+		if err := json.Unmarshal([]byte(jsonStr), &plan); err != nil {
+			// JSON 解析失败，可能是 LLM 输出格式错误，重试
+			if attempt < maxRetries {
+				continue
+			}
+			return nil, fmt.Errorf("unmarshal plan: %w", err)
+		}
+
+		// 7. 设置元数据
+		plan.ID = contracts.ID(uuid.NewString())
+		plan.RunID = request.RunID
+		plan.MaxSteps = request.Config.MaxPlanSteps
+		plan.MaxReplans = request.Config.MaxReplans
+		plan.Status = contracts.PlanStatusPending
+		// 不再强制清空 FinalAnswer：当步骤执行无法产出有效答案时（如缺少外部工具），
+		// 保留 Planner LLM 基于先验知识生成的 final_answer 作为兜底，避免返回空答案。
+		plan.CreatedAt = time.Now()
+		plan.UpdatedAt = time.Now()
+
+		// 8. 验证步骤数
+		if len(plan.Steps) == 0 {
+			return nil, fmt.Errorf("plan has no steps")
+		}
+		if len(plan.Steps) > plan.MaxSteps {
+			return nil, fmt.Errorf("plan has %d steps, max allowed is %d", len(plan.Steps), plan.MaxSteps)
+		}
+
+		// 9. 为每个步骤设置状态和ID
+		stepNumberToID := make(map[int]contracts.ID)
+		for i := range plan.Steps {
+			plan.Steps[i].ID = contracts.ID(uuid.NewString())
+			plan.Steps[i].Status = contracts.PlanStepStatusPending
+			stepNumberToID[plan.Steps[i].StepNumber] = plan.Steps[i].ID
+		}
+
+		// 10. 将 depends_on 中的步骤序号解析为对应的 step UUID
+		for i := range plan.Steps {
+			var resolvedDeps []contracts.ID
+			for _, dep := range plan.Steps[i].DependsOn {
+				if stepNum, err := strconv.Atoi(string(dep)); err == nil {
+					if depID, ok := stepNumberToID[stepNum]; ok {
+						resolvedDeps = append(resolvedDeps, depID)
+					}
+				} else {
+					// 如果不是数字，可能是已经解析过的 UUID，直接保留
+					resolvedDeps = append(resolvedDeps, dep)
+				}
+			}
+			plan.Steps[i].DependsOn = resolvedDeps
+		}
+
+		// 11. 工具能力校验
+		if err := s.validatePlanTools(&plan, request.Context); err != nil {
+			return nil, fmt.Errorf("plan tool validation failed: %w", err)
+		}
+
+		return &plan, nil
 	}
 
-	return &plan, nil
+	// 如果所有重试都失败，返回最后一个错误
+	return nil, fmt.Errorf("generate plan failed after %d attempts: %w", maxRetries+1, lastErr)
+}
+
+// PlanWithUsage 生成计划并返回 token 使用量。
+func (s *PlannerService) PlanWithUsage(ctx context.Context, request contracts.AgentRunRequest) (*contracts.Plan, contracts.TokenUsage, error) {
+	// 1. 构建提示词
+	prompt := s.buildPrompt(request)
+
+	// 2. 获取 ChatModel
+	chatModel, err := s.modelFactory.GetChatModel(ctx, contracts.ID(request.Context.ChatModelID))
+	if err != nil {
+		return nil, contracts.TokenUsage{}, fmt.Errorf("get chat model: %w", err)
+	}
+
+	// 3. 构建请求
+	chatRequest := contracts.ChatRequest{
+		Messages: []contracts.ChatMessage{
+			{Role: "system", Content: prompt},
+			{Role: "user", Content: request.Context.Query},
+		},
+	}
+
+	// 4. 调用 LLM（支持超时和重试）
+	maxRetries := 1
+	var lastErr error
+	totalUsage := contracts.TokenUsage{}
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// 创建带超时的 context（Planner 专用超时：30 秒）
+		plannerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+
+		// 调用 LLM
+		response, err := chatModel.Generate(plannerCtx, chatRequest)
+		cancel() // 立即释放资源
+
+		if err != nil {
+			lastErr = err
+			// 如果是超时错误且还有重试次数，继续重试
+			if attempt < maxRetries && (plannerCtx.Err() == context.DeadlineExceeded || strings.Contains(err.Error(), "deadline exceeded")) {
+				continue
+			}
+			return nil, totalUsage, fmt.Errorf("generate plan (attempt %d/%d): %w", attempt+1, maxRetries+1, err)
+		}
+
+		// 累加 token 使用量
+		totalUsage.Add(response.Usage)
+
+		// 5. 提取 JSON
+		jsonStr := extractJSONFromText(response.Content)
+		if jsonStr == "" {
+			// JSON 提取失败，可能是 LLM 输出格式错误，重试
+			if attempt < maxRetries {
+				continue
+			}
+			return nil, totalUsage, fmt.Errorf("no JSON found in LLM response")
+		}
+
+		// 6. 解析计划
+		var plan contracts.Plan
+		if err := json.Unmarshal([]byte(jsonStr), &plan); err != nil {
+			// JSON 解析失败，可能是 LLM 输出格式错误，重试
+			if attempt < maxRetries {
+				continue
+			}
+			return nil, totalUsage, fmt.Errorf("unmarshal plan: %w", err)
+		}
+
+		// 7. 设置元数据
+		plan.ID = contracts.ID(uuid.NewString())
+		plan.RunID = request.RunID
+		plan.MaxSteps = request.Config.MaxPlanSteps
+		plan.MaxReplans = request.Config.MaxReplans
+		plan.Status = contracts.PlanStatusPending
+		// 不再强制清空 FinalAnswer：当步骤执行无法产出有效答案时（如缺少外部工具），
+		// 保留 Planner LLM 基于先验知识生成的 final_answer 作为兜底，避免返回空答案。
+		plan.CreatedAt = time.Now()
+		plan.UpdatedAt = time.Now()
+
+		// 8. 验证步骤数
+		if len(plan.Steps) == 0 {
+			return nil, totalUsage, fmt.Errorf("plan has no steps")
+		}
+		if len(plan.Steps) > plan.MaxSteps {
+			return nil, totalUsage, fmt.Errorf("plan has %d steps, max allowed is %d", len(plan.Steps), plan.MaxSteps)
+		}
+
+		// 9. 为每个步骤设置状态和ID
+		stepNumberToID := make(map[int]contracts.ID)
+		for i := range plan.Steps {
+			plan.Steps[i].ID = contracts.ID(uuid.NewString())
+			plan.Steps[i].Status = contracts.PlanStepStatusPending
+			stepNumberToID[plan.Steps[i].StepNumber] = plan.Steps[i].ID
+		}
+
+		// 10. 将 depends_on 中的步骤序号解析为对应的 step UUID
+		for i := range plan.Steps {
+			var resolvedDeps []contracts.ID
+			for _, dep := range plan.Steps[i].DependsOn {
+				if stepNum, err := strconv.Atoi(string(dep)); err == nil {
+					if depID, ok := stepNumberToID[stepNum]; ok {
+						resolvedDeps = append(resolvedDeps, depID)
+					}
+				} else {
+					// 如果不是数字，可能是已经解析过的 UUID，直接保留
+					resolvedDeps = append(resolvedDeps, dep)
+				}
+			}
+			plan.Steps[i].DependsOn = resolvedDeps
+		}
+
+		// 11. 工具能力校验
+		if err := s.validatePlanTools(&plan, request.Context); err != nil {
+			return nil, totalUsage, fmt.Errorf("plan tool validation failed: %w", err)
+		}
+
+		return &plan, totalUsage, nil
+	}
+
+	// 如果所有重试都失败，返回最后一个错误
+	return nil, totalUsage, fmt.Errorf("generate plan failed after %d attempts: %w", maxRetries+1, lastErr)
 }
 
 // PlanWithPrompt 使用自定义提示词生成计划（用于重规划）。
@@ -171,6 +323,104 @@ func (s *PlannerService) PlanWithPrompt(ctx context.Context, request contracts.A
 	return &plan, nil
 }
 
+// PlanWithPromptUsage 使用自定义提示词生成计划并返回 token 使用量（用于重规划）。
+func (s *PlannerService) PlanWithPromptUsage(ctx context.Context, request contracts.AgentRunRequest, customPrompt string) (*contracts.Plan, contracts.TokenUsage, error) {
+	// 1. 获取 ChatModel
+	chatModel, err := s.modelFactory.GetChatModel(ctx, contracts.ID(request.Context.ChatModelID))
+	if err != nil {
+		return nil, contracts.TokenUsage{}, fmt.Errorf("get chat model: %w", err)
+	}
+
+	// 2. 构建请求
+	chatRequest := contracts.ChatRequest{
+		Messages: []contracts.ChatMessage{
+			{Role: "system", Content: customPrompt},
+			{Role: "user", Content: request.Context.Query},
+		},
+	}
+
+	// 3. 调用 LLM
+	response, err := chatModel.Generate(ctx, chatRequest)
+	if err != nil {
+		return nil, contracts.TokenUsage{}, fmt.Errorf("generate plan: %w", err)
+	}
+
+	// 4. 提取 JSON
+	jsonStr := extractJSONFromText(response.Content)
+	if jsonStr == "" {
+		return nil, response.Usage, fmt.Errorf("no JSON found in LLM response")
+	}
+
+	// 5. 解析计划
+	var plan contracts.Plan
+	if err := json.Unmarshal([]byte(jsonStr), &plan); err != nil {
+		return nil, response.Usage, fmt.Errorf("unmarshal plan: %w", err)
+	}
+
+	// 5a. Replan 场景不允许空步骤
+	if len(plan.Steps) == 0 {
+		return nil, response.Usage, fmt.Errorf("replan produced 0 steps")
+	}
+
+	// 6. 为每个步骤设置状态和ID，并解析 depends_on
+	stepNumberToID := make(map[int]contracts.ID)
+	for i := range plan.Steps {
+		plan.Steps[i].ID = contracts.ID(uuid.NewString())
+		plan.Steps[i].Status = contracts.PlanStepStatusPending
+		stepNumberToID[plan.Steps[i].StepNumber] = plan.Steps[i].ID
+	}
+
+	for i := range plan.Steps {
+		var resolvedDeps []contracts.ID
+		for _, dep := range plan.Steps[i].DependsOn {
+			if stepNum, err := strconv.Atoi(string(dep)); err == nil {
+				if depID, ok := stepNumberToID[stepNum]; ok {
+					resolvedDeps = append(resolvedDeps, depID)
+				}
+			} else {
+				resolvedDeps = append(resolvedDeps, dep)
+			}
+		}
+		plan.Steps[i].DependsOn = resolvedDeps
+	}
+
+	return &plan, response.Usage, nil
+}
+
+// validatePlanTools 校验计划中的工具是否在可用工具列表中
+func (s *PlannerService) validatePlanTools(plan *contracts.Plan, ctx contracts.AgentContext) error {
+	// 创建可用工具集合
+	availableTools := make(map[string]bool)
+	for _, tool := range ctx.AllowedTools {
+		availableTools[string(tool)] = true
+	}
+	// 也添加 AvailableTools 中的工具
+	for _, tool := range ctx.AvailableTools {
+		availableTools[tool.Name] = true
+	}
+
+	// 校验每个步骤的工具
+	for i := range plan.Steps {
+		step := &plan.Steps[i]
+
+		// 如果步骤不需要工具，跳过
+		if step.ToolName == "" {
+			continue
+		}
+
+		// 检查工具是否在可用工具列表中
+		if !availableTools[string(step.ToolName)] {
+			// 工具不存在，标记步骤为失败
+			step.Status = contracts.PlanStepStatusFailed
+			step.Error = fmt.Sprintf("tool %q not found in available tools", step.ToolName)
+			// 记录警告但不阻止计划执行（允许降级到纯推理步骤）
+			fmt.Printf("warning: plan step %d references tool %q which is not available\n", step.StepNumber, step.ToolName)
+		}
+	}
+
+	return nil
+}
+
 // buildPrompt 构建 Planner 提示词。
 func (s *PlannerService) buildPrompt(request contracts.AgentRunRequest) string {
 	var sb strings.Builder
@@ -235,6 +485,7 @@ func (s *PlannerService) buildPrompt(request contracts.AgentRunRequest) string {
 	sb.WriteString("- tool_name：需要调用工具时填写工具名称，不调用工具时设为空字符串 \"\"\n")
 	sb.WriteString("- arguments：工具调用参数（JSON 对象），不调用工具时设为空对象 {}\n")
 	sb.WriteString("- arguments may reference a dependency's real output with {{step_output:N}}; step N must also be listed in depends_on\n")
+	sb.WriteString("- 对于搜索结果中的 URL，使用结构化绑定：{\"$from_step\": 1, \"$path\": \"structured_data.items[0].url\"}\n")
 	sb.WriteString("- depends_on：依赖步骤的 step_number 字符串数组（如 [\"1\", \"2\"]），无依赖则为空数组 []\n")
 	sb.WriteString("- final_answer：默认设为空字符串 \"\"，实际答案由步骤执行后生成；仅当所有步骤均为纯推理步骤且无工具调用时，可在此字段直接给出最终答案\n")
 

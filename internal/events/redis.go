@@ -18,6 +18,8 @@ const (
 	eventStreamMaxLen   = 5000
 	eventStreamTTL      = 7 * 24 * time.Hour
 	eventReadBlock      = 5 * time.Second
+	redisWriteTimeout   = 5 * time.Second // 单次 Redis 写入超时
+	redisMaxRetries     = 3               // 最大重试次数
 )
 
 var appendEventScript = redis.NewScript(`
@@ -51,24 +53,44 @@ func NewRedisEventPublisher(redisClient *redis.Client) *RedisEventPublisher {
 }
 
 // Publish 将 Agent 事件序列化后追加到 Redis Stream，并刷新事件历史的保留期限。
+// 写入失败时自动重试，避免因临时性 Redis 问题导致事件丢失。
 func (p *RedisEventPublisher) Publish(ctx context.Context, event contracts.AgentEvent) error {
 	data, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("序列化 Agent 事件失败: %w", err)
 	}
 
-	_, err = appendEventScript.Run(
-		ctx,
-		p.redis,
-		[]string{eventStreamKey(event.RunID), eventSequenceKey(event.RunID)},
-		data,
-		eventStreamMaxLen,
-		int64(eventStreamTTL/time.Second),
-	).Result()
-	if err != nil {
-		return fmt.Errorf("写入 Agent 事件到 Redis Stream 失败: %w", err)
+	var lastErr error
+	for attempt := 0; attempt < redisMaxRetries; attempt++ {
+		// 创建带超时的子上下文，避免长时间阻塞
+		writeCtx, cancel := context.WithTimeout(ctx, redisWriteTimeout)
+		_, err = appendEventScript.Run(
+			writeCtx,
+			p.redis,
+			[]string{eventStreamKey(event.RunID), eventSequenceKey(event.RunID)},
+			data,
+			eventStreamMaxLen,
+			int64(eventStreamTTL/time.Second),
+		).Result()
+		cancel()
+
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		// 如果是上下文取消或超时，不再重试
+		if ctx.Err() != nil {
+			return fmt.Errorf("写入 Agent 事件到 Redis Stream 失败: %w", err)
+		}
+
+		// 短暂等待后重试
+		if attempt < redisMaxRetries-1 {
+			time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
+		}
 	}
-	return nil
+
+	return fmt.Errorf("写入 Agent 事件到 Redis Stream 失败（重试 %d 次后）: %w", redisMaxRetries, lastErr)
 }
 
 // RedisEventSubscriber 实现 contracts.EventSubscriber 接口，从 Redis Stream 回放并持续读取 Agent 事件。

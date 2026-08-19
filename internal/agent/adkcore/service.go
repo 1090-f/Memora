@@ -112,7 +112,7 @@ func (s *Service) Run(ctx context.Context, request contracts.AgentRunRequest) (c
 	// 3. 按模式分发（使用可取消的 runCtx）
 	switch decision.ExecutionMode {
 	case contracts.ExecutionPlanExecute:
-		return s.runPlanExecute(ctx, request)
+		return s.runPlanExecute(runCtx, request)
 	default:
 		return s.runReact(runCtx, request)
 	}

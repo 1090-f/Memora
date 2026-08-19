@@ -3,6 +3,7 @@ package adkcore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -11,10 +12,23 @@ import (
 
 	"github.com/1090-f/Memora/internal/agent/core"
 	"github.com/1090-f/Memora/internal/contracts"
+	"github.com/1090-f/Memora/internal/model/entity"
+	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service"
 	"github.com/1090-f/Memora/pkg/logger"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
+
+// RecoverableStepError 表示可恢复的步骤错误
+type RecoverableStepError struct {
+	StepIndex int
+	Message   string
+}
+
+func (e *RecoverableStepError) Error() string {
+	return fmt.Sprintf("recoverable step error at step %d: %s", e.StepIndex, e.Message)
+}
 
 // PlanExecuteGraph 基于 Eino compose.Graph 的 Plan-Execute 执行引擎。
 type PlanExecuteGraph struct {
@@ -23,6 +37,10 @@ type PlanExecuteGraph struct {
 	replanner      *service.ReplanService
 	reviewer       *service.ReviewerService
 	eventPublisher core.EventPublisher
+	planRepo       repository.PlanRepository
+
+	// 当前执行的计划
+	currentPlan *contracts.Plan
 
 	// 依赖图缓存
 	dependencyCache map[contracts.ID][]contracts.ID
@@ -36,6 +54,7 @@ func NewPlanExecuteGraph(
 	replanner *service.ReplanService,
 	reviewer *service.ReviewerService,
 	eventPublisher core.EventPublisher,
+	planRepo repository.PlanRepository,
 ) *PlanExecuteGraph {
 	if eventPublisher == nil {
 		eventPublisher = core.NoopEventPublisher{}
@@ -46,6 +65,7 @@ func NewPlanExecuteGraph(
 		replanner:       replanner,
 		reviewer:        reviewer,
 		eventPublisher:  eventPublisher,
+		planRepo:        planRepo,
 		dependencyCache: make(map[contracts.ID][]contracts.ID),
 	}
 }
@@ -54,12 +74,17 @@ func NewPlanExecuteGraph(
 // 流程：生成计划 → 执行 → (失败则重规划循环) → 审查 → 生成最终答案。
 func (g *PlanExecuteGraph) Run(ctx context.Context, request contracts.AgentRunRequest) (contracts.AgentRunResult, error) {
 	startedAt := time.Now()
+	totalUsage := contracts.TokenUsage{}
 
 	// 1. Planner 阶段：生成计划
-	plan, err := g.planner.Plan(ctx, request)
+	plan, planUsage, err := g.planner.PlanWithUsage(ctx, request)
 	if err != nil {
 		return contracts.AgentRunResult{}, fmt.Errorf("plan: %w", err)
 	}
+	totalUsage.Add(planUsage)
+
+	// 设置当前计划
+	g.currentPlan = plan
 
 	if err := g.executor.PreparePlan(plan, request); err != nil {
 		return contracts.AgentRunResult{}, fmt.Errorf("prepare plan: %w", err)
@@ -68,27 +93,70 @@ func (g *PlanExecuteGraph) Run(ctx context.Context, request contracts.AgentRunRe
 	_ = g.eventPublisher.PublishPlanCreated(ctx, request.RunID, plan)
 	toolCallBudget := contracts.NewToolCallBudget(request.Config.MaxToolCalls)
 
+	// 持久化计划到数据库
+	if g.planRepo != nil {
+		if err := g.persistPlan(ctx, plan, request); err != nil {
+			logger.Error("持久化计划失败", zap.Error(err))
+			// 持久化失败不阻止执行，继续执行
+		}
+	}
+
 	// 2. 执行 + 重规划循环（最多 MaxReplans 次重规划）
-	for {
+	maxReplanAttempts := plan.MaxReplans + 1 // 最大尝试次数（包括首次执行）
+	for attempt := 0; attempt < maxReplanAttempts; attempt++ {
+		// 检查 context 是否已取消
+		if ctx.Err() != nil {
+			return contracts.AgentRunResult{}, ctx.Err()
+		}
+
 		execErr := g.executePlan(ctx, plan, request, toolCallBudget)
 		if execErr == nil {
 			break // 执行成功，退出循环
 		}
 
+		// 检查是否是可恢复的步骤错误（如404）
+		var recoverableErr *RecoverableStepError
+		isRecoverable := errors.As(execErr, &recoverableErr)
+
 		// 检查是否可以重规划
-		if !plan.HasFailures() || plan.ReplanCount >= plan.MaxReplans {
+		if !isRecoverable && (!plan.HasFailures() || plan.ReplanCount >= plan.MaxReplans) {
 			return contracts.AgentRunResult{}, fmt.Errorf("execute plan: %w", execErr)
 		}
 
+		// 如果是可恢复错误但已经达到最大重试次数，也返回错误
+		if isRecoverable && plan.ReplanCount >= plan.MaxReplans {
+			return contracts.AgentRunResult{}, fmt.Errorf("execute plan (max replans reached): %w", execErr)
+		}
+
 		// 重规划
-		plan, err = g.replanner.Replan(ctx, plan, request)
+		replanResult, replanUsage, err := g.replanner.ReplanWithUsage(ctx, plan, request)
 		if err != nil {
 			return contracts.AgentRunResult{}, fmt.Errorf("replan: %w", err)
 		}
+		totalUsage.Add(replanUsage)
+
+		// 更新计划为新版本
+		plan = replanResult.NewPlan
+		// 更新当前计划
+		g.currentPlan = plan
 		if err := g.executor.PreparePlan(plan, request); err != nil {
 			return contracts.AgentRunResult{}, fmt.Errorf("prepare replanned plan: %w", err)
 		}
 		_ = g.eventPublisher.PublishPlanReplanned(ctx, request.RunID, plan)
+
+		// 持久化新版本的计划
+		if g.planRepo != nil {
+			if err := g.persistPlan(ctx, plan, request); err != nil {
+				logger.Error("持久化新版本计划失败", zap.Error(err))
+			}
+		}
+
+		logger.Info("Replan 完成",
+			zap.String("run_id", string(request.RunID)),
+			zap.Int("version", replanResult.Version),
+			zap.String("reason", replanResult.Reason),
+			zap.Int("failed_steps", len(replanResult.FailedStepIDs)),
+		)
 	}
 
 	if g.executor.RequiresExternalEvidence(request) && !g.executor.HasSuccessfulExternalEvidence(plan, request) {
@@ -96,20 +164,23 @@ func (g *PlanExecuteGraph) Run(ctx context.Context, request contracts.AgentRunRe
 	}
 
 	// 3. 生成最终答案（在审查之前，让审查检查真实结果）
-	finalAnswer, synthErr := g.executor.SynthesizeFinalAnswer(ctx, plan, request)
+	finalAnswer, synthUsage, synthErr := g.executor.SynthesizeFinalAnswerWithUsage(ctx, plan, request)
+	totalUsage.Add(synthUsage)
 	if synthErr != nil {
 		finalAnswer = g.generateFinalAnswer(plan, request)
 	}
 	plan.FinalAnswer = finalAnswer
 
 	// 4. Reviewer 阶段：审查最终答案的完整性
-	reviewResult, err := g.reviewer.Review(ctx, plan, request)
+	reviewResult, reviewUsage, err := g.reviewer.ReviewWithUsage(ctx, plan, request)
+	totalUsage.Add(reviewUsage)
 	if err == nil && reviewResult != nil && !reviewResult.Approved {
 		// 审查失败不阻断流程，记录警告
 		// 审查不通过但已无重规划额度，记录问题但仍然返回结果
-		if refined, refineErr := g.executor.RefineFinalAnswer(ctx, plan, request, reviewResult); refineErr == nil {
+		if refined, refineUsage, refineErr := g.executor.RefineFinalAnswerWithUsage(ctx, plan, request, reviewResult); refineErr == nil {
 			finalAnswer = refined
 			plan.FinalAnswer = refined
+			totalUsage.Add(refineUsage)
 		}
 	}
 
@@ -122,14 +193,14 @@ func (g *PlanExecuteGraph) Run(ctx context.Context, request contracts.AgentRunRe
 		ExecutionMode: contracts.ExecutionPlanExecute,
 		FinalResult:   finalAnswer,
 		Citations:     extractCitationsFromPlan(plan),
-		Usage:         contracts.TokenUsage{},
+		Usage:         totalUsage,
 		StartedAt:     startedAt,
 		EndedAt:       time.Now(),
 	}, nil
 }
 
 // generateFinalAnswer 生成最终答案，确保是纯文本格式。
-// 优先级：plan.FinalAnswer > 步骤输出提取的文本 > Plan Goal > 兜底提示。
+// 优先级：plan.FinalAnswer > 步骤输出提取的文本 > 确定性降级器 > Plan Goal > 兜底提示。
 // 工具步骤的 Output 是 ToolResult JSON，需要解析出其中的 text 字段，
 // 而非像旧逻辑那样直接跳过所有 JSON 输出。
 func (g *PlanExecuteGraph) generateFinalAnswer(plan *contracts.Plan, request contracts.AgentRunRequest) string {
@@ -154,6 +225,7 @@ func (g *PlanExecuteGraph) generateFinalAnswer(plan *contracts.Plan, request con
 	// 2. 从步骤输出中提取有效文本
 	var answers []string
 	var failedSteps []string
+	var successSteps []string
 	for _, step := range plan.Steps {
 		if step.Status != contracts.PlanStepStatusCompleted || step.Output == "" {
 			if step.Status == contracts.PlanStepStatusFailed {
@@ -178,6 +250,7 @@ func (g *PlanExecuteGraph) generateFinalAnswer(plan *contracts.Plan, request con
 			continue
 		}
 		answers = append(answers, text)
+		successSteps = append(successSteps, fmt.Sprintf("步骤%d(%s)", step.StepNumber, step.Title))
 	}
 
 	// 3. 如果有有效答案，组合并返回
@@ -206,7 +279,13 @@ func (g *PlanExecuteGraph) generateFinalAnswer(plan *contracts.Plan, request con
 		return result
 	}
 
-	// 4. 当有失败步骤时，明确返回失败信息，不使用 Goal 兜底
+	// 4. 确定性降级器：当 LLM 综合失败或步骤输出无法提取时，生成结构化降级答案
+	fallbackAnswer := g.generateFallbackAnswer(plan, request, successSteps, failedSteps)
+	if fallbackAnswer != "" {
+		return fallbackAnswer
+	}
+
+	// 5. 当有失败步骤时，明确返回失败信息，不使用 Goal 兜底
 	// Goal 兜底仅在无失败步骤（如步骤未执行）时使用
 	if len(failedSteps) > 0 {
 		logger.Error("计划执行失败，存在失败步骤",
@@ -216,7 +295,7 @@ func (g *PlanExecuteGraph) generateFinalAnswer(plan *contracts.Plan, request con
 		return fmt.Sprintf("任务执行失败：%s", strings.Join(failedSteps, "；"))
 	}
 
-	// 5. 兜底方案：使用 Plan Goal 作为答案
+	// 6. 兜底方案：使用 Plan Goal 作为答案
 	// 当所有步骤输出都为空时（可能是工具调用失败或步骤未执行），
 	// 使用 Planner 生成的 Goal 作为答案，而不是返回无意义的"任务已完成，但未生成具体答案。"
 	if plan.Goal != "" {
@@ -228,7 +307,7 @@ func (g *PlanExecuteGraph) generateFinalAnswer(plan *contracts.Plan, request con
 		return plan.Goal
 	}
 
-	// 6. 最终兜底：返回错误信息
+	// 7. 最终兜底：返回错误信息
 	logger.Error("Plan 无有效输出且无 Goal",
 		zap.String("run_id", string(request.RunID)),
 		zap.Int("total_steps", len(plan.Steps)),
@@ -237,6 +316,88 @@ func (g *PlanExecuteGraph) generateFinalAnswer(plan *contracts.Plan, request con
 		return fmt.Sprintf("任务执行失败：%s", strings.Join(failedSteps, "；"))
 	}
 	return "任务执行过程中未生成有效答案，请重试。"
+}
+
+// generateFallbackAnswer 确定性降级器：当 LLM 综合失败或步骤输出无法提取时，生成结构化降级答案
+// 降级答案质量可以较低，但不能为空
+// 只有当存在成功步骤时才返回降级答案，否则返回空字符串让调用者继续使用其他降级策略
+func (g *PlanExecuteGraph) generateFallbackAnswer(plan *contracts.Plan, request contracts.AgentRunRequest, successSteps, failedSteps []string) string {
+	// 只有当存在成功步骤时才生成降级答案
+	if len(successSteps) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+
+	// 1. 添加任务目标
+	if plan.Goal != "" {
+		sb.WriteString(fmt.Sprintf("## 任务目标\n%s\n\n", plan.Goal))
+	}
+
+	// 2. 添加成功步骤摘要
+	sb.WriteString("## 已完成步骤\n")
+	for _, step := range successSteps {
+		sb.WriteString(fmt.Sprintf("- %s\n", step))
+	}
+	sb.WriteString("\n")
+
+	// 3. 添加工具返回的核心事实（从步骤输出中提取）
+	var facts []string
+	for _, step := range plan.Steps {
+		if step.Status == contracts.PlanStepStatusCompleted && step.Output != "" {
+			text := extractStepOutputText(step.Output)
+			if text != "" && !isBoilerplateOutput(text) {
+				// 截取前 500 字符作为核心事实
+				if len(text) > 500 {
+					text = text[:500] + "..."
+				}
+				facts = append(facts, fmt.Sprintf("步骤%d: %s", step.StepNumber, text))
+			}
+		}
+	}
+
+	if len(facts) > 0 {
+		sb.WriteString("## 核心事实\n")
+		for _, fact := range facts {
+			sb.WriteString(fmt.Sprintf("%s\n\n", fact))
+		}
+	}
+
+	// 4. 添加失败或缺失的数据
+	if len(failedSteps) > 0 {
+		sb.WriteString("## 失败或缺失的数据\n")
+		for _, step := range failedSteps {
+			sb.WriteString(fmt.Sprintf("- %s\n", step))
+		}
+		sb.WriteString("\n")
+	}
+
+	// 5. 添加引用列表
+	citations := extractCitationsFromPlan(plan)
+	if len(citations) > 0 {
+		sb.WriteString("## 参考来源\n")
+		for i, citation := range citations {
+			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, citation))
+		}
+		sb.WriteString("\n")
+	}
+
+	// 6. 添加免责声明
+	sb.WriteString("---\n")
+	sb.WriteString("注：以上内容基于任务执行过程中的工具返回结果生成，可能存在不完整或不准确之处。\n")
+
+	result := sb.String()
+	if strings.TrimSpace(result) == "" {
+		return ""
+	}
+
+	logger.Info("使用确定性降级器生成最终答案",
+		zap.String("run_id", string(request.RunID)),
+		zap.Int("success_steps", len(successSteps)),
+		zap.Int("failed_steps", len(failedSteps)),
+		zap.Int("answer_length", len(result)))
+
+	return result
 }
 
 // extractStepOutputText 从步骤输出中提取有效文本。
@@ -554,13 +715,17 @@ func (g *PlanExecuteGraph) executePlan(ctx context.Context, plan *contracts.Plan
 	}
 
 	// 3. 逐层并行执行
+	totalUsage := contracts.TokenUsage{}
 	for _, layer := range layers {
 		toolCtx.PriorStepOutputs = completedPlanStepOutputs(plan)
-		if err := g.executeParallelLayer(ctx, layer, toolCtx); err != nil {
+		err, layerUsage := g.executeParallelLayer(ctx, layer, toolCtx)
+		totalUsage.Add(layerUsage)
+		if err != nil {
 			return err
 		}
 	}
 
+	// TODO: 将 totalUsage 累加到最终结果中（需要修改 executePlan 返回值）
 	return nil
 }
 
@@ -648,43 +813,127 @@ func (g *PlanExecuteGraph) topologicalSort(steps []contracts.PlanStep) ([][]*con
 }
 
 // executeParallelLayer 并行执行同一层级的步骤（指针）。
-func (g *PlanExecuteGraph) executeParallelLayer(ctx context.Context, layer []*contracts.PlanStep, toolCtx contracts.ToolContext) error {
+func (g *PlanExecuteGraph) executeParallelLayer(ctx context.Context, layer []*contracts.PlanStep, toolCtx contracts.ToolContext) (error, contracts.TokenUsage) {
 	if len(layer) == 0 {
-		return nil
+		return nil, contracts.TokenUsage{}
 	}
 
 	// 如果只有一个步骤，直接执行
 	if len(layer) == 1 {
 		step := layer[0]
+		// 检查依赖是否成功
+		if err := g.checkDependencies(step, toolCtx); err != nil {
+			step.Status = contracts.PlanStepStatusSkipped
+			step.Error = err.Error()
+			_ = g.eventPublisher.PublishStepCompleted(ctx, toolCtx.AgentRunID, step.StepNumber, step.Title, false)
+			return nil, contracts.TokenUsage{} // 依赖失败，跳过此步骤
+		}
 		_ = g.eventPublisher.PublishStepStarted(ctx, toolCtx.AgentRunID, step.StepNumber, step.Title)
-		err := g.executor.ExecuteStep(ctx, step, toolCtx)
+		usage, err := g.executor.ExecuteStep(ctx, step, toolCtx)
 		_ = g.eventPublisher.PublishStepCompleted(ctx, toolCtx.AgentRunID, step.StepNumber, step.Title, err == nil)
-		return err
+		return err, usage
 	}
 
 	// 多个步骤并行执行
+	type stepResult struct {
+		err   error
+		usage contracts.TokenUsage
+	}
 	var wg sync.WaitGroup
-	errs := make([]error, len(layer))
+	results := make([]stepResult, len(layer))
 
 	for i := range layer {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
 			step := layer[idx]
+			// 检查依赖是否成功
+			if err := g.checkDependencies(step, toolCtx); err != nil {
+				step.Status = contracts.PlanStepStatusSkipped
+				step.Error = err.Error()
+				results[idx] = stepResult{err: nil, usage: contracts.TokenUsage{}}
+				_ = g.eventPublisher.PublishStepCompleted(ctx, toolCtx.AgentRunID, step.StepNumber, step.Title, false)
+				return
+			}
 			_ = g.eventPublisher.PublishStepStarted(ctx, toolCtx.AgentRunID, step.StepNumber, step.Title)
-			errs[idx] = g.executor.ExecuteStep(ctx, step, toolCtx)
-			_ = g.eventPublisher.PublishStepCompleted(ctx, toolCtx.AgentRunID, step.StepNumber, step.Title, errs[idx] == nil)
+			usage, err := g.executor.ExecuteStep(ctx, step, toolCtx)
+			results[idx] = stepResult{err: err, usage: usage}
+			_ = g.eventPublisher.PublishStepCompleted(ctx, toolCtx.AgentRunID, step.StepNumber, step.Title, err == nil)
 		}(i)
 	}
 
 	wg.Wait()
 
-	for _, err := range errs {
-		if err != nil {
-			return err
+	// 统计步骤执行结果
+	var recoverableSteps []*contracts.PlanStep
+	var permanentErrors []error
+	totalUsage := contracts.TokenUsage{}
+	for i, step := range layer {
+		totalUsage.Add(results[i].usage)
+		if results[i].err != nil {
+			// 检查是否是 StepExecutionError
+			var stepErr *contracts.StepExecutionError
+			if errors.As(results[i].err, &stepErr) {
+				step.Status = contracts.PlanStepStatusFailed
+				step.Error = stepErr.Message
+				if stepErr.Recoverable {
+					recoverableSteps = append(recoverableSteps, step)
+				} else {
+					permanentErrors = append(permanentErrors, results[i].err)
+				}
+			} else {
+				permanentErrors = append(permanentErrors, results[i].err)
+			}
 		}
 	}
 
+	// 如果有可恢复的步骤，返回特殊错误触发 replan
+	if len(recoverableSteps) > 0 {
+		return &RecoverableStepError{
+			StepIndex: recoverableSteps[0].StepNumber,
+			Message:   fmt.Sprintf("%d steps with recoverable errors", len(recoverableSteps)),
+		}, totalUsage
+	}
+
+	// 如果有永久性错误，返回第一个错误
+	if len(permanentErrors) > 0 {
+		return permanentErrors[0], totalUsage
+	}
+
+	return nil, totalUsage
+}
+
+// checkDependencies 检查步骤的依赖是否都已成功完成
+func (g *PlanExecuteGraph) checkDependencies(step *contracts.PlanStep, toolCtx contracts.ToolContext) error {
+	if len(step.DependsOn) == 0 {
+		return nil
+	}
+
+	// 获取所有步骤的映射
+	stepMap := make(map[contracts.ID]*contracts.PlanStep)
+	for i := range g.currentPlan.Steps {
+		stepMap[g.currentPlan.Steps[i].ID] = &g.currentPlan.Steps[i]
+	}
+
+	for _, depID := range step.DependsOn {
+		dep, ok := stepMap[depID]
+		if !ok {
+			return &contracts.StepExecutionError{
+				Kind:        contracts.StepErrorDependency,
+				Recoverable: false,
+				Retryable:   false,
+				Message:     fmt.Sprintf("dependency step %s not found", depID),
+			}
+		}
+		if dep.Status != contracts.PlanStepStatusCompleted {
+			return &contracts.StepExecutionError{
+				Kind:        contracts.StepErrorDependency,
+				Recoverable: false,
+				Retryable:   false,
+				Message:     fmt.Sprintf("dependency step %d (%s) is not completed: %s", dep.StepNumber, dep.Title, dep.Status),
+			}
+		}
+	}
 	return nil
 }
 
@@ -730,12 +979,93 @@ func completedPlanStepOutputs(plan *contracts.Plan) map[int]string {
 func dependencyStepOutput(output string) string {
 	var result contracts.ToolResult
 	if json.Unmarshal([]byte(output), &result) == nil {
+		// 优先返回完整 ToolResult JSON，支持结构化绑定解析
+		// 例如：{"$from_step": 1, "$path": "structured_data.items[0].url"}
+		// 这样 resolveStepBinding 可以导航到 structured_data → items[0] → url
+		if len(result.StructuredData) > 0 {
+			return output
+		}
 		if result.Text != "" {
 			return result.Text
 		}
-		if len(result.StructuredData) > 0 {
-			return string(result.StructuredData)
-		}
 	}
 	return output
+}
+
+// persistPlan 将计划数据持久化到数据库
+func (g *PlanExecuteGraph) persistPlan(ctx context.Context, plan *contracts.Plan, request contracts.AgentRunRequest) error {
+	// 解析 RunID
+	runID, err := uuid.Parse(string(request.RunID))
+	if err != nil {
+		return fmt.Errorf("parse run id: %w", err)
+	}
+
+	// 计算版本号
+	version := plan.ReplanCount + 1
+
+	// 创建 AgentPlan 实体
+	agentPlan := &entity.AgentPlan{
+		ID:         uuid.New(),
+		AgentRunID: runID,
+		Version:    version,
+		Goal:       plan.Goal,
+		Status:     string(plan.Status),
+		IsCurrent:  true,
+		CreatedAt:  time.Now(),
+	}
+
+	// 保存计划
+	if err := g.planRepo.Create(ctx, agentPlan); err != nil {
+		return fmt.Errorf("create plan: %w", err)
+	}
+
+	// 保存步骤
+	for _, step := range plan.Steps {
+		// 将 DependsOn 序列化为 JSON
+		dependsOnJSON, err := json.Marshal(step.DependsOn)
+		if err != nil {
+			dependsOnJSON = []byte("[]")
+		}
+
+		agentStep := &entity.AgentPlanStep{
+			ID:              uuid.New(),
+			PlanID:          agentPlan.ID,
+			StepNo:          step.StepNumber,
+			Title:           step.Title,
+			Description:     step.Description,
+			RecommendedTool: step.ToolName,
+			DependsOn:       dependsOnJSON,
+			Status:          string(step.Status),
+			OutputSummary:   step.Output,
+			ErrorMessage:    step.Error,
+			CreatedAt:       time.Now(),
+		}
+
+		if err := g.planRepo.CreateStep(ctx, agentStep); err != nil {
+			return fmt.Errorf("create plan step: %w", err)
+		}
+	}
+
+	// 创建执行日志
+	eventType := "plan_created"
+	executionLog := &entity.AgentPlanExecutionLog{
+		ID:        uuid.New(),
+		PlanID:    agentPlan.ID,
+		EventType: eventType,
+		Message:   fmt.Sprintf("Plan v%d created with %d steps", version, len(plan.Steps)),
+		CreatedAt: time.Now(),
+	}
+
+	if err := g.planRepo.CreateExecutionLog(ctx, executionLog); err != nil {
+		return fmt.Errorf("create execution log: %w", err)
+	}
+
+	logger.Info("计划持久化成功",
+		zap.String("plan_id", agentPlan.ID.String()),
+		zap.String("run_id", string(request.RunID)),
+		zap.Int("version", version),
+		zap.Int("steps_count", len(plan.Steps)),
+	)
+
+	return nil
 }

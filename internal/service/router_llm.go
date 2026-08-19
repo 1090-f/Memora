@@ -195,14 +195,26 @@ func (r *LLMRouter) extractJSON(response string) string {
 	return ""
 }
 
-// normalizeMode 规范化模式名称
+// normalizeMode 规范化模式名称。
+// 合法模式：react（及其别名）、plan_execute（及其别名）。
+// 只有空值或未知值才降级为 React。
 func (r *LLMRouter) normalizeMode(mode string) contracts.ExecutionMode {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 
 	switch mode {
-	case "react", "re_act":
+	// React 模式及其别名
+	case "react", "re_act", "reactive":
 		return contracts.ExecutionReact
+
+	// Plan-Execute 模式及其别名
+	case "plan_execute", "plan-execute", "planexecute", "plan":
+		return contracts.ExecutionPlanExecute
+
+	// 空值或未知值降级为 React
 	default:
+		logger.Warn("未知路由模式，降级为 React",
+			zap.String("original_mode", mode),
+		)
 		return contracts.ExecutionReact
 	}
 }

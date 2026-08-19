@@ -318,12 +318,12 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	)
 
 	// 初始化 Plan-Execute 服务（Phase 5）
-	_ = repository.NewPlanRepository(a.db) // TODO: 保存到结构体字段以供后续使用
+	planRepo := repository.NewPlanRepository(a.db)
 	plannerService := service.NewPlannerService(modelFactory)
 	planExecutorService := service.NewPlanExecutor(toolExecutor, modelFactory, toolCallRepo, sequencedEvents)
 	replanService := service.NewReplanService(plannerService)
 	reviewerService := service.NewReviewerService(modelFactory)
-	planGraph := adkcore.NewPlanExecuteGraph(plannerService, planExecutorService, replanService, reviewerService, sequencedEvents)
+	planGraph := adkcore.NewPlanExecuteGraph(plannerService, planExecutorService, replanService, reviewerService, sequencedEvents, planRepo)
 
 	adkService := adkcore.NewService(adkRunner, planGraph, routerService, sequencedEvents, core.NewCitationCollector(), &agentRunRepoAdapter{repo: agentRunRepo})
 	var agentCoreService contracts.AgentRunService = adkService
@@ -363,6 +363,10 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		memoryExtractor,
 		worker.DefaultAgentWorkerConfig(),
 	)
+	// 启动前恢复上次未完成的 running 任务为 failed
+	if err := agentWorker.RecoverStaleRuns(context.Background()); err != nil {
+		logger.Error("恢复孤儿 running 任务失败", zap.Error(err))
+	}
 	// 使用独立生命周期上下文启动 Worker，服务器关闭时主动取消该上下文。
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	a.workerCancel = workerCancel

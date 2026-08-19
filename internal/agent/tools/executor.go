@@ -4,11 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/1090-f/Memora/internal/contracts"
 )
 
 const maxToolArgumentBytes = 64 * 1024
+
+// 工具超时限制
+const (
+	defaultToolTimeout = 60 * time.Second
+	maxToolTimeout     = 120 * time.Second
+
+	// 特定工具的超时限制
+	webSearchTimeout    = 30 * time.Second
+	fetchURLTimeout     = 30 * time.Second
+	knowledgeTimeout    = 20 * time.Second
+	documentReadTimeout = 60 * time.Second
+)
 
 // ToolAvailabilityChecker 在工具真正执行前动态复核工具是否仍可用。
 // 这是双层校验机制的第二层：在工具实际调用时再次校验启用状态。
@@ -112,11 +125,40 @@ func (e *Executor) Execute(ctx context.Context, toolContext contracts.ToolContex
 	}
 
 	callContext := ctx
-	if spec.Timeout > 0 {
-		var cancel context.CancelFunc
-		callContext, cancel = context.WithTimeout(ctx, spec.Timeout)
-		defer cancel()
+	// 设置工具调用超时：优先使用工具配置的超时，否则使用默认超时
+	toolTimeout := spec.Timeout
+	if toolTimeout <= 0 {
+		toolTimeout = defaultToolTimeout
 	}
+
+	// 根据工具能力应用最大超时限制
+	if hasCapability(spec.Capabilities, contracts.CapabilityWebFetch) {
+		if toolTimeout > fetchURLTimeout {
+			toolTimeout = fetchURLTimeout
+		}
+	} else if hasCapability(spec.Capabilities, contracts.CapabilityWebSearch) {
+		if toolTimeout > webSearchTimeout {
+			toolTimeout = webSearchTimeout
+		}
+	} else if hasCapability(spec.Capabilities, contracts.CapabilityKnowledge) {
+		if toolTimeout > knowledgeTimeout {
+			toolTimeout = knowledgeTimeout
+		}
+	} else if hasCapability(spec.Capabilities, contracts.CapabilityDocumentRead) {
+		if toolTimeout > documentReadTimeout {
+			toolTimeout = documentReadTimeout
+		}
+	} else {
+		// 其他工具使用全局最大超时
+		if toolTimeout > maxToolTimeout {
+			toolTimeout = maxToolTimeout
+		}
+	}
+
+	var cancel context.CancelFunc
+	callContext, cancel = context.WithTimeout(ctx, toolTimeout)
+	defer cancel()
+
 	result, err := value.Execute(callContext, toolContext, call)
 	if err != nil {
 		if result.CallID == "" {
@@ -176,6 +218,16 @@ func truncateResult(result contracts.ToolResult, maxBytes int) contracts.ToolRes
 func contains(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+// hasCapability 检查工具是否具有指定能力
+func hasCapability(capabilities []string, required string) bool {
+	for _, cap := range capabilities {
+		if cap == required {
 			return true
 		}
 	}

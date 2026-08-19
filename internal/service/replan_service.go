@@ -21,36 +21,165 @@ func NewReplanService(planner *PlannerService) *ReplanService {
 	}
 }
 
-// Replan 重新规划未完成的步骤。
-func (s *ReplanService) Replan(ctx context.Context, plan *contracts.Plan, request contracts.AgentRunRequest) (*contracts.Plan, error) {
+// ReplanResult 重规划结果，包含新计划和元数据
+type ReplanResult struct {
+	NewPlan          *contracts.Plan               // 新计划
+	Reason           string                        // 重规划原因
+	FailedStepIDs    []contracts.ID                // 失败步骤 ID
+	CompletedStepIDs []contracts.ID                // 已完成步骤 ID
+	StepMapping      map[contracts.ID]contracts.ID // 新旧步骤映射（旧ID -> 新ID）
+	Version          int                           // 新版本号
+}
+
+// Replan 重新规划未完成的步骤，创建不可变版本链。
+func (s *ReplanService) Replan(ctx context.Context, plan *contracts.Plan, request contracts.AgentRunRequest) (*ReplanResult, error) {
 	// 1. 检查是否超过重规划次数限制
 	if plan.ReplanCount >= plan.MaxReplans {
-		return plan, fmt.Errorf("replan limit reached: %d/%d", plan.ReplanCount, plan.MaxReplans)
+		return nil, fmt.Errorf("replan limit reached: %d/%d", plan.ReplanCount, plan.MaxReplans)
 	}
 
 	// 2. 收集已完成步骤的输出
 	completedSteps := plan.GetCompletedSteps()
 	failedSteps := plan.GetFailedSteps()
 
-	// 3. 构建重规划提示词
+	// 3. 构建重规划原因
+	reason := s.buildReplanReason(plan, completedSteps, failedSteps)
+
+	// 4. 构建重规划提示词
 	prompt := s.buildReplanPrompt(plan, completedSteps, failedSteps, request)
 
-	// 4. 使用 PlannerService 生成新计划
+	// 5. 使用 PlannerService 生成新计划
 	newPlan, err := s.planner.PlanWithPrompt(ctx, request, prompt)
 	if err != nil {
 		return nil, fmt.Errorf("replan: %w", err)
 	}
 
-	// 5. 合并步骤：保留已完成步骤，更新未完成步骤
-	mergedSteps := s.mergeSteps(plan.Steps, newPlan.Steps)
+	// 6. 合并步骤：保留已完成步骤，更新未完成步骤
+	mergedSteps, stepMapping := s.mergeStepsWithMapping(plan.Steps, newPlan.Steps)
 	if len(completedSteps) == 0 && len(mergedSteps) == 0 {
 		return nil, fmt.Errorf("replan produced empty plan with no completed steps")
 	}
-	plan.Steps = mergedSteps
-	plan.ReplanCount++
-	plan.UpdatedAt = time.Now()
 
-	return plan, nil
+	// 7. 创建新版本的计划
+	newVersion := plan.ReplanCount + 2 // 版本从 1 开始，第一次 Replan 后是 2
+	replanPlan := &contracts.Plan{
+		ID:          newPlan.ID,
+		RunID:       plan.RunID,
+		Goal:        plan.Goal, // 保留原始目标
+		FinalAnswer: newPlan.FinalAnswer,
+		Steps:       mergedSteps,
+		MaxSteps:    plan.MaxSteps,
+		MaxReplans:  plan.MaxReplans,
+		ReplanCount: plan.ReplanCount + 1,
+		Status:      contracts.PlanStatusPending,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	// 收集失败步骤 ID 和已完成步骤 ID
+	var failedStepIDs, completedStepIDs []contracts.ID
+	for _, step := range failedSteps {
+		failedStepIDs = append(failedStepIDs, step.ID)
+	}
+	for _, step := range completedSteps {
+		completedStepIDs = append(completedStepIDs, step.ID)
+	}
+
+	return &ReplanResult{
+		NewPlan:          replanPlan,
+		Reason:           reason,
+		FailedStepIDs:    failedStepIDs,
+		CompletedStepIDs: completedStepIDs,
+		StepMapping:      stepMapping,
+		Version:          newVersion,
+	}, nil
+}
+
+// ReplanWithUsage 重新规划并返回 token 使用量。
+func (s *ReplanService) ReplanWithUsage(ctx context.Context, plan *contracts.Plan, request contracts.AgentRunRequest) (*ReplanResult, contracts.TokenUsage, error) {
+	// 1. 检查是否超过重规划次数限制
+	if plan.ReplanCount >= plan.MaxReplans {
+		return nil, contracts.TokenUsage{}, fmt.Errorf("replan limit reached: %d/%d", plan.ReplanCount, plan.MaxReplans)
+	}
+
+	// 2. 收集已完成步骤的输出
+	completedSteps := plan.GetCompletedSteps()
+	failedSteps := plan.GetFailedSteps()
+
+	// 3. 构建重规划原因
+	reason := s.buildReplanReason(plan, completedSteps, failedSteps)
+
+	// 4. 构建重规划提示词
+	prompt := s.buildReplanPrompt(plan, completedSteps, failedSteps, request)
+
+	// 5. 使用 PlannerService 生成新计划
+	newPlan, usage, err := s.planner.PlanWithPromptUsage(ctx, request, prompt)
+	if err != nil {
+		return nil, usage, fmt.Errorf("replan: %w", err)
+	}
+
+	// 6. 合并步骤：保留已完成步骤，更新未完成步骤
+	mergedSteps, stepMapping := s.mergeStepsWithMapping(plan.Steps, newPlan.Steps)
+	if len(completedSteps) == 0 && len(mergedSteps) == 0 {
+		return nil, usage, fmt.Errorf("replan produced empty plan with no completed steps")
+	}
+
+	// 7. 创建新版本的计划
+	newVersion := plan.ReplanCount + 2 // 版本从 1 开始，第一次 Replan 后是 2
+	replanPlan := &contracts.Plan{
+		ID:          newPlan.ID,
+		RunID:       plan.RunID,
+		Goal:        plan.Goal, // 保留原始目标
+		FinalAnswer: newPlan.FinalAnswer,
+		Steps:       mergedSteps,
+		MaxSteps:    plan.MaxSteps,
+		MaxReplans:  plan.MaxReplans,
+		ReplanCount: plan.ReplanCount + 1,
+		Status:      contracts.PlanStatusPending,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	// 收集失败步骤 ID 和已完成步骤 ID
+	var failedStepIDs, completedStepIDs []contracts.ID
+	for _, step := range failedSteps {
+		failedStepIDs = append(failedStepIDs, step.ID)
+	}
+	for _, step := range completedSteps {
+		completedStepIDs = append(completedStepIDs, step.ID)
+	}
+
+	return &ReplanResult{
+		NewPlan:          replanPlan,
+		Reason:           reason,
+		FailedStepIDs:    failedStepIDs,
+		CompletedStepIDs: completedStepIDs,
+		StepMapping:      stepMapping,
+		Version:          newVersion,
+	}, usage, nil
+}
+
+// buildReplanReason 构建重规划原因
+func (s *ReplanService) buildReplanReason(plan *contracts.Plan, completedSteps, failedSteps []contracts.PlanStep) string {
+	var reasons []string
+
+	if len(failedSteps) > 0 {
+		var failedDescriptions []string
+		for _, step := range failedSteps {
+			failedDescriptions = append(failedDescriptions, fmt.Sprintf("步骤%d(%s)", step.StepNumber, step.Title))
+		}
+		reasons = append(reasons, fmt.Sprintf("以下步骤执行失败: %s", strings.Join(failedDescriptions, ", ")))
+	}
+
+	if plan.ReplanCount > 0 {
+		reasons = append(reasons, fmt.Sprintf("这是第 %d 次重规划", plan.ReplanCount+1))
+	}
+
+	if len(reasons) == 0 {
+		reasons = append(reasons, "计划需要重新规划")
+	}
+
+	return strings.Join(reasons, "; ")
 }
 
 // buildReplanPrompt 构建重规划提示词。
@@ -111,6 +240,18 @@ func (s *ReplanService) buildReplanPrompt(plan *contracts.Plan, completedSteps, 
 	sb.WriteString("请生成新的执行计划，只包含未完成的步骤。已完成的步骤将保留。\n")
 	sb.WriteString("必须输出有效的 JSON 格式。\n")
 	sb.WriteString("计划步骤数不超过 " + fmt.Sprintf("%d", plan.MaxSteps-len(completedSteps)) + " 步。\n\n")
+
+	// 添加 URL 使用警告
+	sb.WriteString("## 重要警告\n")
+	sb.WriteString("1. **禁止编造 URL**：不要凭空生成 URL。如果需要访问网页，必须使用 web_search 工具搜索获取真实 URL。\n")
+	sb.WriteString("2. **禁止使用示例 URL**：不要使用 example.com、test.com 等示例域名。\n")
+	sb.WriteString("3. **依赖步骤输出**：如果需要使用其他步骤的输出（如搜索结果中的 URL），请使用结构化绑定语法：\n")
+	sb.WriteString("   ```json\n")
+	sb.WriteString("   \"url\": {\"$from_step\": 1, \"$path\": \"structured_data.items[0].url\"}\n")
+	sb.WriteString("   ```\n")
+	sb.WriteString("   其中 step 1 必须是 web_search 工具步骤，且必须在 depends_on 中列出。\n")
+	sb.WriteString("4. **参数校验**：调用 fetch_url 前，确保 URL 参数是合法的 HTTP/HTTPS URL，不包含 JSON 或未解析的表达式。\n\n")
+
 	sb.WriteString("严格按以下 JSON Schema 输出，字段类型不可更改：\n")
 	sb.WriteString("```json\n")
 	sb.WriteString(`{
@@ -143,14 +284,15 @@ func (s *ReplanService) buildReplanPrompt(plan *contracts.Plan, completedSteps, 
 	sb.WriteString("- tool_name：需要调用工具时填写工具名称，不调用工具时设为空字符串 \"\"\n")
 	sb.WriteString("- arguments：工具调用参数（JSON 对象），不调用工具时设为空对象 {}\n")
 	sb.WriteString("- arguments may reference a dependency's real output with {{step_output:N}}; step N must also be listed in depends_on\n")
+	sb.WriteString("- 对于搜索结果中的 URL，使用结构化绑定：{\"$from_step\": 1, \"$path\": \"structured_data.items[0].url\"}\n")
 	sb.WriteString("- depends_on：依赖步骤的 step_number 字符串数组（如 [\"1\", \"2\"]），无依赖则为空数组 []\n")
 	sb.WriteString("- final_answer：默认设为空字符串 \"\"，实际答案由步骤执行后生成；仅当所有步骤均为纯推理步骤且无工具调用时，可在此字段直接给出最终答案\n")
 
 	return sb.String()
 }
 
-// mergeSteps 合并旧步骤和新步骤。
-func (s *ReplanService) mergeSteps(oldSteps, newSteps []contracts.PlanStep) []contracts.PlanStep {
+// mergeStepsWithMapping 合并旧步骤和新步骤，并记录新旧步骤映射。
+func (s *ReplanService) mergeStepsWithMapping(oldSteps, newSteps []contracts.PlanStep) ([]contracts.PlanStep, map[contracts.ID]contracts.ID) {
 	// 创建已完成步骤的映射
 	completedMap := make(map[contracts.ID]contracts.PlanStep)
 	for _, step := range oldSteps {
@@ -161,22 +303,27 @@ func (s *ReplanService) mergeSteps(oldSteps, newSteps []contracts.PlanStep) []co
 
 	// 合并步骤
 	var merged []contracts.PlanStep
+	stepMapping := make(map[contracts.ID]contracts.ID) // 旧ID -> 新ID
 
-	// 首先添加所有已完成的步骤
+	// 首先添加所有已完成的步骤（保留原始 ID）
 	for _, step := range oldSteps {
 		if step.Status == contracts.PlanStepStatusCompleted {
 			merged = append(merged, step)
+			// 已完成步骤的映射是自己
+			stepMapping[step.ID] = step.ID
 		}
 	}
 
 	// 然后添加新步骤（重规划后的步骤）
 	stepNumber := len(merged) + 1
 	for _, step := range newSteps {
-		step.StepNumber = stepNumber
-		step.Status = contracts.PlanStepStatusPending
-		merged = append(merged, step)
+		// 为新步骤生成新的 ID
+		newStep := step
+		newStep.StepNumber = stepNumber
+		newStep.Status = contracts.PlanStepStatusPending
+		merged = append(merged, newStep)
 		stepNumber++
 	}
 
-	return merged
+	return merged, stepMapping
 }

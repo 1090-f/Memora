@@ -73,6 +73,65 @@ type ToolResult struct {
 	ErrorMessage   string          `json:"error_message,omitempty"`   // 失败时的错误信息
 }
 
+// SearchResultItem 表示搜索结果中的单个项目
+type SearchResultItem struct {
+	Title   string `json:"title"`             // 标题
+	URL     string `json:"url"`               // URL 地址
+	Snippet string `json:"snippet,omitempty"` // 摘要
+	Source  string `json:"source,omitempty"`  // 来源工具名称
+}
+
+// SearchResultData 表示标准化的搜索结果数据
+type SearchResultData struct {
+	Items []SearchResultItem `json:"items"` // 搜索结果列表
+}
+
+// StepOutputBinding 表示步骤输出的结构化绑定
+type StepOutputBinding struct {
+	FromStep int    `json:"$from_step"` // 依赖的步骤序号
+	Path     string `json:"$path"`      // 字段路径，如 "structured_data.items[0].url"
+}
+
+// IsStepOutputBinding 检查值是否是步骤输出绑定
+func IsStepOutputBinding(v any) bool {
+	if m, ok := v.(map[string]any); ok {
+		_, hasFromStep := m["$from_step"]
+		_, hasPath := m["$path"]
+		return hasFromStep && hasPath
+	}
+	return false
+}
+
+// ToStepOutputBinding 将值转换为 StepOutputBinding
+func ToStepOutputBinding(v any) (*StepOutputBinding, bool) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	fromStep, hasFromStep := m["$from_step"]
+	path, hasPath := m["$path"]
+	if !hasFromStep || !hasPath {
+		return nil, false
+	}
+	// fromStep 可能是 float64 (JSON 数字) 或 int
+	switch ft := fromStep.(type) {
+	case float64:
+		return &StepOutputBinding{FromStep: int(ft), Path: fmt.Sprint(path)}, true
+	case int:
+		return &StepOutputBinding{FromStep: ft, Path: fmt.Sprint(path)}, true
+	default:
+		return nil, false
+	}
+}
+
+// ToolCapability 定义工具能力常量
+const (
+	CapabilityWebFetch     = "web.fetch"
+	CapabilityWebSearch    = "web.search"
+	CapabilityKnowledge    = "knowledge.search"
+	CapabilityDocumentRead = "document.read"
+)
+
 type ToolType string
 
 const (
