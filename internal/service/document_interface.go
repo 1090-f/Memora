@@ -28,6 +28,8 @@ type OriginalDocumentFile struct {
 
 // DocumentService 定义文档管理业务逻辑的接口。
 type DocumentService interface {
+	// SupportedExtensions 返回普通上传与 ZIP 导入统一使用的文档扩展名白名单。
+	SupportedExtensions() []string
 	// List 分页查询知识库文档列表。
 	List(ctx context.Context, userID, kbID string, page, pageSize int, filter request.DocumentListFilter) (*dto.DocumentList, error)
 	// Get 查询文档详情。

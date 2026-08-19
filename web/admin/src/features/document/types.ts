@@ -109,6 +109,20 @@ export interface DocumentPreview {
 export interface DocumentTextPreview {
   content: string;
   format: 'markdown' | 'txt' | string;
+  slides?: PresentationSlide[];
+}
+
+export interface PresentationSlide {
+  page: number;
+  content: string;
+  images: PresentationImage[];
+}
+
+export interface PresentationImage {
+  url: string;
+  alt: string;
+  width?: number;
+  height?: number;
 }
 
 export interface PreviewSheetSummary {

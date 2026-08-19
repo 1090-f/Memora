@@ -127,9 +127,11 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
         },
       };
     case 'agent.step.started':
-    case 'agent.step.completed': {
+    case 'agent.step.completed':
+    case 'agent.plan.step.started':
+    case 'agent.plan.step.completed': {
       if (!state.plan) return next;
-      const stepStatus = event.type === 'agent.step.started' ? 'running' : 'completed';
+      const stepStatus = event.type === 'agent.step.started' || event.type === 'agent.plan.step.started' ? 'running' : 'completed';
       const stepNo = numberValue(payload.step_no);
       return {
         ...next,

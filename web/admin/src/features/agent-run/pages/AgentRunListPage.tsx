@@ -1,12 +1,19 @@
-import { useState } from 'react';
+import { useEffect, useReducer, useState } from 'react';
 import ArrowBackOutlined from '@mui/icons-material/ArrowBackOutlined';
+import CheckCircleOutlined from '@mui/icons-material/CheckCircleOutlined';
+import ContentCopyOutlined from '@mui/icons-material/ContentCopyOutlined';
 import RefreshOutlined from '@mui/icons-material/RefreshOutlined';
 
 import {
   Alert,
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
+  Box,
   Button,
   Chip,
   Divider,
+  Grid,
   FormControl,
   InputLabel,
   MenuItem,
@@ -22,15 +29,39 @@ import {
   Typography,
 } from '@mui/material';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import ExpandMoreOutlined from '@mui/icons-material/ExpandMoreOutlined';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { listKnowledgeBases } from '@/features/knowledge-base/api';
 import { listConversations } from '@/features/conversation/api';
-import { getAgentRun, listAgentRuns } from '../api';
-import type { AgentRun } from '../types';
+import { streamAgentEvents } from '@/features/conversation/events';
+import { getAgentRun, getAgentRunToolCalls, listAgentRuns } from '../api';
+import { initialAgentRunState, reduceAgentEvent } from '../eventReducer';
+import type { AgentRun, AgentRunViewState, AgentToolCall } from '../types';
 
 const statusLabel: Record<string, string> = {
   queued: '排队中', running: '运行中', completed: '已完成', failed: '失败', cancelled: '已取消',
 };
+
+const selectedKnowledgeBaseStorageKey = 'agent-runs:selected-knowledge-base';
+
+function storedKnowledgeBaseId() {
+  try {
+    return window.localStorage.getItem(selectedKnowledgeBaseStorageKey) || '';
+  } catch {
+    return '';
+  }
+}
+
+function rememberKnowledgeBaseId(knowledgeBaseId: string) {
+  try {
+    if (knowledgeBaseId) window.localStorage.setItem(selectedKnowledgeBaseStorageKey, knowledgeBaseId);
+    else window.localStorage.removeItem(selectedKnowledgeBaseStorageKey);
+  } catch {
+    // 隐私模式或存储被禁用时仍可使用当前页面内的选择。
+  }
+}
 
 function formatDate(value?: string | null) {
   return value ? new Date(value).toLocaleString('zh-CN') : '-';
@@ -41,29 +72,199 @@ function StatusChip({ status }: { status: string }) {
   return <Chip size="small" color={color} label={statusLabel[status] || status} />;
 }
 
+function formatDuration(value?: number | null) {
+  if (value == null) return '-';
+  return value >= 1000 ? `${(value / 1000).toFixed(2)} s` : `${value} ms`;
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <Paper variant="outlined" sx={{ p: 2, height: '100%', bgcolor: '#fbfcff' }}>
+      <Typography variant="caption" color="text.secondary">{label}</Typography>
+      <Typography variant="h6" fontWeight={700} sx={{ mt: 0.5 }}>{value}</Typography>
+    </Paper>
+  );
+}
+
+function toolStatusLabel(status: AgentToolCall['status']) {
+  return ({ running: '运行中', succeeded: '已完成', failed: '失败', timeout: '超时', cancelled: '已取消' }[status] || status);
+}
+
+function truncate(value: string, length = 280) {
+  const normalized = value.replace(/\\n/g, '\n').trim();
+  return normalized.length > length ? `${normalized.slice(0, length)}…` : normalized;
+}
+
+function parsePayload(value?: string) {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+function outputSummary(value?: string) {
+  const payload = parsePayload(value);
+  if (!payload) return '-';
+  if (typeof payload === 'string') return truncate(payload);
+  if (typeof payload !== 'object' || Array.isArray(payload)) return truncate(JSON.stringify(payload));
+
+  const record = payload as Record<string, unknown>;
+  const text = [record.text, record.summary, record.message, record.content]
+    .find((item): item is string => typeof item === 'string' && item.trim().length > 0);
+  const items = Array.isArray(record.items) ? record.items : undefined;
+  const parts = [text ? truncate(text) : '', items ? `召回 ${items.length} 条结果` : ''].filter(Boolean);
+  return parts.join(' · ') || truncate(JSON.stringify(record));
+}
+
+function inputSummary(value?: string) {
+  const payload = parsePayload(value);
+  if (!payload) return '-';
+  if (typeof payload === 'string') return truncate(payload, 180);
+  if (typeof payload !== 'object' || Array.isArray(payload)) return truncate(JSON.stringify(payload), 180);
+  return Object.entries(payload as Record<string, unknown>)
+    .slice(0, 4)
+    .map(([key, item]) => `${key}: ${typeof item === 'string' ? item : JSON.stringify(item)}`)
+    .join(' · ');
+}
+
+function RunTimeline({ run, toolCalls, liveState }: { run: AgentRun; toolCalls: AgentToolCall[]; liveState: AgentRunViewState }) {
+  const liveSteps = liveState.plan?.steps.map((step) => ({ title: step.title, detail: step.status, duration: undefined, status: step.status }))
+    ?? liveState.rounds.map((round) => ({ title: round.action_summary || `执行轮次 ${round.round_no}`, detail: round.status, duration: undefined, status: round.status }));
+  const liveTools = liveState.tools.map((tool, index) => ({
+    title: tool.tool_name,
+    detail: tool.input_summary || tool.output_summary || '',
+    duration: undefined,
+    status: tool.status === 'completed' ? 'succeeded' : tool.status,
+    call: toolCalls[index],
+  }));
+  const steps = [
+    ...(liveState.router || run.execution_mode ? [{ title: '分析问题并确定执行模式', detail: liveState.router?.reason_summary || run.router_reason_summary || run.router_reason || `${run.execution_mode} 模式`, duration: undefined, status: 'completed' as const }] : []),
+    ...(liveSteps.length > 0 ? liveSteps : []),
+    ...(liveTools.length > 0 ? liveTools : toolCalls.map((call) => ({
+      title: call.tool_name,
+      detail: call.input_summary || call.output_summary || '',
+      duration: call.duration_ms,
+      status: call.status,
+      call,
+    }))),
+    ...(run.final_result ? [{ title: '生成最终回答', detail: '回答生成完成', duration: undefined, status: 'completed' as const }] : []),
+  ];
+
+  if (steps.length === 0) return <Typography color="text.secondary">暂无执行步骤。</Typography>;
+
+  return (
+    <Stack spacing={0}>
+      {steps.map((step, index) => {
+        const call = 'call' in step ? step.call : undefined;
+        const completed = step.status === 'completed' || step.status === 'succeeded';
+        return (
+          <Stack key={`${step.title}-${index}`} direction="row" spacing={1.5} sx={{ position: 'relative', pb: index === steps.length - 1 ? 0 : 2 }}>
+            {index < steps.length - 1 && <Box sx={{ position: 'absolute', left: 10, top: 22, bottom: 0, borderLeft: '1px solid', borderColor: 'divider' }} />}
+            <Box sx={{ zIndex: 1, width: 22, height: 22, borderRadius: '50%', display: 'grid', placeItems: 'center', bgcolor: completed ? 'success.main' : 'background.paper', border: '1px solid', borderColor: completed ? 'success.main' : 'primary.main', color: '#fff' }}>
+              {completed ? <CheckCircleOutlined sx={{ fontSize: 15 }} /> : <Typography variant="caption" color="primary.main">{index + 1}</Typography>}
+            </Box>
+            <Box sx={{ minWidth: 0, flex: 1 }}>
+              <Stack direction="row" alignItems="center" spacing={1}>
+                <Typography fontWeight={650}>{step.title}</Typography>
+                {call && <Chip size="small" variant="outlined" label={toolStatusLabel(call.status)} />}
+                {step.duration != null && <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>{formatDuration(step.duration)}</Typography>}
+              </Stack>
+              {step.detail && <Typography variant="body2" color="text.secondary" sx={{ mt: 0.4, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{call ? (call.input_summary ? inputSummary(step.detail) : outputSummary(step.detail)) : step.detail}</Typography>}
+              {call && (
+                <Accordion disableGutters variant="outlined" sx={{ mt: 1, bgcolor: '#fafbfe', '&:before': { display: 'none' } }}>
+                  <AccordionSummary expandIcon={<ExpandMoreOutlined />} sx={{ minHeight: 40, '& .MuiAccordionSummary-content': { my: 1 } }}>
+                    <Typography variant="body2">查看摘要</Typography>
+                  </AccordionSummary>
+                  <AccordionDetails sx={{ bgcolor: 'background.default', pt: 0 }}>
+                    <Stack spacing={1.2}>
+                      <Box>
+                        <Typography variant="caption" color="text.secondary">输入</Typography>
+                        <Typography variant="body2" sx={{ mt: 0.3, overflowWrap: 'anywhere' }}>{inputSummary(call.input_summary)}</Typography>
+                      </Box>
+                      <Box>
+                        <Typography variant="caption" color="text.secondary">结果摘要</Typography>
+                        <Typography variant="body2" sx={{ mt: 0.3, overflowWrap: 'anywhere' }}>{call.error_message || outputSummary(call.output_summary)}</Typography>
+                      </Box>
+                      <Box component="details" sx={{ '& summary': { cursor: 'pointer', color: 'text.secondary', fontSize: 12 } }}>
+                        <Box component="summary">查看原始数据</Box>
+                        <Box component="pre" sx={{ mt: 1, mb: 0, maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 11, color: 'text.secondary' }}>
+                          {call.output_summary || '-'}
+                        </Box>
+                      </Box>
+                    </Stack>
+                  </AccordionDetails>
+                </Accordion>
+              )}
+            </Box>
+          </Stack>
+        );
+      })}
+    </Stack>
+  );
+}
+
 function RunDetail({ run }: { run: AgentRun }) {
+  const [liveState, dispatch] = useReducer(reduceAgentEvent, initialAgentRunState);
+  const toolCallsQuery = useQuery({
+    queryKey: ['agent-run-tool-calls', run.id],
+    queryFn: () => getAgentRunToolCalls(run.id),
+  });
+  useEffect(() => {
+    dispatch({ type: 'HYDRATE_AGENT_RUN_STATE', run });
+    const controller = new AbortController();
+    void streamAgentEvents(`${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${run.id}/events`, {
+      signal: controller.signal,
+      afterSequence: 0,
+      timeout: run.status === 'running' || run.status === 'queued' ? 0 : 30_000,
+      onEvent: (event) => dispatch(event),
+    }).catch(() => {
+      // 运行详情仍可依赖 GET /runs 和 tool-calls 展示，事件回放失败不阻断页面。
+    });
+    return () => controller.abort();
+  }, [run]);
+  const copyRunId = () => void navigator.clipboard?.writeText(run.id);
+  const toolCalls = toolCallsQuery.data ?? [];
+
   return (
     <Stack spacing={2}>
       <Stack direction="row" alignItems="center" spacing={1}>
         <Button component={Link} to="/runs" startIcon={<ArrowBackOutlined />}>返回列表</Button>
-        <Typography component="h2" variant="h5" fontWeight={750} sx={{ flexGrow: 1 }}>运行详情</Typography>
+        <Typography component="h2" variant="h5" fontWeight={750} sx={{ flexGrow: 1, overflowWrap: 'anywhere' }}>{run.query}</Typography>
         <StatusChip status={run.status} />
       </Stack>
       <Paper variant="outlined" sx={{ p: 3 }}>
         <Stack spacing={2}>
-          <Typography variant="body2" color="text.secondary">运行 ID：{run.id}</Typography>
-          <Typography variant="h6" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{run.query}</Typography>
+          <Stack direction="row" alignItems="center" spacing={1}>
+            <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>运行 ID：{run.id}</Typography>
+            <Button size="small" startIcon={<ContentCopyOutlined />} onClick={copyRunId}>复制</Button>
+          </Stack>
           <Divider />
-          <Typography>执行模式：{run.execution_mode || '等待路由结果'}</Typography>
-          <Typography>开始时间：{formatDate(run.started_at)}</Typography>
-          <Typography>结束时间：{formatDate(run.ended_at)}</Typography>
-          <Typography>耗时：{run.duration_ms == null ? '-' : `${run.duration_ms} ms`}</Typography>
-          <Typography>Token：{run.total_tokens ?? 0}</Typography>
+          <Grid container spacing={1.5}>
+            <Grid size={{ xs: 6, sm: 3 }}><Metric label="执行模式" value={run.execution_mode || '等待路由'} /></Grid>
+            <Grid size={{ xs: 6, sm: 3 }}><Metric label="总耗时" value={formatDuration(run.duration_ms)} /></Grid>
+            <Grid size={{ xs: 6, sm: 3 }}><Metric label="总 Token" value={`${run.total_tokens ?? 0}`} /></Grid>
+            <Grid size={{ xs: 6, sm: 3 }}><Metric label="工具调用" value={`${Math.max(toolCalls.length, liveState.tools.length)} 次`} /></Grid>
+          </Grid>
+          <Typography variant="caption" color="text.secondary">
+            Token 明细：输入 {run.input_tokens ?? 0} · 输出 {run.output_tokens ?? 0}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            {formatDate(run.started_at)} → {formatDate(run.ended_at)}
+          </Typography>
           {run.error_message && <Alert severity="error">{run.error_message}</Alert>}
+          <Box>
+            <Typography variant="h6" fontWeight={700} mb={1.5}>执行链路</Typography>
+            {toolCallsQuery.error && <Alert severity="warning" sx={{ mb: 1.5 }}>工具调用详情加载失败，但仍可查看运行结果。</Alert>}
+            <RunTimeline run={run} toolCalls={toolCalls} liveState={liveState} />
+          </Box>
           {run.final_result && (
             <Paper variant="outlined" sx={{ p: 2, bgcolor: 'background.default' }}>
-              <Typography fontWeight={700} mb={1}>最终回答</Typography>
-              <Typography sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{run.final_result}</Typography>
+              <Typography fontWeight={700} mb={1.5}>最终回答</Typography>
+              <Box className="markdown-body" sx={{ bgcolor: 'transparent' }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{run.final_result}</ReactMarkdown>
+              </Box>
             </Paper>
           )}
         </Stack>
@@ -76,7 +277,7 @@ export function AgentRunListPage() {
   const { runId } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [selectedKbId, setSelectedKbId] = useState('');
+  const [selectedKbId, setSelectedKbId] = useState(storedKnowledgeBaseId);
   const [selectedConversationId, setSelectedConversationId] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('');
   const [selectedExecutionMode, setSelectedExecutionMode] = useState('');
@@ -86,6 +287,21 @@ export function AgentRunListPage() {
     queryKey: ['agent-run-knowledge-bases'],
     queryFn: () => listKnowledgeBases({ page: 1, page_size: 100 }),
   });
+  useEffect(() => {
+    const knowledgeBases = knowledgeBasesQuery.data?.items;
+    if (!knowledgeBases) return;
+    const nextKnowledgeBaseId = knowledgeBases.some((item) => item.id === selectedKbId)
+      ? selectedKbId
+      : knowledgeBases[0]?.id ?? '';
+    if (nextKnowledgeBaseId === selectedKbId) return;
+    setSelectedKbId(nextKnowledgeBaseId);
+    setSelectedConversationId('');
+    setPage(0);
+  }, [knowledgeBasesQuery.data?.items, selectedKbId]);
+
+  useEffect(() => {
+    rememberKnowledgeBaseId(selectedKbId);
+  }, [selectedKbId]);
   const conversationsQuery = useQuery({
     queryKey: ['agent-run-conversations', selectedKbId],
     queryFn: () => listConversations(selectedKbId, { page: 1, page_size: 100 }),

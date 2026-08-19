@@ -106,7 +106,8 @@ export function DocumentProcessingPanel({ document, processing }: {
     { label: '最近处理时间', value: formatTime(document.updated_at) },
   ];
   const indexRows: Array<{ label: string; value?: string | null }> = [
-    { label: '索引模式', value: document.index_mode === 'hybrid' ? '混合索引' : document.index_mode === 'keyword' ? '关键词索引' : '未建立索引' },
+    { label: '索引状态', value: document.index_mode === 'none' ? '不可检索' : document.index_mode === 'hybrid' ? '可检索（混合索引）' : '可检索（仅关键词）' },
+    ...(effectiveStatus === 'succeeded' && document.index_mode === 'none' ? [{ label: '原因', value: '未提取到文本内容' }] : []),
     { label: '内容版本', value: String(document.content_version) },
     { label: '分块版本', value: String(document.chunk_version) },
     { label: '当前索引版本', value: activeIndexVersion !== undefined ? `v${activeIndexVersion}` : '尚未建立' },
@@ -124,7 +125,7 @@ export function DocumentProcessingPanel({ document, processing }: {
         <Box sx={{ flexGrow: 1 }}>
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
             <Typography component="h3" sx={{ color: '#17213b', fontSize: 18, fontWeight: 700 }}>处理概览</Typography>
-            <Chip size="small" color={effectiveStatus === 'failed' ? 'error' : effectiveStatus === 'succeeded' ? 'success' : 'info'} label={documentStatusLabel(effectiveStatus, document.index_mode)} sx={{ height: 25, fontWeight: 650 }} />
+            <Chip size="small" color={effectiveStatus === 'failed' ? 'error' : effectiveStatus === 'succeeded' && document.index_mode === 'none' ? 'warning' : effectiveStatus === 'succeeded' ? 'success' : 'info'} label={documentStatusLabel(effectiveStatus, document.index_mode)} sx={{ height: 25, fontWeight: 650 }} />
           </Stack>
           <Typography sx={{ mt: 0.5, color: '#7a869b', fontSize: 13 }}>最近更新于 {formatTime(document.updated_at)}</Typography>
         </Box>
@@ -132,7 +133,7 @@ export function DocumentProcessingPanel({ document, processing }: {
           <Button size="small" variant="outlined" startIcon={<RefreshOutlined />} disabled={effectiveStatus !== 'failed' || retryMutation.isPending} onClick={() => retryMutation.mutate(document.id)}>
             {retryMutation.isPending ? '正在重新解析…' : '重新解析'}
           </Button>
-          <Button size="small" variant="outlined" startIcon={<CachedOutlined />} disabled={effectiveStatus !== 'succeeded' || reindexMutation.isPending} onClick={() => reindexMutation.mutate(document.id)}>
+          <Button size="small" variant="outlined" startIcon={<CachedOutlined />} disabled={effectiveStatus !== 'succeeded' || document.index_mode === 'none' || reindexMutation.isPending} onClick={() => reindexMutation.mutate(document.id)}>
             {reindexMutation.isPending ? '正在重新索引…' : '重新索引'}
           </Button>
         </Stack>

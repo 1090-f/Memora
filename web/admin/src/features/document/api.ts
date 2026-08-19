@@ -23,6 +23,9 @@ import type { PageResult } from '@/features/knowledge-base/types';
 export const getDirectoryTree = (kbId: string) =>
   apiRequest<DirectoryNode[]>({ url: `/knowledge-bases/${kbId}/directories/tree` });
 
+export const getSupportedExtensions = () =>
+  apiRequest<{ supported_extensions: string[] }>({ url: '/documents/supported-extensions' });
+
 export const createDirectory = (kbId: string, input: CreateDirectoryInput) =>
   apiRequest<DirectoryNode>({ url: `/knowledge-bases/${kbId}/directories`, method: 'POST', data: input });
 

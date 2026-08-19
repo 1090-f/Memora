@@ -15,6 +15,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -50,9 +51,19 @@ const (
 
 // 支持的文件扩展名。
 var supportedExtensions = map[string]bool{
-	".md": true, ".txt": true, ".pdf": true, ".docx": true, ".xlsx": true, ".pptx": true,
+	".md": true, ".markdown": true, ".txt": true, ".pdf": true, ".docx": true, ".xlsx": true, ".pptx": true,
 	".jpg": true, ".jpeg": true, ".png": true, ".bmp": true, ".tiff": true, ".tif": true, ".gif": true, ".webp": true,
 	".zip": true,
+}
+
+// SupportedExtensions 返回稳定排序的上传扩展名列表，供前端文件选择器和后端校验共用。
+func (s *documentService) SupportedExtensions() []string {
+	result := make([]string, 0, len(supportedExtensions))
+	for extension := range supportedExtensions {
+		result = append(result, extension)
+	}
+	sort.Strings(result)
+	return result
 }
 
 // zip 导入限制。
