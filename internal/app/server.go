@@ -46,14 +46,16 @@ import (
 
 // ServerApp 管理 HTTP 服务器应用的生命周期，包括初始化、运行和关闭。
 type ServerApp struct {
-	cfg            *config.Config
-	db             *gorm.DB
-	redis          *redis.Client
-	store          *objectstore.Client
-	server         *http.Server
-	background     *background.Manager
-	documentParser *documentParserProcess
-	workerCancel   context.CancelFunc // Agent Worker 生命周期取消函数
+	cfg             *config.Config
+	db              *gorm.DB
+	redis           *redis.Client
+	backgroundRedis *redis.Client
+	eventRedis      *redis.Client
+	store           *objectstore.Client
+	server          *http.Server
+	background      *background.Manager
+	documentParser  *documentParserProcess
+	workerCancel    context.CancelFunc // Agent Worker 生命周期取消函数
 }
 
 // NewServer 创建一个新的 ServerApp 实例。
@@ -91,8 +93,23 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		_ = database.ClosePostgres(a.db)
 		return err
 	}
+	a.backgroundRedis, err = database.InitRedis(initCtx, &cfg.Redis)
+	if err != nil {
+		_ = a.redis.Close()
+		_ = database.ClosePostgres(a.db)
+		return fmt.Errorf("初始化后台任务 Redis 连接池失败: %w", err)
+	}
+	a.eventRedis, err = database.InitRedis(initCtx, &cfg.Redis)
+	if err != nil {
+		_ = a.backgroundRedis.Close()
+		_ = a.redis.Close()
+		_ = database.ClosePostgres(a.db)
+		return fmt.Errorf("初始化事件订阅 Redis 连接池失败: %w", err)
+	}
 	a.store, err = objectstore.Open(initCtx, &cfg.MinIO)
 	if err != nil {
+		_ = a.eventRedis.Close()
+		_ = a.backgroundRedis.Close()
 		_ = a.redis.Close()
 		_ = database.ClosePostgres(a.db)
 		return err
@@ -202,7 +219,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		_ = a.Close()
 		return err
 	}
-	a.background = background.NewManager(a.redis, importTasks, previewRepo, repository.NewTaskOutboxRepository(a.db), documentProcessService, previewProcessor, cfg.DocumentConsumer, cfg.Preview, cfg.Outbox, cfg.IndexCleanup)
+	a.background = background.NewManager(a.backgroundRedis, importTasks, previewRepo, repository.NewTaskOutboxRepository(a.db), documentProcessService, previewProcessor, cfg.DocumentConsumer, cfg.Preview, cfg.Outbox, cfg.IndexCleanup)
 
 	// 初始化 ContextBuilder（Phase 3）
 	messages := repository.NewMessageRepository(a.db)
@@ -256,7 +273,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	// eventPub 将 AgentEvent 序列化为 JSON 后发布到 Redis 频道；
 	// eventSub 从同一频道过滤出指定 runID 的事件供 SSE 端点使用。
 	eventPub := events.NewRedisEventPublisher(a.redis)
-	eventSub := events.NewRedisEventSubscriber(a.redis)
+	eventSub := events.NewRedisEventSubscriber(a.eventRedis)
 
 	// 初始化 Agent 事件持久化仓库，用于断线重连时从 DB 恢复中间事件。
 	agentEventRepo := repository.NewAgentEventRepository(a.db)
@@ -471,6 +488,12 @@ func (a *ServerApp) Close() error {
 	}
 	if a.documentParser != nil {
 		closeErr = errors.Join(closeErr, a.documentParser.Close())
+	}
+	if a.eventRedis != nil {
+		closeErr = errors.Join(closeErr, a.eventRedis.Close())
+	}
+	if a.backgroundRedis != nil {
+		closeErr = errors.Join(closeErr, a.backgroundRedis.Close())
 	}
 	if a.redis != nil {
 		closeErr = errors.Join(closeErr, a.redis.Close())

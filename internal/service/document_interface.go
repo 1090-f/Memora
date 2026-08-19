@@ -42,6 +42,8 @@ type DocumentService interface {
 	OpenAsset(ctx context.Context, userID, documentID, assetID string) (*OriginalDocumentFile, error)
 	// Delete 软删除文档。
 	Delete(ctx context.Context, userID, documentID string) error
+	// Move 将文档移动到同一知识库的目标目录；directoryID 为空时移出目录。
+	Move(ctx context.Context, userID, documentID string, directoryID *string) error
 	// UploadFiles 文件导入：先创建 import_tasks，再流式上传 MinIO，最后更新任务对象信息。
 	// 重复处理策略读取知识库级配置（knowledge_bases.duplicate_policy）。
 	UploadFiles(ctx context.Context, userID, kbID string, directoryID *string, files []UploadFileInput) (*dto.UploadFilesResponse, error)

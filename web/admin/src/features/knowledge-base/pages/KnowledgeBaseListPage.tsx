@@ -19,6 +19,7 @@ import { capabilities, type CapabilityStatus } from '@/app/capabilities';
 import { queryKeys } from '@/api/queryKeys';
 import { errorMessage } from '@/api/errors';
 import { EmptyState } from '@/components/shared/EmptyState';
+import { ActionNotice } from '@/components/shared/ActionNotice';
 import { ErrorState } from '@/components/shared/ErrorState';
 import { LoadingState } from '@/components/shared/LoadingState';
 import { UnavailableState } from '@/components/shared/UnavailableState';
@@ -300,7 +301,7 @@ export function KnowledgeBaseListContent({ status }: { status: CapabilityStatus 
         </Button>
       </Stack>
 
-      {notice && <Alert severity="success" onClose={() => setNotice('')}>{notice}</Alert>}
+      <ActionNotice message={notice} onClose={() => setNotice('')} />
 
       {enabled && query.data && (
         <Box

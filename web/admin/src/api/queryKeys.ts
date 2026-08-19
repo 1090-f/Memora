@@ -17,6 +17,10 @@ export const queryKeys = {
     ['documents', documentId, 'processing'] as const,
   documentContent: (documentId: string) =>
     ['documents', documentId, 'content'] as const,
+  documentPreview: (documentId: string) =>
+    ['documents', documentId, 'content', 'preview-descriptor'] as const,
+  documentPreviewText: (documentId: string) =>
+    ['documents', documentId, 'preview-text'] as const,
   documentIndexVersions: (documentId: string) =>
     ['documents', documentId, 'index-versions'] as const,
   importTasks: (knowledgeBaseId: string) =>

@@ -10,12 +10,19 @@ import (
 
 // InitRedis 初始化Redis客户端并验证连接是否可用
 func InitRedis(ctx context.Context, cfg *config.RedisConfig) (*redis.Client, error) {
-	client := redis.NewClient(&redis.Options{Addr: cfg.Address, Password: cfg.Password, DB: cfg.DB, PoolSize: cfg.PoolSize})
+	client := NewRedisClient(cfg)
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()
 		return nil, fmt.Errorf("Ping Redis 失败: %w", err)
 	}
 	return client, nil
+}
+
+// NewRedisClient 创建独立的 Redis 连接池。阻塞式 Stream 读取必须与鉴权等短请求隔离。
+func NewRedisClient(cfg *config.RedisConfig) *redis.Client {
+	return redis.NewClient(&redis.Options{
+		Addr: cfg.Address, Password: cfg.Password, DB: cfg.DB, PoolSize: cfg.PoolSize,
+	})
 }
 
 // CheckRedis 检查Redis连接是否健康

@@ -6,6 +6,7 @@ import { capabilities, type CapabilityStatus } from '@/app/capabilities';
 import { queryKeys } from '@/api/queryKeys';
 import { errorMessage } from '@/api/errors';
 import { ErrorState } from '@/components/shared/ErrorState';
+import { ActionNotice } from '@/components/shared/ActionNotice';
 import { LoadingState } from '@/components/shared/LoadingState';
 import { UnavailableState } from '@/components/shared/UnavailableState';
 import { listModelConfigs } from '@/features/model/api';
@@ -103,7 +104,7 @@ export function KnowledgeBaseSettingsContent({ status, kbId, embedded = false }:
           <Typography component="h2" variant="h5" fontWeight={750} sx={{ flexGrow: 1 }}>知识库设置</Typography>
         </Stack>
       )}
-      {notice && <Alert severity="success" onClose={() => setNotice('')}>{notice}</Alert>}
+      <ActionNotice message={notice} onClose={() => setNotice('')} />
       <Paper variant="outlined" sx={{ p: 3 }}>
         <Stack spacing={2}>
           <Typography component="h3" variant="h6">基础信息</Typography>

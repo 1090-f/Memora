@@ -109,6 +109,41 @@ func (r *keywordSearchRepository) Search(ctx context.Context, params KeywordSear
 	if err := dbFromContext(ctx, r.db).WithContext(ctx).Raw(sql, args...).Scan(&hits).Error; err != nil {
 		return nil, fmt.Errorf("关键词检索失败: %w", err)
 	}
+	if len(hits) > 0 {
+		return hits, nil
+	}
+
+	// 标题/文件名回退单独执行，避免把普通 SQL 条件与 ParadeDB 的 pdb.score
+	// 放在同一条查询中。解析器可能把姓名只保留在文档标题中，而不写入 Chunk 正文。
+	titleArgs := []any{params.UserID, params.KnowledgeBaseID, strings.ToLower(query)}
+	titleWhere := `dc.user_id = ? AND dc.knowledge_base_id = ? AND d.deleted_at IS NULL`
+	titleWhere += ` AND position(CAST(? AS text) in lower(d.title)) > 0`
+	if len(params.DocumentIDs) > 0 {
+		titleWhere += fmt.Sprintf(" AND dc.document_id IN (%s)", placeholders(len(params.DocumentIDs)))
+		for _, id := range params.DocumentIDs {
+			titleArgs = append(titleArgs, id)
+		}
+	}
+	if params.IndexVersion != nil {
+		titleWhere += " AND dc.index_version = ?"
+		titleArgs = append(titleArgs, *params.IndexVersion)
+	} else {
+		titleWhere += " AND dc.index_version = d.active_index_version"
+	}
+	titleArgs = append(titleArgs, params.TopK)
+	titleSQL := fmt.Sprintf(`
+		SELECT dc.id AS chunk_id, dc.document_id AS document_id, d.title AS document_title,
+		       d.directory_id, dc.content AS content, dc.source_location,
+		       1.0 AS score,
+		       dc.index_version AS index_version, d.updated_at AS updated_at
+		FROM document_chunks dc
+		JOIN documents d ON d.id = dc.document_id
+		WHERE %s
+		ORDER BY dc.id ASC
+		LIMIT ?`, titleWhere)
+	if err := dbFromContext(ctx, r.db).WithContext(ctx).Raw(titleSQL, titleArgs...).Scan(&hits).Error; err != nil {
+		return nil, fmt.Errorf("文档标题检索失败: %w", err)
+	}
 	return hits, nil
 }
 

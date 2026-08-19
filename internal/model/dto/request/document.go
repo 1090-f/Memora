@@ -9,6 +9,11 @@ type DocumentListFilter struct {
 	SourceType       *string // 按来源类型过滤（manual/file/url）
 }
 
+// MoveDocumentRequest 表示变更文档所属目录的请求；空目录表示移出目录。
+type MoveDocumentRequest struct {
+	DirectoryID *string `json:"directory_id"`
+}
+
 // ImportURLRequest 是静态网页异步导入请求；抓取由 Worker 执行。
 // 重复处理策略读取知识库级配置，请求不再携带。
 type ImportURLRequest struct {

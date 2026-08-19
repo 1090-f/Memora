@@ -15,6 +15,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { errorMessage } from '@/api/errors';
+import { ActionNotice } from '@/components/shared/ActionNotice';
 import { queryKeys } from '@/api/queryKeys';
 import { getSearchConfig, updateSearchConfig } from '@/features/knowledge-base/api';
 import { listModelConfigs } from '@/features/model/api';
@@ -109,7 +110,7 @@ export function SearchConfigPanel({ kbId }: { kbId: string }) {
               </TextField>
             </Box>
             {mutation.error && <Alert severity="error">保存失败：{errorMessage(mutation.error)}</Alert>}
-            {notice && <Alert severity="success" onClose={() => setNotice('')}>{notice}</Alert>}
+            <ActionNotice message={notice} onClose={() => setNotice('')} />
             <Stack direction="row" justifyContent="flex-end">
               <Button variant="contained" disabled={mutation.isPending} onClick={() => mutation.mutate()}>
                 {mutation.isPending ? '正在保存…' : '保存检索参数'}

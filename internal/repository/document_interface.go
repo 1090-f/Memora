@@ -54,6 +54,8 @@ type DocumentRepository interface {
 	ListByKB(ctx context.Context, userID, kbID string, page, pageSize int, filter DocumentFilter) ([]*entity.Document, int64, error)
 	// SoftDelete 软删除文档。
 	SoftDelete(ctx context.Context, userID, documentID string) error
+	// Move 更新文档所属目录；directoryID 为空时移出目录。
+	Move(ctx context.Context, userID, documentID string, directoryID *string) error
 	// FindBySourceHash 按用户与源哈希查询未删除文档（duplicate_policy=skip 去重）。
 	FindBySourceHash(ctx context.Context, userID, kbID, sourceHash string) (*entity.Document, error)
 	// UpdateProcessing 更新文档处理状态、失败信息与活动索引版本。
