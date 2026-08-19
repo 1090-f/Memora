@@ -412,7 +412,17 @@ func (m *memoryManager) executeDecision(
 
 	switch decision.Action {
 	case "skip":
+		// skip 需要验证目标存在于候选集中且作用域一致
+		candidate, ok := findCandidate(decision.TargetID, similar)
+		if !ok {
+			return fmt.Errorf("skip target is not in similar memory candidates")
+		}
+		// 校验作用域一致性
+		if err := validateScopeConsistency(candidate, item); err != nil {
+			return fmt.Errorf("scope mismatch: %w", err)
+		}
 		logger.Info("跳过重复记忆",
+			zap.String("target_id", decision.TargetID),
 			zap.String("content", item.Content),
 			zap.String("reason", decision.Reason),
 		)
@@ -441,6 +451,47 @@ func (m *memoryManager) executeDecision(
 			return fmt.Errorf("scope mismatch: %w", err)
 		}
 		return m.mergeMemory(ctx, userID, decision.TargetID, decision.MergedContent, item)
+
+	case "supersede":
+		// 新决策替代旧决策：将旧记忆置为 inactive，创建新记忆
+		candidate, ok := findCandidate(decision.TargetID, similar)
+		if !ok {
+			return fmt.Errorf("dedup target is not in similar memory candidates")
+		}
+		// 校验作用域一致性
+		if err := validateScopeConsistency(candidate, item); err != nil {
+			return fmt.Errorf("scope mismatch: %w", err)
+		}
+		logger.Info("新决策替代旧记忆",
+			zap.String("old_memory_id", decision.TargetID),
+			zap.String("reason", decision.Reason),
+		)
+		return m.supersedeMemory(ctx, userID, decision.TargetID, item)
+
+	case "invalidate":
+		// 明确撤销：将旧记忆置为 inactive
+		// 验证目标存在于候选集中
+		candidate, ok := findCandidate(decision.TargetID, similar)
+		if !ok {
+			return fmt.Errorf("dedup target is not in similar memory candidates")
+		}
+		// 校验作用域一致性
+		if err := validateScopeConsistency(candidate, item); err != nil {
+			return fmt.Errorf("scope mismatch: %w", err)
+		}
+		logger.Info("撤销记忆",
+			zap.String("memory_id", decision.TargetID),
+			zap.String("reason", decision.Reason),
+		)
+		return m.invalidateMemory(ctx, userID, decision.TargetID)
+
+	case "keep_both":
+		// 无法确定冲突关系，保留两条
+		logger.Info("保留两条记忆",
+			zap.String("new_content", item.Content),
+			zap.String("reason", decision.Reason),
+		)
+		return m.createMemory(ctx, userID, item)
 
 	case "create":
 		// 创建新记忆
@@ -475,10 +526,15 @@ func validateDedupDecision(d *DedupDecision) error {
 		if d.TargetID != "" {
 			return fmt.Errorf("create decision must not contain target_id")
 		}
-	case "skip", "update":
-		// skip 和 update 必须有 target_id
+	case "skip":
+		// skip 必须有 target_id
 		if d.TargetID == "" {
-			return fmt.Errorf("%s decision requires target_id", d.Action)
+			return fmt.Errorf("skip decision requires target_id")
+		}
+	case "update":
+		// update 必须有 target_id
+		if d.TargetID == "" {
+			return fmt.Errorf("update decision requires target_id")
 		}
 	case "merge":
 		// merge 必须有 target_id 和非空 merged_content
@@ -487,6 +543,21 @@ func validateDedupDecision(d *DedupDecision) error {
 		}
 		if d.MergedContent == "" {
 			return fmt.Errorf("merge decision requires merged_content")
+		}
+	case "supersede":
+		// supersede 表示新决策替代旧决策，必须有 target_id
+		if d.TargetID == "" {
+			return fmt.Errorf("supersede decision requires target_id")
+		}
+	case "invalidate":
+		// invalidate 表示明确撤销，必须有 target_id
+		if d.TargetID == "" {
+			return fmt.Errorf("invalidate decision requires target_id")
+		}
+	case "keep_both":
+		// keep_both 表示保留两条，不应携带 target_id
+		if d.TargetID != "" {
+			return fmt.Errorf("keep_both decision must not contain target_id")
 		}
 	default:
 		return fmt.Errorf("unsupported action %q", d.Action)
@@ -532,22 +603,26 @@ func validateScopeConsistency(candidate contracts.MemoryQueryResult, item contra
 	return nil
 }
 
-// createMemory 创建新记忆。
-func (m *memoryManager) createMemory(ctx context.Context, userID string, item contracts.MemoryItem) error {
-	logger.Debug("[记忆处理-createMemory] 开始创建新记忆",
+// prepareMemory 准备新记忆实体（向量化和构建实体，但不写入数据库）。
+// 此方法在事务外调用，避免长时间占用数据库连接。
+func (m *memoryManager) prepareMemory(
+	ctx context.Context,
+	userID string,
+	item contracts.MemoryItem,
+) (*entity.Memory, error) {
+	logger.Debug("[记忆处理-prepareMemory] 开始准备记忆",
 		zap.String("user_id", userID),
 		zap.String("type", string(item.Type)),
 		zap.String("content", item.Content),
 	)
 
 	// 向量化并获取使用的模型ID
-	logger.Debug("[记忆处理-createMemory] 步骤1: 向量化内容")
 	vector, modelID, err := m.embeddingSvc.EmbedWithModelID(ctx, userID, item.Content)
 	if err != nil {
-		logger.Error("[记忆处理-createMemory] 向量化失败", zap.Error(err))
-		return fmt.Errorf("embed content: %w", err)
+		logger.Error("[记忆处理-prepareMemory] 向量化失败", zap.Error(err))
+		return nil, fmt.Errorf("embed content: %w", err)
 	}
-	logger.Debug("[记忆处理-createMemory] 向量化成功",
+	logger.Debug("[记忆处理-prepareMemory] 向量化成功",
 		zap.Int("vector_dim", len(vector)),
 		zap.String("model_id", modelID),
 	)
@@ -566,6 +641,23 @@ func (m *memoryManager) createMemory(ctx context.Context, userID string, item co
 		EmbeddingDim:     len(vector),
 		EmbeddingModelID: modelID,
 		Status:           "active",
+	}
+
+	return memory, nil
+}
+
+// createMemory 创建新记忆。
+func (m *memoryManager) createMemory(ctx context.Context, userID string, item contracts.MemoryItem) error {
+	logger.Debug("[记忆处理-createMemory] 开始创建新记忆",
+		zap.String("user_id", userID),
+		zap.String("type", string(item.Type)),
+		zap.String("content", item.Content),
+	)
+
+	// 准备记忆实体
+	memory, err := m.prepareMemory(ctx, userID, item)
+	if err != nil {
+		return err
 	}
 
 	// 存储到数据库
@@ -655,6 +747,50 @@ func (m *memoryManager) mergeMemory(ctx context.Context, userID, targetID, merge
 	return nil
 }
 
+// supersedeMemory 新决策替代旧决策：将旧记忆置为 inactive，创建新记忆。
+// 事务外生成 Embedding，事务内完成状态转换和新记忆创建，确保原子性。
+func (m *memoryManager) supersedeMemory(ctx context.Context, userID, oldMemoryID string, item contracts.MemoryItem) error {
+	logger.Debug("[记忆处理-supersedeMemory] 开始新决策替代旧记忆",
+		zap.String("user_id", userID),
+		zap.String("old_memory_id", oldMemoryID),
+		zap.String("new_content", item.Content),
+	)
+
+	// 事务外：准备新记忆实体（生成 Embedding）
+	newMemory, err := m.prepareMemory(ctx, userID, item)
+	if err != nil {
+		return fmt.Errorf("prepare replacement memory: %w", err)
+	}
+
+	// 事务内：原子替代
+	if err := m.memoryRepo.Supersede(ctx, oldMemoryID, userID, newMemory); err != nil {
+		return fmt.Errorf("supersede memory: %w", err)
+	}
+
+	logger.Info("新记忆已替代旧记忆",
+		zap.String("old_memory_id", oldMemoryID),
+		zap.String("new_memory_id", newMemory.ID),
+	)
+	return nil
+}
+
+// invalidateMemory 明确撤销：将 active 状态的记忆置为 inactive。
+func (m *memoryManager) invalidateMemory(ctx context.Context, userID, memoryID string) error {
+	logger.Debug("[记忆处理-invalidateMemory] 开始撤销记忆",
+		zap.String("user_id", userID),
+		zap.String("memory_id", memoryID),
+	)
+
+	if err := m.memoryRepo.InvalidateActive(ctx, memoryID, userID); err != nil {
+		return fmt.Errorf("invalidate memory: %w", err)
+	}
+
+	logger.Info("记忆已置为 inactive",
+		zap.String("memory_id", memoryID),
+	)
+	return nil
+}
+
 // updateImportance 更新记忆重要性（取最高）。
 func (m *memoryManager) updateImportance(ctx context.Context, memory *entity.Memory, newImportance float64) error {
 	if newImportance > memory.Importance {
@@ -674,9 +810,9 @@ func computeContentHash(content string) string {
 
 // DedupDecision 去重判断结果。
 type DedupDecision struct {
-	Action        string `json:"action"`         // create/update/merge/skip
+	Action        string `json:"action"`         // create/update/merge/skip/supersede/invalidate/keep_both
 	Reason        string `json:"reason"`         // 判断理由
-	TargetID      string `json:"target_id"`      // 目标记忆ID（update/merge时）
+	TargetID      string `json:"target_id"`      // 目标记忆ID（update/merge/supersede/invalidate时）
 	MergedContent string `json:"merged_content"` // 合并后内容（merge时）
 }
 
@@ -694,7 +830,15 @@ func parseDedupDecision(response string) (*DedupDecision, error) {
 	}
 
 	// 验证action
-	validActions := map[string]bool{"create": true, "update": true, "merge": true, "skip": true}
+	validActions := map[string]bool{
+		"create":     true,
+		"update":     true,
+		"merge":      true,
+		"skip":       true,
+		"supersede":  true,
+		"invalidate": true,
+		"keep_both":  true,
+	}
 	if !validActions[decision.Action] {
 		return nil, fmt.Errorf("invalid action: %s", decision.Action)
 	}

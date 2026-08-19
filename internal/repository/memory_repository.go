@@ -13,10 +13,14 @@ import (
 	"github.com/1090-f/Memora/pkg/logger"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ErrMemoryNotFound 表示未找到指定的记忆。
 var ErrMemoryNotFound = errors.New("memory not found")
+
+// ErrMemoryStateConflict 表示记忆状态冲突（如目标已经是 inactive）。
+var ErrMemoryStateConflict = errors.New("memory state conflict")
 
 // memoryRepository 是 MemoryRepository 接口的 GORM 实现。
 type memoryRepository struct{ db *gorm.DB }
@@ -127,6 +131,95 @@ func (r *memoryRepository) UpdateStatus(ctx context.Context, id, userID, status 
 	}
 	if result.RowsAffected == 0 {
 		return ErrMemoryNotFound
+	}
+	return nil
+}
+
+// Supersede 原子替代：将旧记忆置为 inactive，创建新记忆。
+// 使用事务确保原子性，FOR UPDATE 锁定旧记忆避免并发冲突。
+func (r *memoryRepository) Supersede(ctx context.Context, oldMemoryID, userID string, newMemory *entity.Memory) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 1. 锁定旧记忆（FOR UPDATE）
+		var oldMemory entity.Memory
+		err := tx.
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where(
+				"id = ? AND user_id = ? AND status = 'active' AND deleted_at IS NULL",
+				oldMemoryID,
+				userID,
+			).
+			First(&oldMemory).Error
+
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrMemoryNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock old memory: %w", err)
+		}
+
+		// 2. 创建新记忆
+		if err := tx.Create(newMemory).Error; err != nil {
+			return fmt.Errorf("create replacement memory: %w", err)
+		}
+
+		// 3. 将旧记忆置为 inactive
+		now := time.Now().UTC()
+		result := tx.Model(&entity.Memory{}).
+			Where(
+				"id = ? AND user_id = ? AND status = 'active' AND deleted_at IS NULL",
+				oldMemoryID,
+				userID,
+			).
+			Updates(map[string]any{
+				"status":     "inactive",
+				"updated_at": now,
+			})
+
+		if result.Error != nil {
+			return fmt.Errorf("invalidate old memory: %w", result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("old memory state changed concurrently")
+		}
+
+		return nil
+	})
+}
+
+// InvalidateActive 将 active 状态的记忆置为 inactive。
+// 如果目标不存在或已经是 inactive，返回 ErrMemoryStateConflict。
+func (r *memoryRepository) InvalidateActive(ctx context.Context, id, userID string) error {
+	now := time.Now().UTC()
+	result := r.db.WithContext(ctx).
+		Model(&entity.Memory{}).
+		Where(
+			"id = ? AND user_id = ? AND status = 'active' AND deleted_at IS NULL",
+			id,
+			userID,
+		).
+		Updates(map[string]any{
+			"status":     "inactive",
+			"updated_at": now,
+		})
+
+	if result.Error != nil {
+		return fmt.Errorf("invalidate active memory: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		// 检查记忆是否存在
+		var count int64
+		err := r.db.WithContext(ctx).
+			Model(&entity.Memory{}).
+			Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, userID).
+			Count(&count).Error
+		if err != nil {
+			return fmt.Errorf("check memory existence: %w", err)
+		}
+		if count == 0 {
+			return ErrMemoryNotFound
+		}
+		// 记忆存在但不是 active 状态
+		return ErrMemoryStateConflict
 	}
 	return nil
 }

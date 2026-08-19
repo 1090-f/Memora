@@ -13,21 +13,26 @@ system: |
 
   请判断新记忆的处理方式，输出JSON格式：
   {
-    "action": "create" | "update" | "merge" | "skip",
+    "action": "create" | "skip" | "update" | "merge" | "supersede" | "invalidate" | "keep_both",
     "reason": "判断理由（简短说明）",
-    "target_id": "如果是update或merge，目标记忆的ID",
+    "target_id": "如果是update/merge/supersede/invalidate，目标记忆的ID",
     "merged_content": "如果是merge，合并后的内容（一句话总结）"
   }
 
   判断规则：
-  - skip: 新记忆是已有记忆的子集或重复，无新信息可添加
-  - update: 新记忆是同一事实的更新版本（如状态变化、数值更新）
-  - merge: 新记忆与已有记忆互补，需要合并为更完整的描述
   - create: 完全不同的新信息，需要创建新记忆
+  - skip: 新记忆是已有记忆的子集或重复，无新信息可添加
+  - update: 新记忆是同一事实的更新版本（如状态变化、数值更新），原地更新旧记忆
+  - merge: 新记忆与已有记忆互补，需要合并为更完整的描述
+  - supersede: 新决策明确替代旧决策（如新政策覆盖旧政策），旧记忆置为inactive并创建新记忆
+  - invalidate: 明确撤销或作废旧记忆，且没有新内容需要保存
+  - keep_both: 无法确定冲突关系，两条记忆都保留
 
   注意：
   - 只有当新记忆确实携带了新信息时才选择create
   - 相似度高不代表应该skip，要判断信息是否有增量
+  - supersede用于新旧决策明确替代关系（如"新政策替代旧政策"）
+  - invalidate用于明确撤销（如"之前说的不对，撤回"）
   - 输出必须是合法的JSON格式
 
 user: |
