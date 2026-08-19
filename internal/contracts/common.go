@@ -32,6 +32,13 @@ type TokenUsage struct {
 	TotalTokens  int `json:"total_tokens"`  // 总 token 数
 }
 
+// Add 将另一个 TokenUsage 的值累加到当前实例。
+func (u *TokenUsage) Add(other TokenUsage) {
+	u.InputTokens += other.InputTokens
+	u.OutputTokens += other.OutputTokens
+	u.TotalTokens += other.TotalTokens
+}
+
 // TimeRange 表示一个可选起止时间的时间区间。
 type TimeRange struct {
 	StartedAt *time.Time `json:"started_at,omitempty"` // 区间起始时间

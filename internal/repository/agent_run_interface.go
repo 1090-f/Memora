@@ -26,6 +26,9 @@ type AgentRunRepository interface {
 	// ListQueued 获取所有 queued 状态的运行记录（用于 Worker 批量领取）。
 	ListQueued(ctx context.Context, limit int) ([]entity.AgentRun, error)
 
+	// ListRunning 获取所有 running 状态的运行记录（用于恢复超时运行）。
+	ListRunning(ctx context.Context) ([]entity.AgentRun, error)
+
 	// ReserveQueued 原子地将一条 queued 记录标记为 running，返回运行记录或 nil。
 	// 使用条件更新避免并发 Worker 重复领取。
 	ReserveQueued(ctx context.Context, runID uuid.UUID) (*entity.AgentRun, error)
