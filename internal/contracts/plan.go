@@ -1,6 +1,7 @@
 package contracts
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -40,6 +41,49 @@ const (
 	PlanStepStatusFailed    PlanStepStatus = "failed"
 	PlanStepStatusSkipped   PlanStepStatus = "skipped"
 )
+
+// StepErrorKind 步骤错误类型
+type StepErrorKind string
+
+const (
+	StepErrorNotFound        StepErrorKind = "not_found"
+	StepErrorTimeout         StepErrorKind = "timeout"
+	StepErrorInvalidArgument StepErrorKind = "invalid_argument"
+	StepErrorPermission      StepErrorKind = "permission_denied"
+	StepErrorUnavailable     StepErrorKind = "unavailable"
+	StepErrorPermanent       StepErrorKind = "permanent"
+	StepErrorDependency      StepErrorKind = "dependency_failed"
+)
+
+// StepExecutionError 表示步骤执行错误
+type StepExecutionError struct {
+	Kind        StepErrorKind
+	Recoverable bool
+	Retryable   bool
+	Message     string
+}
+
+func (e *StepExecutionError) Error() string {
+	return fmt.Sprintf("[%s] %s", e.Kind, e.Message)
+}
+
+// FailurePolicy 步骤失败策略
+type FailurePolicy string
+
+const (
+	FailurePolicyFail     FailurePolicy = "fail"
+	FailurePolicyRetry    FailurePolicy = "retry"
+	FailurePolicyFallback FailurePolicy = "fallback"
+	FailurePolicySkip     FailurePolicy = "skip"
+)
+
+// URLEvidence 表示合法的 URL 来源
+type URLEvidence struct {
+	URL        string `json:"url"`
+	SourceStep int    `json:"source_step"`
+	ToolCallID string `json:"tool_call_id"`
+	Source     string `json:"source"` // "user_query", "search_result", "tool_result", "system_config"
+}
 
 // Plan 结构化执行计划
 type Plan struct {
@@ -112,8 +156,9 @@ type PlanStep struct {
 	Arguments            map[string]any `json:"arguments"`  // 工具参数（可选）
 	DependsOn            []ID           `json:"depends_on"` // 依赖的步骤 ID
 	Status               PlanStepStatus `json:"status"`
-	Output               string         `json:"output"` // 步骤输出
-	Error                string         `json:"error"`  // 错误信息
+	Output               string         `json:"output"`                // 步骤输出
+	Error                string         `json:"error"`                 // 错误信息
+	Recoverable          bool           `json:"recoverable,omitempty"` // 是否可恢复（如404错误）
 	StartedAt            *time.Time     `json:"started_at"`
 	CompletedAt          *time.Time     `json:"completed_at"`
 }

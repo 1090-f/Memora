@@ -266,20 +266,10 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 		agentCtx.KnowledgeStatus = retrievalRes.knowledgeStatus
 	}
 
-	// 自动启用网络：当注册表中存在 MCP 类型工具时，自动将 NetworkEnabled 设为 true。
-	// 因为 MCP 工具（如 baidu_search）必然需要网络访问，且用户已在 MCP 管理页面显式启用了这些工具。
-	if !agentCtx.NetworkEnabled && b.toolRegistry != nil {
-		for _, spec := range b.toolRegistry.Specs() {
-			if spec.Type == contracts.ToolTypeMCP && spec.Enabled {
-				agentCtx.NetworkEnabled = true
-				logger.Debug("自动启用网络：检测到已注册的 MCP 工具",
-					zap.String("tool_name", spec.Name),
-					zap.String("source_id", spec.SourceID),
-				)
-				break
-			}
-		}
-	}
+	// 注意：不再自动启用网络
+	// 网络权限应该由用户显式配置，而不是根据 MCP 工具的存在自动启用
+	// 如果用户明确禁用了网络，即使存在 MCP 工具也不应该自动启用
+	// MCP 工具如果需要网络，应该由用户在配置中显式启用 NetworkEnabled
 
 	// 日志：记录当前注册的工具数量（用于诊断工具注册问题）
 	if b.mcpToolRefresher != nil {

@@ -96,6 +96,15 @@ func (r *agentRunRepository) ListQueued(ctx context.Context, limit int) ([]entit
 	return runs, err
 }
 
+func (r *agentRunRepository) ListRunning(ctx context.Context) ([]entity.AgentRun, error) {
+	var runs []entity.AgentRun
+	err := r.db.WithContext(ctx).
+		Where("status = 'running'").
+		Order("created_at ASC").
+		Find(&runs).Error
+	return runs, err
+}
+
 // ReserveQueued 原子地将一条 queued 记录标记为 running。
 // 使用条件更新 WHERE status='queued' 避免并发 Worker 重复领取。
 // 更新成功返回完整运行记录，已被其他 Worker 领取则返回 nil。

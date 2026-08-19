@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -105,6 +106,54 @@ func (w *AgentWorker) Run(ctx context.Context) error {
 			w.pollAndExecute(ctx)
 		}
 	}
+}
+
+// RecoverStaleRuns 恢复超时的 running 状态运行。
+// 服务启动时调用，将超过 MaxRunTime 的 running 状态运行标记为 failed。
+func (w *AgentWorker) RecoverStaleRuns(ctx context.Context) error {
+	if !w.config.Enabled {
+		return nil
+	}
+
+	logger.Info("开始恢复超时的 running 状态运行")
+
+	// 查询所有 running 状态的运行
+	runningRuns, err := w.runRepo.ListRunning(ctx)
+	if err != nil {
+		return fmt.Errorf("list running runs: %w", err)
+	}
+
+	recoveredCount := 0
+	for _, run := range runningRuns {
+		// 检查运行时间是否超过 MaxRunTime
+		if run.StartedAt != nil {
+			elapsed := time.Since(*run.StartedAt)
+			if elapsed > w.config.MaxRunTime {
+				// 标记为 failed
+				durationMs := time.Since(*run.StartedAt).Milliseconds()
+				var execMode string
+				if run.ExecutionMode != nil {
+					execMode = *run.ExecutionMode
+				}
+				err := w.runRepo.MarkFailed(ctx, run.ID, "stale_run", fmt.Sprintf("run exceeded max execution time of %v", w.config.MaxRunTime), execMode, durationMs, run.InputTokens, run.OutputTokens, run.TotalTokens)
+				if err != nil {
+					logger.Error("恢复超时运行失败",
+						zap.String("run_id", run.ID.String()),
+						zap.Error(err),
+					)
+					continue
+				}
+				recoveredCount++
+				logger.Info("已恢复超时运行",
+					zap.String("run_id", run.ID.String()),
+					zap.Duration("elapsed", elapsed),
+				)
+			}
+		}
+	}
+
+	logger.Info("超时运行恢复完成", zap.Int("recovered", recoveredCount))
+	return nil
 }
 
 // pollAndExecute 执行一次轮询和调度：
@@ -221,6 +270,29 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 	}
 
 	// 执行成功后保存最终回答、Token 用量、耗时、执行模式和知识状态。
+	// 关键检查：FinalResult 必须非空且有实际内容，否则标记为失败
+	if strings.TrimSpace(result.FinalResult) == "" {
+		logger.Warn("Agent 运行成功但最终回答为空，标记为失败",
+			zap.String("run_id", run.ID.String()),
+			zap.String("execution_mode", string(result.ExecutionMode)),
+		)
+		if markErr := w.runRepo.MarkFailed(
+			context.Background(),
+			run.ID,
+			"empty_final_answer",
+			"任务执行完成但未生成有效最终回答",
+			string(result.ExecutionMode),
+			result.EndedAt.Sub(result.StartedAt).Milliseconds(),
+			result.Usage.InputTokens,
+			result.Usage.OutputTokens,
+			result.Usage.TotalTokens,
+		); markErr != nil {
+			logger.Error("标记 Agent 运行失败状态出错", zap.String("run_id", run.ID.String()), zap.Error(markErr))
+		}
+		w.createFailureMessage(context.Background(), run, "任务执行完成但未生成有效最终回答，请重试或简化问题")
+		return
+	}
+
 	durationMs := result.EndedAt.Sub(result.StartedAt).Milliseconds()
 	if markErr := w.runRepo.MarkCompleted(
 		context.Background(),
