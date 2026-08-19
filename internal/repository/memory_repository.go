@@ -13,10 +13,14 @@ import (
 	"github.com/1090-f/Memora/pkg/logger"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ErrMemoryNotFound 表示未找到指定的记忆。
 var ErrMemoryNotFound = errors.New("memory not found")
+
+// ErrMemoryStateConflict 表示记忆状态冲突（如目标已经是 inactive）。
+var ErrMemoryStateConflict = errors.New("memory state conflict")
 
 // memoryRepository 是 MemoryRepository 接口的 GORM 实现。
 type memoryRepository struct{ db *gorm.DB }
@@ -27,6 +31,7 @@ func NewMemoryRepository(db *gorm.DB) MemoryRepository {
 }
 
 // Create 创建新的记忆条目。
+// 如果遇到唯一约束冲突（并发精确去重），重新查询并返回已存在的记忆。
 func (r *memoryRepository) Create(ctx context.Context, memory *entity.Memory) error {
 	logger.Info("[记忆存储-Create] 开始存储记忆",
 		zap.String("user_id", memory.UserID),
@@ -36,7 +41,26 @@ func (r *memoryRepository) Create(ctx context.Context, memory *entity.Memory) er
 		zap.String("embedding_model_id", memory.EmbeddingModelID),
 	)
 
-	if err := r.db.WithContext(ctx).Create(memory).Error; err != nil {
+	err := r.db.WithContext(ctx).Create(memory).Error
+	if err != nil {
+		// 检查是否是唯一约束冲突（PostgreSQL 错误码 23505）
+		if strings.Contains(err.Error(), "23505") || strings.Contains(err.Error(), "duplicate key") {
+			logger.Warn("[记忆存储-Create] 唯一约束冲突，重新查询已存在的记忆",
+				zap.String("content_hash", memory.ContentHash),
+			)
+			// 重新按哈希查询已存在的记忆
+			var scopeID *string
+			if memory.ScopeID != nil {
+				scopeID = memory.ScopeID
+			}
+			existing, findErr := r.FindByContentHash(ctx, memory.UserID, memory.ContentHash, memory.ScopeType, scopeID)
+			if findErr != nil {
+				return fmt.Errorf("create memory: %w, and find existing: %w", err, findErr)
+			}
+			// 将已存在的记忆信息复制到传入的 memory 对象
+			*memory = *existing
+			return nil
+		}
 		logger.Error("[记忆存储-Create] 存储记忆失败",
 			zap.Error(err),
 		)
@@ -111,6 +135,95 @@ func (r *memoryRepository) UpdateStatus(ctx context.Context, id, userID, status 
 	return nil
 }
 
+// Supersede 原子替代：将旧记忆置为 inactive，创建新记忆。
+// 使用事务确保原子性，FOR UPDATE 锁定旧记忆避免并发冲突。
+func (r *memoryRepository) Supersede(ctx context.Context, oldMemoryID, userID string, newMemory *entity.Memory) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// 1. 锁定旧记忆（FOR UPDATE）
+		var oldMemory entity.Memory
+		err := tx.
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where(
+				"id = ? AND user_id = ? AND status = 'active' AND deleted_at IS NULL",
+				oldMemoryID,
+				userID,
+			).
+			First(&oldMemory).Error
+
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrMemoryNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock old memory: %w", err)
+		}
+
+		// 2. 创建新记忆
+		if err := tx.Create(newMemory).Error; err != nil {
+			return fmt.Errorf("create replacement memory: %w", err)
+		}
+
+		// 3. 将旧记忆置为 inactive
+		now := time.Now().UTC()
+		result := tx.Model(&entity.Memory{}).
+			Where(
+				"id = ? AND user_id = ? AND status = 'active' AND deleted_at IS NULL",
+				oldMemoryID,
+				userID,
+			).
+			Updates(map[string]any{
+				"status":     "inactive",
+				"updated_at": now,
+			})
+
+		if result.Error != nil {
+			return fmt.Errorf("invalidate old memory: %w", result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("old memory state changed concurrently")
+		}
+
+		return nil
+	})
+}
+
+// InvalidateActive 将 active 状态的记忆置为 inactive。
+// 如果目标不存在或已经是 inactive，返回 ErrMemoryStateConflict。
+func (r *memoryRepository) InvalidateActive(ctx context.Context, id, userID string) error {
+	now := time.Now().UTC()
+	result := r.db.WithContext(ctx).
+		Model(&entity.Memory{}).
+		Where(
+			"id = ? AND user_id = ? AND status = 'active' AND deleted_at IS NULL",
+			id,
+			userID,
+		).
+		Updates(map[string]any{
+			"status":     "inactive",
+			"updated_at": now,
+		})
+
+	if result.Error != nil {
+		return fmt.Errorf("invalidate active memory: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		// 检查记忆是否存在
+		var count int64
+		err := r.db.WithContext(ctx).
+			Model(&entity.Memory{}).
+			Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, userID).
+			Count(&count).Error
+		if err != nil {
+			return fmt.Errorf("check memory existence: %w", err)
+		}
+		if count == 0 {
+			return ErrMemoryNotFound
+		}
+		// 记忆存在但不是 active 状态
+		return ErrMemoryStateConflict
+	}
+	return nil
+}
+
 // ListByUser 列出用户的记忆列表。
 func (r *memoryRepository) ListByUser(ctx context.Context, userID string, opts ListMemoryOpts) (*ListMemoryResult, error) {
 	var memories []entity.Memory
@@ -161,10 +274,16 @@ func (r *memoryRepository) SearchByVector(ctx context.Context, req VectorSearchR
 	var results []VectorSearchResult
 
 	// 构建查询，使用 pgvector 的余弦相似度操作符
+	// 使用参数绑定而不是字符串拼接，避免 SQL 注入
 	query := r.db.WithContext(ctx).
 		Table("memories").
-		Select(fmt.Sprintf("memories.*, 1 - (memories.embedding <=> '%s') as similarity", req.QueryVector)).
-		Where("user_id = ? AND status = 'active' AND embedding_dim = ?", req.UserID, req.EmbeddingDim)
+		Select("memories.*, 1 - (memories.embedding <=> CAST(? AS vector)) as similarity", req.QueryVector).
+		Where("user_id = ? AND status = 'active' AND deleted_at IS NULL AND embedding_dim = ?", req.UserID, req.EmbeddingDim)
+
+	// 如果指定了 EmbeddingModelID，则过滤相同模型生成的向量
+	if req.EmbeddingModelID != "" {
+		query = query.Where("embedding_model_id = ?", req.EmbeddingModelID)
+	}
 
 	if req.KnowledgeBaseID != nil {
 		query = query.Where("(scope_type = 'user' OR (scope_type = 'knowledge_base' AND scope_id = ?))", *req.KnowledgeBaseID)
@@ -177,7 +296,7 @@ func (r *memoryRepository) SearchByVector(ctx context.Context, req VectorSearchR
 	}
 
 	// 按相似度排序，取前 TopK
-	if err := query.Order(fmt.Sprintf("embedding <=> '%s' ASC", req.QueryVector)).Limit(req.TopK).Find(&results).Error; err != nil {
+	if err := query.Order(gorm.Expr("memories.embedding <=> CAST(? AS vector) ASC", req.QueryVector)).Limit(req.TopK).Find(&results).Error; err != nil {
 		return nil, fmt.Errorf("vector search memories: %w", err)
 	}
 

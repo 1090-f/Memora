@@ -18,6 +18,12 @@ type MemoryRepository interface {
 	Delete(ctx context.Context, id, userID string) error
 	// UpdateStatus 更新记忆状态。
 	UpdateStatus(ctx context.Context, id, userID, status string) error
+	// Supersede 原子替代：将旧记忆置为 inactive，创建新记忆。
+	// 使用事务确保原子性，FOR UPDATE 锁定旧记忆避免并发冲突。
+	Supersede(ctx context.Context, oldMemoryID, userID string, newMemory *entity.Memory) error
+	// InvalidateActive 将 active 状态的记忆置为 inactive。
+	// 如果目标不存在或已经是 inactive，返回 ErrMemoryStateConflict。
+	InvalidateActive(ctx context.Context, id, userID string) error
 	// ListByUser 列出用户的记忆列表。
 	ListByUser(ctx context.Context, userID string, opts ListMemoryOpts) (*ListMemoryResult, error)
 	// SearchByVector 使用向量相似度搜索记忆。
@@ -48,12 +54,13 @@ type ListMemoryResult struct {
 
 // VectorSearchRequest 表示向量搜索请求。
 type VectorSearchRequest struct {
-	UserID          string
-	KnowledgeBaseID *string
-	QueryVector     string
-	EmbeddingDim    int
-	TopK            int
-	MinImportance   float64
+	UserID           string
+	KnowledgeBaseID  *string
+	QueryVector      string
+	EmbeddingDim     int
+	EmbeddingModelID string // 用于过滤相同模型生成的向量
+	TopK             int
+	MinImportance    float64
 }
 
 // VectorSearchResult 表示向量搜索结果。

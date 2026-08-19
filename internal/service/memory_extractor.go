@@ -130,7 +130,7 @@ func (e *memoryExtractor) extractAndStore(ctx context.Context, agentContext cont
 	// 2. 调用MemoryManager处理
 	logger.Debug("[记忆提取-extractAndStore] 步骤2: 调用MemoryManager处理")
 	userID := string(agentContext.UserID)
-	if err := e.memoryManager.Process(ctx, userID, items); err != nil {
+	if err := e.memoryManager.Process(ctx, userID, items, agentContext.ChatModelID); err != nil {
 		logger.Error("[记忆提取-extractAndStore] MemoryManager处理失败", zap.Error(err))
 		return fmt.Errorf("process memories: %w", err)
 	}
