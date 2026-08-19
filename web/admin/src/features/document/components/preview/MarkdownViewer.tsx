@@ -28,9 +28,9 @@ const markdownSx = {
   '& img': { maxWidth: '100%', maxHeight: 480, width: 'auto', height: 'auto', cursor: 'zoom-in' },
 } as const;
 
-export function MarkdownViewer({ content }: { content: string }) {
+export function MarkdownViewer({ content, compact = false }: { content: string; compact?: boolean }) {
   return (
-    <Box sx={markdownSx}>
+    <Box sx={compact ? { ...markdownSx, maxWidth: 'none', mx: 0, px: 0, py: 0 } : markdownSx}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{

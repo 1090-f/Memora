@@ -31,6 +31,11 @@ func NewController(docs service.DocumentService, preview previewservice.Service,
 	return &Controller{docs: docs, preview: preview, reader: reader, assetSignKey: assetSignKey}
 }
 
+// SupportedExtensions 返回上传能力白名单，前端据此构造文件选择器。
+func (ctrl *Controller) SupportedExtensions(c *gin.Context) {
+	response.Success(c, http.StatusOK, gin.H{"supported_extensions": ctrl.docs.SupportedExtensions()})
+}
+
 // List 分页查询知识库文档列表。
 func (ctrl *Controller) List(c *gin.Context) {
 	user, ok := middleware.GetUser(c)

@@ -12,6 +12,7 @@ export const queryKeys = {
     ['knowledge-bases', knowledgeBaseId, 'directories'] as const,
   documents: (knowledgeBaseId: string) =>
     ['knowledge-bases', knowledgeBaseId, 'documents'] as const,
+  documentSupportedExtensions: ['documents', 'supported-extensions'] as const,
   document: (documentId: string) => ['documents', documentId] as const,
   documentProcessing: (documentId: string) =>
     ['documents', documentId, 'processing'] as const,

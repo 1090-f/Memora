@@ -19,7 +19,7 @@ export function documentStatusLabel(status: DocumentProcessingStatus, indexMode:
   if (status !== 'succeeded') return processingLabel[status];
   if (indexMode === 'hybrid') return '已完成（混合索引）';
   if (indexMode === 'keyword') return '已完成（仅关键词）';
-  return '已完成（索引未建立）';
+  return '处理成功（不可检索）';
 }
 
 export type DocumentStatusFilter =

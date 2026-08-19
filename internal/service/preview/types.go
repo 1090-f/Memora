@@ -60,8 +60,22 @@ type Descriptor struct {
 }
 
 type TextPreview struct {
-	Content string `json:"content"`
-	Format  string `json:"format"`
+	Content string              `json:"content"`
+	Format  string              `json:"format"`
+	Slides  []PresentationSlide `json:"slides,omitempty"`
+}
+
+type PresentationSlide struct {
+	Page    int                 `json:"page"`
+	Content string              `json:"content"`
+	Images  []PresentationImage `json:"images"`
+}
+
+type PresentationImage struct {
+	URL    string `json:"url"`
+	Alt    string `json:"alt"`
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
 }
 
 type SheetSummary struct {

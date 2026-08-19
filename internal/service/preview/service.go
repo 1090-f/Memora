@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"regexp"
+	"sort"
 	"strings"
 
 	apperrors "github.com/1090-f/Memora/internal/apperror"
@@ -215,12 +216,28 @@ func (s *service) GetText(ctx context.Context, userID, documentID string) (*Text
 	}
 	parsed, err := s.loadParsedDocument(ctx, doc)
 	if err != nil {
+		// 图片正文只是可选的 OCR 结果；历史图片可能没有解析 Artifact，
+		// 此时原图仍然是完整可用的预览，不应把“无 OCR 正文”报成资源不存在。
+		if classify(doc) == kindImage && errors.Is(err, apperrors.ErrNotFound) {
+			return &TextPreview{Content: "", Format: "txt"}, nil
+		}
 		return nil, err
 	}
-	if strings.TrimSpace(parsed.Document.Markdown) == "" {
-		return nil, apperrors.ErrNotFound
+	content := parsed.Document.Markdown
+	if classify(doc) == kindPPTX {
+		// PPTX 以页级结构返回抽取正文与同页图片，供前端分栏阅读；Content
+		// 保留纯文本版本，兼容尚未消费 Slides 字段的调用方。
+		content = stripDoclingImagePlaceholders(content)
+		return &TextPreview{
+			Content: content,
+			Format:  parsed.Source.Format,
+			Slides:  s.buildPresentationSlides(parsed, doc.ID),
+		}, nil
 	}
-	content := s.rewriteDoclingImagePlaceholders(parsed.Document.Markdown, parsed.Blocks, parsed.Assets, doc.ID)
+	if strings.TrimSpace(content) == "" {
+		return &TextPreview{Content: "", Format: parsed.Source.Format}, nil
+	}
+	content = s.rewriteDoclingImagePlaceholders(content, parsed.Blocks, parsed.Assets, doc.ID)
 	if strings.EqualFold(parsed.Source.Format, "markdown") {
 		content = s.rewriteMarkdownImageRefs(content, parsed.Assets, doc.ID)
 	}
@@ -395,6 +412,109 @@ func (p *parserStoreAdapter) Bucket() string { return "" }
 
 var doclingImagePlaceholderRe = regexp.MustCompile(`<!--\s*image[^>]*-->`)
 var markdownImageRefRe = regexp.MustCompile(`!\[([^\]]*)\]\(([^)\s]+)\)`)
+var excessiveBlankLinesRe = regexp.MustCompile(`\n[ \t]*\n(?:[ \t]*\n)+`)
+
+func stripDoclingImagePlaceholders(markdown string) string {
+	content := doclingImagePlaceholderRe.ReplaceAllString(markdown, "")
+	return strings.TrimSpace(excessiveBlankLinesRe.ReplaceAllString(content, "\n\n"))
+}
+
+func (s *service) buildPresentationSlides(parsed *parser.ParsedDocument, documentID string) []PresentationSlide {
+	if parsed == nil {
+		return nil
+	}
+	type slideDraft struct {
+		parts  []string
+		images []PresentationImage
+		seen   map[string]struct{}
+	}
+	drafts := make(map[int]*slideDraft)
+	draftFor := func(page int) *slideDraft {
+		if page < 1 {
+			page = 1
+		}
+		if drafts[page] == nil {
+			drafts[page] = &slideDraft{seen: make(map[string]struct{})}
+		}
+		return drafts[page]
+	}
+	assets := make(map[string]parser.Asset, len(parsed.Assets))
+	for _, asset := range parsed.Assets {
+		assets[asset.ID] = asset
+	}
+	for _, block := range parsed.Blocks {
+		draft := draftFor(block.Source.Page)
+		if block.Type == parser.BlockTypePicture {
+			for _, ref := range block.AssetRefs {
+				asset, ok := assets[ref]
+				if !ok || asset.Omitted || strings.TrimSpace(asset.ObjectKey) == "" {
+					continue
+				}
+				if _, exists := draft.seen[asset.ID]; exists {
+					continue
+				}
+				url, err := asseturl.BuildAssetURL(s.assetSignKey, documentID, asset.ID, asseturl.DefaultTTL)
+				if err != nil {
+					continue
+				}
+				draft.seen[asset.ID] = struct{}{}
+				draft.images = append(draft.images, PresentationImage{
+					URL: url, Alt: presentationImageAlt(asset), Width: asset.Width, Height: asset.Height,
+				})
+			}
+			continue
+		}
+		if part := presentationBlockMarkdown(block); part != "" {
+			draft.parts = append(draft.parts, part)
+		}
+	}
+
+	pages := make([]int, 0, len(drafts))
+	for page := range drafts {
+		pages = append(pages, page)
+	}
+	sort.Ints(pages)
+	result := make([]PresentationSlide, 0, len(pages))
+	for _, page := range pages {
+		draft := drafts[page]
+		images := draft.images
+		if images == nil {
+			images = make([]PresentationImage, 0)
+		}
+		result = append(result, PresentationSlide{
+			Page: page, Content: strings.Join(draft.parts, "\n\n"), Images: images,
+		})
+	}
+	return result
+}
+
+func presentationBlockMarkdown(block parser.Block) string {
+	text := strings.TrimSpace(block.Markdown)
+	if text == "" {
+		text = strings.TrimSpace(block.Text)
+	}
+	if text == "" {
+		return ""
+	}
+	switch block.Type {
+	case parser.BlockTypeTitle:
+		return "### " + text
+	case parser.BlockTypeHeading:
+		return "#### " + text
+	case parser.BlockTypeListItem:
+		return "- " + text
+	default:
+		return text
+	}
+}
+
+func presentationImageAlt(asset parser.Asset) string {
+	alt := strings.Join(strings.Fields(strings.TrimSpace(asset.Caption)), " ")
+	if alt == "" {
+		return "幻灯片图片"
+	}
+	return alt
+}
 
 func (s *service) rewriteDoclingImagePlaceholders(markdown string, blocks []parser.Block, assets []parser.Asset, documentID string) string {
 	if !doclingImagePlaceholderRe.MatchString(markdown) || s.assetSignKey == "" {

@@ -13,6 +13,7 @@ import type { DocumentPreview, PreviewFallback, PreviewStatus, PreviewType } fro
 import { ImageViewer } from './ImageViewer';
 import { MarkdownViewer } from './MarkdownViewer';
 import { PdfViewer } from './PdfViewer';
+import { PresentationViewer } from './PresentationViewer';
 import { TableViewer } from './TableViewer';
 import { TextViewer } from './TextViewer';
 
@@ -30,6 +31,7 @@ interface PreviewTab {
   kind: TabKind;
   title: string;
   mode?: PreviewMode;
+  sourceImage?: PreviewMode;
 }
 
 const PROCESSING_KEY = '__processing';
@@ -71,7 +73,7 @@ function buildTabs(modes: PreviewMode[]): PreviewTab[] {
     tabs.push({ key: 'source', kind: 'source', title: source.type === 'table' ? '原版预览' : '原文预览', mode: source });
   }
   if (text) {
-    tabs.push({ key: 'parsed', kind: 'parsed', title: '解析正文', mode: text });
+    tabs.push({ key: 'parsed', kind: 'parsed', title: '解析正文', mode: text, sourceImage: image });
   }
   return tabs;
 }
@@ -119,7 +121,27 @@ export function PreviewHost({ descriptor, title, onRetry, retrying, processingCo
       <Box sx={{ pt: 2.5, minHeight: 360 }}>
         {showProcessing
           ? processingContent
-          : (selected?.mode && <ModeContent documentId={descriptor.document_id} mode={selected.mode} title={title} error={descriptor.error?.message} onRetry={onRetry} retrying={retrying} />)}
+          : (selected?.mode && (selected.kind === 'parsed' && selected.sourceImage
+            ? <ParsedImageContent documentId={descriptor.document_id} imageMode={selected.sourceImage} title={title} error={descriptor.error?.message} onRetry={onRetry} retrying={retrying} />
+            : <ModeContent documentId={descriptor.document_id} mode={selected.mode} title={title} error={descriptor.error?.message} onRetry={onRetry} retrying={retrying} />))}
+      </Box>
+    </Box>
+  );
+}
+
+function ParsedImageContent({ documentId, imageMode, title, error, onRetry, retrying }: {
+  documentId: string;
+  imageMode: PreviewMode;
+  title: string;
+  error?: string;
+  onRetry: () => void;
+  retrying: boolean;
+}) {
+  return (
+    <Box>
+      <ModeContent documentId={documentId} mode={imageMode} title={title} error={error} onRetry={onRetry} retrying={retrying} />
+      <Box sx={{ mt: 2.5, pt: 2.5, borderTop: '1px solid #e6e9ef' }}>
+        <TextResourceViewer documentId={documentId} markdown emptyMessage="图片中未识别到可显示的文字。" />
       </Box>
     </Box>
   );
@@ -154,7 +176,7 @@ function ModeContent({ documentId, mode, title, error, onRetry, retrying }: {
   }
 }
 
-function TextResourceViewer({ documentId, markdown }: { documentId: string; markdown: boolean }) {
+function TextResourceViewer({ documentId, markdown, emptyMessage = '该文档暂时没有可显示的正文。' }: { documentId: string; markdown: boolean; emptyMessage?: string }) {
   const query = useQuery({
     queryKey: queryKeys.documentPreviewText(documentId),
     queryFn: () => getDocumentTextPreviewById(documentId),
@@ -163,7 +185,8 @@ function TextResourceViewer({ documentId, markdown }: { documentId: string; mark
   });
   if (query.isPending) return <Typography color="text.secondary">正在读取完整解析正文…</Typography>;
   if (query.error) return <Alert severity="warning">正文读取失败：{errorMessage(query.error)}</Alert>;
-  if (!query.data?.content) return <Typography color="text.secondary">该文档暂时没有可显示的正文。</Typography>;
+  if (query.data?.format === 'pptx' && query.data.slides?.length) return <PresentationViewer slides={query.data.slides} />;
+  if (!query.data?.content) return <Typography color="text.secondary">{emptyMessage}</Typography>;
   return markdown || query.data.format === 'markdown'
     ? <MarkdownViewer content={query.data.content} />
     : <TextViewer content={query.data.content} />;

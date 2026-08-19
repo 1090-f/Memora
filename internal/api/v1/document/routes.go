@@ -6,6 +6,7 @@ import "github.com/gin-gonic/gin"
 func (ctrl *Controller) RegisterRoutes(v1 *gin.RouterGroup, authRequired gin.HandlerFunc) {
 	// 按文档 ID 的跨知识库操作（详情/删除）挂在根级路径下。
 	docs := v1.Group("", authRequired)
+	docs.GET("/documents/supported-extensions", ctrl.SupportedExtensions)
 	docs.GET("/documents/:document_id", ctrl.Get)
 	docs.GET("/documents/:document_id/preview", ctrl.Preview)
 	docs.GET("/documents/:document_id/preview/text", ctrl.PreviewText)

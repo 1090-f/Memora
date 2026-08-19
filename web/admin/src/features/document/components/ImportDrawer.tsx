@@ -13,7 +13,7 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import JSZip from 'jszip';
 import { useDropzone, type FileRejection } from 'react-dropzone';
@@ -28,33 +28,15 @@ import clsx from 'clsx';
 import { queryKeys } from '@/api/queryKeys';
 import { errorMessage } from '@/api/errors';
 import { ActionNotice } from '@/components/shared/ActionNotice';
-import { importFiles, scanImportTask, startImportTask, uploadTaskAttachments } from '../api';
+import { getSupportedExtensions, importFiles, scanImportTask, startImportTask, uploadTaskAttachments } from '../api';
 import { flattenDirectories } from '../directoryOptions';
 import type { DirectoryNode, ImageScanResult, ImageRefStatus, ImportUploadResponse } from '../types';
 
 const MAX_FILES = 20;
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.tiff', '.tif'];
-const primaryDocumentExtensions = ['.md', '.txt', '.pdf', '.docx', '.xlsx', '.pptx'];
-const standaloneImageExtensions = imageExtensions.filter((extension) => extension !== '.svg');
-const importableDocumentExtensions = [...primaryDocumentExtensions, ...standaloneImageExtensions];
-const allowedExtensions = [...importableDocumentExtensions, '.zip'];
-
-const uploadAccept: Record<string, string[]> = {
-  'text/markdown': ['.md'],
-  'text/plain': ['.txt'],
-  'application/pdf': ['.pdf'],
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx'],
-  'application/zip': ['.zip'],
-  'image/jpeg': ['.jpg', '.jpeg'],
-  'image/png': ['.png'],
-  'image/bmp': ['.bmp'],
-  'image/tiff': ['.tiff', '.tif'],
-  'image/gif': ['.gif'],
-  'image/webp': ['.webp'],
-};
+// 后端能力接口加载失败时的兼容兜底；正常情况下以服务端返回值为准。
+const fallbackExtensions = ['.md', '.markdown', '.txt', '.pdf', '.docx', '.xlsx', '.pptx', '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.gif', '.webp', '.zip'];
 
 // 浏览器目录选择（webkitdirectory 为非标准属性，在浏览器类型上扩展，与 HTMLInputElement 兼容）。
 interface DirectoryInputElement extends HTMLInputElement {
@@ -117,9 +99,17 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
   directories: DirectoryNode[];
 }) {
   const queryClient = useQueryClient();
+  const extensionsQuery = useQuery({
+    queryKey: queryKeys.documentSupportedExtensions,
+    queryFn: getSupportedExtensions,
+    staleTime: 5 * 60_000,
+  });
+  const serverExtensions = extensionsQuery.data?.supported_extensions ?? fallbackExtensions;
+  const serverImportableExtensions = serverExtensions.filter((extension) => extension !== '.zip');
   const folderInputRef = useRef<DirectoryInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const uploadControllerRef = useRef<AbortController | null>(null);
+  const wasOpenRef = useRef(open);
   const filesStateRef = useRef<{ files: PendingFile[] }>({ files: [] });
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [fileImportMode, setFileImportMode] = useState<'files' | 'folder_archive'>('files');
@@ -282,8 +272,8 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
       const base = hasActive ? prev : [];
       const room = Math.max(0, MAX_FILES - base.length);
       const accepted = selected.slice(0, room).map((file) => {
-        const invalidType = !allowedExtensions.some((extension) => file.name.toLowerCase().endsWith(extension));
-        if (invalidType) return createPendingFile(file, `不支持 ${file.name}，请选择 Markdown、TXT、PDF 或 DOCX`);
+        const invalidType = !serverExtensions.some((extension) => file.name.toLowerCase().endsWith(extension));
+        if (invalidType) return createPendingFile(file, `不支持 ${file.name}，可选扩展名：${serverExtensions.join('、')}`);
         const invalidSize = file.size <= 0 || file.size > MAX_FILE_SIZE;
         if (invalidSize) return createPendingFile(file, `${file.name} 为空或超过 50 MB`);
         return createPendingFile(file);
@@ -295,7 +285,7 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
     setFileImportMode('files');
     setValidationError('');
     setNotice('');
-  }, []);
+  }, [serverExtensions]);
 
   const onDropFiles = useCallback((acceptedFiles: File[], fileRejections: FileRejection[]) => {
     const rejected = fileRejections.map((rejection) => {
@@ -304,11 +294,11 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
         file: rejection.file,
         message: oversized
           ? `${rejection.file.name} 为空或超过 50 MB`
-          : `不支持 ${rejection.file.name}，请选择 Markdown、TXT、PDF 或 DOCX`,
+          : `不支持 ${rejection.file.name}，可选扩展名：${serverExtensions.join('、')}`,
       };
     });
     addSelectedFiles(acceptedFiles, rejected);
-  }, [addSelectedFiles]);
+  }, [addSelectedFiles, serverExtensions]);
 
   const removePendingFile = useCallback((key: string) => {
     const item = filesStateRef.current.files.find((entry) => entry.key === key);
@@ -340,7 +330,7 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
   // File.webkitRelativePath 由 DOM 库提供（目录选择时携带相对路径）。
   async function selectFolder(selected: File[]) {
     const documents = selected.filter((file) =>
-      importableDocumentExtensions.some((extension) => file.name.toLowerCase().endsWith(extension)));
+      serverImportableExtensions.some((extension) => file.name.toLowerCase().endsWith(extension)));
     if (documents.length === 0) {
       setValidationError('文件夹中没有可导入的文档或图片');
       return;
@@ -387,9 +377,35 @@ export function ImportDrawer({ open, onClose, disabled, kbId, directories }: {
   const selectionLocked = disabled || busy || pendingCount > 0;
   const canUpload = queuedFiles.length > 0;
 
+  // Dialog 保持挂载，重新打开时主动清理上一轮已完成/失败的表单状态。
+  // 待补图确认任务仍需继续处理，因此 pendingTasks 非空时保留现场。
+  useEffect(() => {
+    const justOpened = open && !wasOpenRef.current;
+    wasOpenRef.current = open;
+    if (!justOpened || busy || pendingTasks.length > 0) return;
+
+    filesStateRef.current.files.forEach((item) => {
+      if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    });
+    setPendingFiles([]);
+    setFileImportMode('files');
+    setDirectoryId('');
+    setNotice('');
+    setValidationError('');
+    setUploadProgress(0);
+    setCancelled(false);
+    setAttachmentFor(null);
+    setPendingImages([]);
+    if (folderInputRef.current) folderInputRef.current.value = '';
+    if (imageInputRef.current) imageInputRef.current.value = '';
+    uploadMutation.reset();
+    startMutation.reset();
+    attachmentMutation.reset();
+  }, [attachmentMutation, busy, open, pendingTasks.length, startMutation, uploadMutation]);
+
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop: onDropFiles,
-    accept: uploadAccept,
+    accept: { 'application/octet-stream': serverExtensions },
     maxSize: MAX_FILE_SIZE,
     minSize: 1,
     multiple: true,
