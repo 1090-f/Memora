@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/1090-f/Memora/internal/contracts"
+	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/1090-f/Memora/internal/repository"
 	queryutil "github.com/1090-f/Memora/internal/service/rag/query"
 	"github.com/1090-f/Memora/pkg/logger"
@@ -205,54 +206,67 @@ func (r *memoryRetriever) Retrieve(
 
 // fusedCandidate 融合后的候选记忆。
 type fusedCandidate struct {
-	memory     repository.VectorSearchResult // 复用结构，Similarity 字段存储 RRF 分数
-	rrfScore   float64
-	similarity float64 // 原始向量相似度
+	memory           entity.Memory // 候选记忆实体
+	vectorSimilarity float64       // 原始向量相似度（cosine similarity）
+	keywordScore     float64       // 关键词匹配分数（用于调试，当前未使用）
+	rrfScore         float64       // RRF 融合分数
+	vectorMatched    bool          // 是否被向量检索命中
+	keywordMatched   bool          // 是否被关键词检索命中
 }
 
 // rrfFuse 使用 Reciprocal Rank Fusion 融合向量检索和关键词检索结果。
 func (r *memoryRetriever) rrfFuse(
 	vectorResults []repository.VectorSearchResult,
 	keywordResults []repository.KeywordMemorySearchResult,
-) []repository.VectorSearchResult {
+) []fusedCandidate {
 	k := float64(r.config.RRFK)
 
-	// 用 memory ID 作为 key，累积 RRF 分数
-	rrfScores := make(map[string]float64)
-	// 保留原始数据用于后续排序
-	vectorMap := make(map[string]repository.VectorSearchResult)
+	// 用 memory ID 作为 key，构建候选 map
+	candidateMap := make(map[string]*fusedCandidate)
 
 	// 处理向量检索结果
 	for rank, vr := range vectorResults {
 		id := vr.Memory.ID
-		rrfScores[id] += 1.0 / (k + float64(rank+1))
-		vectorMap[id] = vr
+		candidate, exists := candidateMap[id]
+		if !exists {
+			candidate = &fusedCandidate{
+				memory: vr.Memory,
+			}
+			candidateMap[id] = candidate
+		}
+		// 保留原始向量相似度，不覆盖
+		candidate.vectorSimilarity = vr.Similarity
+		candidate.vectorMatched = true
+		candidate.rrfScore += 1.0 / (k + float64(rank+1))
 	}
 
 	// 处理关键词检索结果
 	for rank, kr := range keywordResults {
 		id := kr.Memory.ID
-		rrfScores[id] += 1.0 / (k + float64(rank+1))
-		// 如果向量检索没找到这条记忆，补充到 vectorMap 中
-		if _, exists := vectorMap[id]; !exists {
-			vectorMap[id] = repository.VectorSearchResult{
-				Memory:     kr.Memory,
-				Similarity: 0, // 向量检索未命中，相似度为 0
+		candidate, exists := candidateMap[id]
+		if !exists {
+			candidate = &fusedCandidate{
+				memory: kr.Memory,
+				// 向量检索未命中，相似度为 0
+				vectorSimilarity: 0,
 			}
+			candidateMap[id] = candidate
 		}
+		candidate.keywordMatched = true
+		candidate.rrfScore += 1.0 / (k + float64(rank+1))
 	}
 
 	// 按 RRF 分数排序，构造返回结果
-	type idScore struct {
-		id    string
-		score float64
+	type idCandidate struct {
+		id        string
+		candidate *fusedCandidate
 	}
-	var sorted []idScore
-	for id, score := range rrfScores {
-		sorted = append(sorted, idScore{id: id, score: score})
+	var sorted []idCandidate
+	for id, candidate := range candidateMap {
+		sorted = append(sorted, idCandidate{id: id, candidate: candidate})
 	}
 	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].score > sorted[j].score
+		return sorted[i].candidate.rrfScore > sorted[j].candidate.rrfScore
 	})
 
 	// 取 Top FinalTopK * 2 作为候选（后续还会复合排序截断）
@@ -261,12 +275,9 @@ func (r *memoryRetriever) rrfFuse(
 		sorted = sorted[:limit]
 	}
 
-	var fused []repository.VectorSearchResult
+	var fused []fusedCandidate
 	for _, item := range sorted {
-		vr := vectorMap[item.id]
-		// 将 RRF 分数写入 Similarity 字段，供后续复合排序使用
-		vr.Similarity = item.score
-		fused = append(fused, vr)
+		fused = append(fused, *item.candidate)
 	}
 
 	return fused
@@ -275,27 +286,35 @@ func (r *memoryRetriever) rrfFuse(
 // rankCandidates 复合排序候选记忆。
 // 对于向量检索命中的记忆，使用原始相似度；对于仅关键词命中的记忆，使用 RRF 分数作为相似度代理。
 func (r *memoryRetriever) rankCandidates(
-	candidates []repository.VectorSearchResult,
+	candidates []fusedCandidate,
 	now time.Time,
 ) []contracts.MemoryQueryResult {
 	var results []contracts.MemoryQueryResult
 
 	for _, cand := range candidates {
 		var scopeID *contracts.ID
-		if cand.Memory.ScopeID != nil {
-			id := contracts.ID(*cand.Memory.ScopeID)
+		if cand.memory.ScopeID != nil {
+			id := contracts.ID(*cand.memory.ScopeID)
 			scopeID = &id
 		}
 
+		// 确定用于排序的相关性分数
+		// 向量检索命中的使用原始 cosine similarity，仅关键词命中的使用 0
+		relevanceScore := float64(0)
+		if cand.vectorMatched {
+			relevanceScore = cand.vectorSimilarity
+		}
+
 		results = append(results, contracts.MemoryQueryResult{
-			MemoryID:   contracts.ID(cand.Memory.ID),
-			MemoryType: contracts.MemoryType(cand.Memory.MemoryType),
-			ScopeType:  contracts.MemoryScope(cand.Memory.ScopeType),
+			MemoryID:   contracts.ID(cand.memory.ID),
+			MemoryType: contracts.MemoryType(cand.memory.MemoryType),
+			ScopeType:  contracts.MemoryScope(cand.memory.ScopeType),
 			ScopeID:    scopeID,
-			Content:    cand.Memory.Content,
-			Similarity: cand.Similarity,
-			Importance: cand.Memory.Importance,
-			UpdatedAt:  cand.Memory.UpdatedAt,
+			Content:    cand.memory.Content,
+			Similarity: relevanceScore, // 使用相关性分数，而非 RRF 分数
+			RRFScore:   cand.rrfScore,  // 保留 RRF 分数用于调试
+			Importance: cand.memory.Importance,
+			UpdatedAt:  cand.memory.UpdatedAt,
 		})
 	}
 

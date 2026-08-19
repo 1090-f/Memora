@@ -3,7 +3,7 @@ system: |
 
   已有相似记忆列表：
   {{range .ExistingMemories}}
-  - [ID: {{.ID}}] {{.Content}} (类型: {{.Type}}, 相似度: {{.Similarity}})
+  - [ID: {{.MemoryID}}] {{.Content}} (类型: {{.MemoryType}}, 相似度: {{.Similarity}})
   {{end}}
 
   新提取的记忆：

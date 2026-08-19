@@ -27,6 +27,7 @@ func NewMemoryRepository(db *gorm.DB) MemoryRepository {
 }
 
 // Create 创建新的记忆条目。
+// 如果遇到唯一约束冲突（并发精确去重），重新查询并返回已存在的记忆。
 func (r *memoryRepository) Create(ctx context.Context, memory *entity.Memory) error {
 	logger.Info("[记忆存储-Create] 开始存储记忆",
 		zap.String("user_id", memory.UserID),
@@ -36,7 +37,26 @@ func (r *memoryRepository) Create(ctx context.Context, memory *entity.Memory) er
 		zap.String("embedding_model_id", memory.EmbeddingModelID),
 	)
 
-	if err := r.db.WithContext(ctx).Create(memory).Error; err != nil {
+	err := r.db.WithContext(ctx).Create(memory).Error
+	if err != nil {
+		// 检查是否是唯一约束冲突（PostgreSQL 错误码 23505）
+		if strings.Contains(err.Error(), "23505") || strings.Contains(err.Error(), "duplicate key") {
+			logger.Warn("[记忆存储-Create] 唯一约束冲突，重新查询已存在的记忆",
+				zap.String("content_hash", memory.ContentHash),
+			)
+			// 重新按哈希查询已存在的记忆
+			var scopeID *string
+			if memory.ScopeID != nil {
+				scopeID = memory.ScopeID
+			}
+			existing, findErr := r.FindByContentHash(ctx, memory.UserID, memory.ContentHash, memory.ScopeType, scopeID)
+			if findErr != nil {
+				return fmt.Errorf("create memory: %w, and find existing: %w", err, findErr)
+			}
+			// 将已存在的记忆信息复制到传入的 memory 对象
+			*memory = *existing
+			return nil
+		}
 		logger.Error("[记忆存储-Create] 存储记忆失败",
 			zap.Error(err),
 		)
@@ -161,10 +181,16 @@ func (r *memoryRepository) SearchByVector(ctx context.Context, req VectorSearchR
 	var results []VectorSearchResult
 
 	// 构建查询，使用 pgvector 的余弦相似度操作符
+	// 使用参数绑定而不是字符串拼接，避免 SQL 注入
 	query := r.db.WithContext(ctx).
 		Table("memories").
-		Select(fmt.Sprintf("memories.*, 1 - (memories.embedding <=> '%s') as similarity", req.QueryVector)).
-		Where("user_id = ? AND status = 'active' AND embedding_dim = ?", req.UserID, req.EmbeddingDim)
+		Select("memories.*, 1 - (memories.embedding <=> CAST(? AS vector)) as similarity", req.QueryVector).
+		Where("user_id = ? AND status = 'active' AND deleted_at IS NULL AND embedding_dim = ?", req.UserID, req.EmbeddingDim)
+
+	// 如果指定了 EmbeddingModelID，则过滤相同模型生成的向量
+	if req.EmbeddingModelID != "" {
+		query = query.Where("embedding_model_id = ?", req.EmbeddingModelID)
+	}
 
 	if req.KnowledgeBaseID != nil {
 		query = query.Where("(scope_type = 'user' OR (scope_type = 'knowledge_base' AND scope_id = ?))", *req.KnowledgeBaseID)
@@ -177,7 +203,7 @@ func (r *memoryRepository) SearchByVector(ctx context.Context, req VectorSearchR
 	}
 
 	// 按相似度排序，取前 TopK
-	if err := query.Order(fmt.Sprintf("embedding <=> '%s' ASC", req.QueryVector)).Limit(req.TopK).Find(&results).Error; err != nil {
+	if err := query.Order(gorm.Expr("memories.embedding <=> CAST(? AS vector) ASC", req.QueryVector)).Limit(req.TopK).Find(&results).Error; err != nil {
 		return nil, fmt.Errorf("vector search memories: %w", err)
 	}
 
