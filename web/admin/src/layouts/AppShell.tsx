@@ -1,7 +1,6 @@
 import AccountCircleOutlined from '@mui/icons-material/AccountCircleOutlined';
 import AutoAwesomeOutlined from '@mui/icons-material/AutoAwesomeOutlined';
 import BuildOutlined from '@mui/icons-material/BuildOutlined';
-import KeyboardArrowDownOutlined from '@mui/icons-material/KeyboardArrowDownOutlined';
 import MemoryOutlined from '@mui/icons-material/MemoryOutlined';
 import MenuBookOutlined from '@mui/icons-material/MenuBookOutlined';
 import MenuOpenOutlined from '@mui/icons-material/MenuOpenOutlined';
@@ -228,26 +227,6 @@ export function AppShell() {
           )}
         </div>
 
-        {user && (
-          <Link
-            to="/settings/profile"
-            aria-label="进入个人资料"
-            className={clsx(
-              'mx-3 mb-3 flex shrink-0 items-center gap-3 rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3 text-slate-900 transition hover:border-blue-200 hover:bg-blue-50/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30',
-              collapsed && 'lg:mx-2 lg:justify-center lg:px-0',
-            )}
-          >
-            <span className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-blue-500 to-indigo-400 text-sm font-medium text-white shadow-[0_6px_14px_rgba(86,105,255,0.25)]">
-              {(user.nickname || user.email || 'A').trim().charAt(0).toUpperCase()}
-              {user.avatar_url && <img src={user.avatar_url} alt={`${user.nickname} 的头像`} className="absolute inset-0 h-full w-full object-cover" onError={(event) => { event.currentTarget.style.display = 'none'; }} />}
-            </span>
-            <span className={clsx('min-w-0 flex-1', collapsed && 'lg:hidden')}>
-              <span className="block truncate text-sm font-semibold">{user.nickname}</span>
-              <span className="block truncate text-xs text-slate-400">{user.email}</span>
-            </span>
-            <KeyboardArrowDownOutlined className={clsx('h-5 w-5 text-slate-500', collapsed && 'lg:hidden')} />
-          </Link>
-        )}
       </aside>
 
       <div
