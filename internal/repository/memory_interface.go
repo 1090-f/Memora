@@ -48,12 +48,13 @@ type ListMemoryResult struct {
 
 // VectorSearchRequest 表示向量搜索请求。
 type VectorSearchRequest struct {
-	UserID          string
-	KnowledgeBaseID *string
-	QueryVector     string
-	EmbeddingDim    int
-	TopK            int
-	MinImportance   float64
+	UserID           string
+	KnowledgeBaseID  *string
+	QueryVector      string
+	EmbeddingDim     int
+	EmbeddingModelID string // 用于过滤相同模型生成的向量
+	TopK             int
+	MinImportance    float64
 }
 
 // VectorSearchResult 表示向量搜索结果。

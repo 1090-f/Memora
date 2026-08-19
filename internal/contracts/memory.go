@@ -46,7 +46,8 @@ type MemoryQueryResult struct {
 	ScopeType  MemoryScope `json:"scope_type"`         // 作用域类型
 	ScopeID    *ID         `json:"scope_id,omitempty"` // 可选：作用域内对应的实体 ID
 	Content    string      `json:"content"`            // 记忆内容
-	Similarity float64     `json:"similarity"`         // 相似度得分
+	Similarity float64     `json:"similarity"`         // 相似度得分（向量检索为 cosine similarity，关键词检索为 0）
+	RRFScore   float64     `json:"rrf_score"`          // RRF 融合分数（用于调试和排序）
 	Importance float64     `json:"importance"`         // 重要程度
 	UpdatedAt  time.Time   `json:"updated_at"`         // 更新时间
 }
@@ -77,7 +78,8 @@ type MemoryItem struct {
 // MemoryManager 负责记忆的去重、合并和存储。
 type MemoryManager interface {
 	// Process 处理候选记忆列表，自动去重、合并后存储。
-	Process(ctx context.Context, userID string, items []MemoryItem) error
+	// chatModelID 用于 LLM 去重判断，如果为空则使用默认模型。
+	Process(ctx context.Context, userID string, items []MemoryItem, chatModelID string) error
 }
 
 // MemoryExtractor 从 Agent 响应中提取并存储记忆。
