@@ -42,10 +42,6 @@ var _ adk.ChatModelAgentMiddleware = (*AgentMiddleware)(nil)
 
 // BeforeAgent 在 Agent 开始执行前调用。
 func (m *AgentMiddleware) BeforeAgent(ctx context.Context, runCtx *adk.ChatModelAgentContext) (context.Context, *adk.ChatModelAgentContext, error) {
-	if m.EventPublisher == nil {
-		return ctx, runCtx, nil
-	}
-	_ = m.EventPublisher.PublishRunStarted(ctx, m.RunID, contracts.ExecutionReact)
 	return ctx, runCtx, nil
 }
 

@@ -13,7 +13,9 @@ import (
 // EventPublisher 是 Core 内部使用的生命周期事件发布抽象。
 type EventPublisher interface {
 	Publish(ctx context.Context, event contracts.AgentEvent) error
-	PublishRunStarted(ctx context.Context, runID contracts.ID, mode contracts.ExecutionMode) error
+	// PublishRunStarted 发布运行开始事件。
+	// 注意：执行模式由路由器决定，开始事件发布时模式尚未确定，因此不携带模式参数。
+	PublishRunStarted(ctx context.Context, runID contracts.ID) error
 	PublishRunCompleted(ctx context.Context, runID contracts.ID, result contracts.AgentRunResult) error
 	PublishRunFailed(ctx context.Context, runID contracts.ID, mode contracts.ExecutionMode, err error) error
 	PublishRunCancelled(ctx context.Context, runID contracts.ID) error
@@ -42,7 +44,7 @@ type EventPublisher interface {
 type NoopEventPublisher struct{}
 
 func (NoopEventPublisher) Publish(context.Context, contracts.AgentEvent) error { return nil }
-func (NoopEventPublisher) PublishRunStarted(context.Context, contracts.ID, contracts.ExecutionMode) error {
+func (NoopEventPublisher) PublishRunStarted(context.Context, contracts.ID) error {
 	return nil
 }
 func (NoopEventPublisher) PublishRunCompleted(context.Context, contracts.ID, contracts.AgentRunResult) error {
@@ -119,8 +121,8 @@ func (p *SequencedEventPublisher) publish(ctx context.Context, runID contracts.I
 	return p.Publish(ctx, contracts.AgentEvent{RunID: runID, EventType: typ, Data: payload})
 }
 
-func (p *SequencedEventPublisher) PublishRunStarted(ctx context.Context, id contracts.ID, mode contracts.ExecutionMode) error {
-	return p.publish(ctx, id, contracts.EventRunStarted, map[string]any{"execution_mode": mode})
+func (p *SequencedEventPublisher) PublishRunStarted(ctx context.Context, id contracts.ID) error {
+	return p.publish(ctx, id, contracts.EventRunStarted, map[string]any{"execution_mode": ""})
 }
 func (p *SequencedEventPublisher) PublishRunCompleted(ctx context.Context, id contracts.ID, result contracts.AgentRunResult) error {
 	return p.publish(ctx, id, contracts.EventRunCompleted, map[string]any{"final_result": result.FinalResult})
