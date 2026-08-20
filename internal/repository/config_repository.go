@@ -135,6 +135,22 @@ func (r *agentConfigRepository) UpdateChatModel(ctx context.Context, userID, kbI
 	return nil
 }
 
+// UpdateNetworkEnabled 更新知识库 Agent 配置的联网开关。
+// 问答与 Agent 运行时从 agent_configs.network_enabled 读取开关，
+// 知识库联网开关变更时必须同步，否则实际运行仍按旧开关拦截工具。
+func (r *agentConfigRepository) UpdateNetworkEnabled(ctx context.Context, userID, kbID string, enabled bool) error {
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.AgentConfig{}).
+		Where("user_id = ? AND knowledge_base_id = ?", userID, kbID).
+		Update("network_enabled", enabled)
+	if result.Error != nil {
+		return fmt.Errorf("更新 Agent 配置联网开关失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrAgentConfigNotFound
+	}
+	return nil
+}
+
 // modelConfigRepository 是 ModelConfigRepository 接口的 GORM 实现。
 type modelConfigRepository struct{ db *gorm.DB }
 

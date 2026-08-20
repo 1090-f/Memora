@@ -26,6 +26,8 @@ type AgentConfigRepository interface {
 	FindByKnowledgeBase(ctx context.Context, userID, kbID string) (*entity.AgentConfig, error)
 	// UpdateChatModel 更新知识库 Agent 配置使用的对话模型（问答/Agent 实际读取的模型）。
 	UpdateChatModel(ctx context.Context, userID, kbID, chatModelID string) error
+	// UpdateNetworkEnabled 更新知识库 Agent 配置的联网开关（问答/Agent 运行时实际读取的开关）。
+	UpdateNetworkEnabled(ctx context.Context, userID, kbID string, enabled bool) error
 }
 
 // ModelConfigRepository 定义模型配置的最小只读接口，仅供成员一校验模型归属与默认模型。
