@@ -214,7 +214,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		_ = a.Close()
 		return err
 	}
-	documentProcessService, err := buildDocumentProcessService(cfg, a.store, importTasks, docs, chunks, vectors, documentEmbeddingResolver, previewScheduler)
+	documentProcessService, err := buildDocumentProcessService(cfg, a.store, importTasks, docs, kbs, chunks, vectors, documentEmbeddingResolver, previewScheduler)
 	if err != nil {
 		_ = a.Close()
 		return err

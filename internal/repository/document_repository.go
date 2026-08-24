@@ -285,6 +285,43 @@ func (r *documentRepository) PublishIndexBuild(ctx context.Context, docID, owner
 	return nil
 }
 
+// PublishIndexBuildAndCompleteTask 在同一事务中发布活动索引并完成其所有者任务。
+// 任一步骤失败都会回滚，杜绝“索引已 active、任务却被标记 failed”的分裂状态。
+func (r *documentRepository) PublishIndexBuildAndCompleteTask(ctx context.Context, docID, owner string, indexVersion int, updates map[string]any) error {
+	return dbFromContext(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		docUpdates := make(map[string]any, len(updates)+5)
+		for key, value := range updates {
+			docUpdates[key] = value
+		}
+		docUpdates["active_index_version"] = indexVersion
+		docUpdates["index_build_owner"] = nil
+		docUpdates["index_build_version"] = nil
+		docUpdates["index_build_started_at"] = nil
+		docUpdates["updated_at"] = time.Now().UTC()
+		docResult := tx.Model(&entity.Document{}).
+			Where("id = ? AND deleted_at IS NULL AND index_build_owner = ? AND index_build_version = ?", docID, owner, indexVersion).
+			Updates(docUpdates)
+		if docResult.Error != nil {
+			return fmt.Errorf("事务发布文档索引版本失败: %w", docResult.Error)
+		}
+		if docResult.RowsAffected == 0 {
+			return ErrDocumentProcessingConflict
+		}
+		taskResult := tx.Model(&entity.ImportTask{}).
+			Where("id = ? AND status = 'running' AND document_id = ?", owner, docID).
+			Updates(map[string]any{
+				"status": "succeeded", "current_step": "succeeded", "completed_at": time.Now().UTC(), "failure_reason": nil,
+			})
+		if taskResult.Error != nil {
+			return fmt.Errorf("事务完成导入任务失败: %w", taskResult.Error)
+		}
+		if taskResult.RowsAffected == 0 {
+			return ErrImportTaskConflict
+		}
+		return nil
+	})
+}
+
 // FailIndexBuild 只允许当前 owner 写入失败状态；旧 Worker 失去所有权后静默退出，
 // 防止其失败回调覆盖新任务的 parsing/succeeded 状态。
 func (r *documentRepository) FailIndexBuild(ctx context.Context, docID, owner, failureStep, failureReason string) error {

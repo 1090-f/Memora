@@ -77,7 +77,7 @@ func (c *StructureAwareChunker) Chunk(_ context.Context, doc *parser.ParsedDocum
 		return nil, err
 	}
 	units = c.attachCaptions(units)
-	units, err = c.attachPictures(units, doc, opts)
+	units, err = c.attachPictures(units, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -92,19 +92,43 @@ func (c *StructureAwareChunker) Chunk(_ context.Context, doc *parser.ParsedDocum
 	return chunks, nil
 }
 
-// ChunkCanonical consumes typed CanonicalDocument nodes. The current strategy
-// adapter reconstructs only the stable semantic fields required by existing
-// specialized splitters; it never parses the Markdown view.
+// ChunkCanonical 直接消费 typed Canonical Node，不重建 ParsedDocument，
+// 表格、图片、代码与公式均从节点携带的结构化字段生成检索单元。
 func (c *StructureAwareChunker) ChunkCanonical(ctx context.Context, doc *canonical.CanonicalDocument, opts ChunkOptions) ([]ParsedChunk, error) {
 	if doc == nil {
 		return nil, fmt.Errorf("CanonicalDocument 不能为空")
 	}
-	parsed := parsedDocumentFromCanonical(doc)
-	chunks, err := c.Chunk(ctx, parsed, opts)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if opts.MaxTokens <= 0 {
+		return nil, fmt.Errorf("ChunkOptions.MaxTokens 必须为正数，实际 %d", opts.MaxTokens)
+	}
+	if opts.MinTokens < 0 {
+		opts.MinTokens = 0
+	}
+	if opts.OverlapTokens < 0 {
+		opts.OverlapTokens = 0
+	}
+	if opts.StrategyVersion == "" {
+		opts.StrategyVersion = c.strategyVersion
+	}
+	units, err := c.buildCanonicalUnits(doc, opts)
+	if err != nil {
+		return nil, err
+	}
+	units = c.attachCaptions(units)
+	units, err = c.attachPictures(units, opts)
+	if err != nil {
+		return nil, err
+	}
+	chunks, err := c.assemble(units, opts)
 	if err != nil {
 		return nil, err
 	}
 	for i := range chunks {
+		chunks[i].Strategy = StrategyStructured
+		chunks[i].StrategyVersion = opts.StrategyVersion
 		chunks[i].SourceSpans = canonical.SelectChunkSourceSpans(
 			doc, chunks[i].Content, chunks[i].BlockIDs, chunks[i].TableRefs, chunks[i].AssetRefs,
 		)
@@ -131,56 +155,7 @@ func MarkOverlapSpans(chunks []ParsedChunk) {
 	}
 }
 
-func parsedDocumentFromCanonical(doc *canonical.CanonicalDocument) *parser.ParsedDocument {
-	parsed := &parser.ParsedDocument{
-		SchemaVersion: parser.SchemaVersion,
-		Source:        parser.SourceInfo{Format: doc.Profile.SourceFormat},
-		Document:      parser.DocumentInfo{Markdown: doc.Markdown, PageCount: doc.Profile.PageCount},
-		Blocks:        make([]parser.Block, 0, len(doc.Nodes)),
-	}
-	seenTables := make(map[string]bool)
-	seenAssets := make(map[string]bool)
-	for _, node := range doc.Nodes {
-		block := parser.Block{
-			ID: node.ID, Type: parserBlockType(node.Kind), Text: node.Text,
-			Markdown: node.Markdown, HeadingPath: append([]string(nil), node.HeadingPath...),
-			TableRef: node.TableRef, AssetRefs: append([]string(nil), node.AssetRefs...),
-			Source: primarySource(node.Sources),
-		}
-		if (node.Kind == canonical.NodeKindPageHeader || node.Kind == canonical.NodeKindPageFooter) && node.Markdown == "" {
-			block.Text = ""
-		}
-		if len(node.BlockIDs) > 0 {
-			block.ID = node.BlockIDs[0]
-		}
-		parsed.Blocks = append(parsed.Blocks, block)
-		if node.Table != nil && !seenTables[node.Table.ID] {
-			seenTables[node.Table.ID] = true
-			parsed.Tables = append(parsed.Tables, parserTable(node.Table))
-		}
-		for _, picture := range node.Pictures {
-			if seenAssets[picture.ID] {
-				continue
-			}
-			seenAssets[picture.ID] = true
-			metadata := map[string]any{}
-			if picture.OCRText != "" {
-				metadata["ocr_text"] = picture.OCRText
-			}
-			if picture.Description != "" {
-				metadata["description"] = picture.Description
-			}
-			parsed.Assets = append(parsed.Assets, parser.Asset{
-				ID: picture.ID, Kind: "picture", Caption: picture.Caption,
-				Page: picture.Page, BBox: append([]float64(nil), picture.BBox...),
-				Omitted: picture.Omitted, Metadata: metadata,
-			})
-		}
-	}
-	return parsed
-}
-
-func parserBlockType(kind canonical.NodeKind) string {
+func canonicalContentType(kind canonical.NodeKind) string {
 	switch kind {
 	case canonical.NodeKindHeading:
 		return parser.BlockTypeHeading
@@ -307,6 +282,105 @@ func (c *StructureAwareChunker) buildUnits(doc *parser.ParsedDocument, opts Chun
 	return units, nil
 }
 
+// buildCanonicalUnits 从 Canonical Node 的 typed 字段构建分块单元。
+// 这里不读取整篇 Markdown，也不通过 ParsedDocument 适配层丢失多来源关系。
+func (c *StructureAwareChunker) buildCanonicalUnits(doc *canonical.CanonicalDocument, opts ChunkOptions) ([]*unit, error) {
+	format := strategyForFormat(doc.Profile.SourceFormat)
+	tableSplitter := &tableStrategy{tokenizer: c.tokenizer}
+	units := make([]*unit, 0, len(doc.Nodes))
+	for _, node := range doc.Nodes {
+		contentType := canonicalContentType(node.Kind)
+		blockIDs := append([]string(nil), node.BlockIDs...)
+		if len(blockIDs) == 0 && node.ID != "" {
+			blockIDs = []string{node.ID}
+		}
+		source := primarySource(node.Sources)
+		switch node.Kind {
+		case canonical.NodeKindHeading:
+			continue
+		case canonical.NodeKindTable:
+			if node.Table == nil {
+				text := strings.TrimSpace(node.Markdown)
+				if text != "" {
+					units = append(units, &unit{text: text, blockIDs: blockIDs, contentType: contentType,
+						source: source, tableRefs: appendNonEmpty(nil, node.TableRef), headingPath: node.HeadingPath,
+						seal: format.sheetMode, mergeable: !format.sheetMode})
+				}
+				continue
+			}
+			block := parser.Block{ID: node.ID, Type: parser.BlockTypeTable, HeadingPath: node.HeadingPath, Source: source}
+			if len(blockIDs) > 0 {
+				block.ID = blockIDs[0]
+			}
+			tableUnits, err := tableSplitter.toUnits(block, parserTable(node.Table), opts, format.sheetMode)
+			if err != nil {
+				return nil, err
+			}
+			for _, tableUnit := range tableUnits {
+				tableUnit.blockIDs = append([]string(nil), blockIDs...)
+				tableUnit.headingPath = append([]string(nil), node.HeadingPath...)
+			}
+			units = append(units, tableUnits...)
+		case canonical.NodeKindPicture:
+			parts := make([]string, 0, len(node.Pictures))
+			assetRefs := append([]string(nil), node.AssetRefs...)
+			for _, picture := range node.Pictures {
+				if picture.Omitted {
+					continue
+				}
+				if text := canonicalPictureText(picture); text != "" {
+					parts = append(parts, text)
+				}
+				assetRefs = appendNonEmpty(assetRefs, picture.ID)
+			}
+			text := strings.TrimSpace(strings.Join(parts, "\n"))
+			if text == "" {
+				continue
+			}
+			units = append(units, &unit{text: text, blockIDs: blockIDs, contentType: contentType,
+				source: source, assetRefs: assetRefs, headingPath: append([]string(nil), node.HeadingPath...), seal: true})
+		case canonical.NodeKindCode, canonical.NodeKindFormula:
+			text := node.Markdown
+			if text == "" {
+				text = node.Text
+			}
+			if strings.TrimSpace(text) != "" {
+				units = append(units, &unit{text: text, blockIDs: blockIDs, contentType: contentType,
+					source: source, headingPath: append([]string(nil), node.HeadingPath...), mergeable: true})
+			}
+		default:
+			text := node.Text
+			if text == "" && node.Kind != canonical.NodeKindPageHeader && node.Kind != canonical.NodeKindPageFooter {
+				text = node.Markdown
+			}
+			if strings.TrimSpace(text) != "" {
+				units = append(units, &unit{text: text, blockIDs: blockIDs, contentType: contentType,
+					source: source, tableRefs: appendNonEmpty(nil, node.TableRef),
+					assetRefs: append([]string(nil), node.AssetRefs...), headingPath: append([]string(nil), node.HeadingPath...), mergeable: true})
+			}
+		}
+	}
+	return units, nil
+}
+
+func canonicalPictureText(picture canonical.PictureData) string {
+	parts := make([]string, 0, 3)
+	ocr := strings.TrimSpace(picture.OCRText)
+	caption := strings.TrimSpace(picture.Caption)
+	if ocr != "" {
+		parts = append(parts, ocr)
+		if caption != "" && caption != ocr {
+			parts = append(parts, caption)
+		}
+	} else if caption != "" {
+		parts = append(parts, caption)
+	}
+	if description := strings.TrimSpace(picture.Description); description != "" {
+		parts = append(parts, description)
+	}
+	return strings.Join(parts, "\n")
+}
+
 // attachCaptions 将紧跟 table/picture 单元的 caption 单元并入其中。
 func (c *StructureAwareChunker) attachCaptions(units []*unit) []*unit {
 	out := make([]*unit, 0, len(units))
@@ -331,7 +405,7 @@ func (u *unit) isTableOrPicture() bool {
 // 关联后超限则图片独立；正文单元若被合并则移除。
 // 注意：合并会缩短单元列表，必须逐位顺序处理，不能缓存旧下标
 // （range 的切片在循环开始时只求值一次，旧下标在列表缩短后会越界 panic 或错删单元）。
-func (c *StructureAwareChunker) attachPictures(units []*unit, doc *parser.ParsedDocument, opts ChunkOptions) ([]*unit, error) {
+func (c *StructureAwareChunker) attachPictures(units []*unit, opts ChunkOptions) ([]*unit, error) {
 	ordered := make([]*unit, len(units))
 	copy(ordered, units)
 	i := 0

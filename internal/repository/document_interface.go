@@ -70,6 +70,12 @@ type DocumentRepository interface {
 	FindByImportTask(ctx context.Context, taskID string) (*entity.Document, error)
 }
 
+// IndexBuildCompletionRepository 是 DocumentRepository 的可选事务能力。
+// 生产仓储实现它，用一个数据库事务同时发布 active index 与完成导入任务。
+type IndexBuildCompletionRepository interface {
+	PublishIndexBuildAndCompleteTask(ctx context.Context, docID, owner string, indexVersion int, updates map[string]any) error
+}
+
 // DocumentChunkRepository 定义文档分块数据访问接口。
 type DocumentChunkRepository interface {
 	// BatchInsert 在短事务中批量插入 document_chunks（同文档同版本）。

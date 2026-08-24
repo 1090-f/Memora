@@ -31,6 +31,7 @@ import (
 type documentProcessService struct {
 	tasks            repository.ImportTaskRepository
 	docs             repository.DocumentRepository
+	kbs              repository.KnowledgeBaseRepository
 	chunks           repository.DocumentChunkRepository
 	vectors          repository.VectorRepository
 	processor        DocumentProcessor
@@ -44,6 +45,7 @@ type documentProcessService struct {
 func NewDocumentProcessService(
 	tasks repository.ImportTaskRepository,
 	docs repository.DocumentRepository,
+	kbs repository.KnowledgeBaseRepository,
 	chunks repository.DocumentChunkRepository,
 	vectors repository.VectorRepository,
 	processor DocumentProcessor,
@@ -51,7 +53,7 @@ func NewDocumentProcessService(
 	store ObjectStore,
 	previewScheduler previewservice.Scheduler,
 ) DocumentProcessService {
-	return &documentProcessService{tasks: tasks, docs: docs, chunks: chunks, vectors: vectors, processor: processor, embeddings: embeddings, store: store, previewScheduler: previewScheduler}
+	return &documentProcessService{tasks: tasks, docs: docs, kbs: kbs, chunks: chunks, vectors: vectors, processor: processor, embeddings: embeddings, store: store, previewScheduler: previewScheduler}
 }
 
 // CreateImportTask 创建导入任务。
@@ -297,6 +299,11 @@ func (s *documentProcessService) removeUploadedObjects(ctx context.Context, keys
 
 // Reindex 为现有文档创建指向原文来源的新导入任务；Worker 构建新版本后原子切换活动索引。
 func (s *documentProcessService) Reindex(ctx context.Context, userID, kbID, documentID contracts.ID) error {
+	return s.ReindexWithStrategy(ctx, userID, kbID, documentID, nil)
+}
+
+// ReindexWithStrategy 可原子地更新文档级策略选择，并为该文档创建新索引任务。
+func (s *documentProcessService) ReindexWithStrategy(ctx context.Context, userID, kbID, documentID contracts.ID, chunkStrategy *string) error {
 	doc, err := s.docs.FindByIDInKB(ctx, string(userID), string(kbID), string(documentID))
 	if errors.Is(err, repository.ErrDocumentNotFound) {
 		return apperrors.ErrNotFound
@@ -306,6 +313,19 @@ func (s *documentProcessService) Reindex(ctx context.Context, userID, kbID, docu
 	}
 	if (doc.MinIOObjectKey == nil || *doc.MinIOObjectKey == "") && (doc.SourceURL == nil || *doc.SourceURL == "") && doc.SourceType != string(contracts.DocumentSourceManual) {
 		return apperrors.New(contracts.ErrInvalidState, fmt.Errorf("文档没有可重建的原始来源"))
+	}
+	if chunkStrategy != nil {
+		value := strings.TrimSpace(*chunkStrategy)
+		var persisted any = value
+		if value == "" || value == "inherit" {
+			persisted = nil
+			doc.ChunkStrategy = nil
+		} else {
+			doc.ChunkStrategy = &value
+		}
+		if err := s.docs.UpdateProcessing(ctx, doc.ID, map[string]any{"chunk_strategy": persisted}); err != nil {
+			return apperrors.New(contracts.ErrInternal, fmt.Errorf("更新文档分块策略失败: %w", err))
+		}
 	}
 	task := &entity.ImportTask{
 		UserID: doc.UserID, KnowledgeBaseID: doc.KnowledgeBaseID, TargetDirectoryID: doc.DirectoryID,
@@ -547,6 +567,7 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 			},
 		},
 	}
+	input.ChunkStrategyOverride = s.resolveChunkStrategyOverride(ctx, doc, task)
 	// 手工文档：正文存于 documents.content，直接交给流水线（不访问 MinIO）。
 	if task.SourceType == string(contracts.DocumentSourceManual) {
 		content := ""
@@ -565,9 +586,14 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 	// 纯图片文档允许 0 Chunk 成功导入（无文字图片无可索引内容，资产与原文件保留）；
 	// 有正文却分不出 Chunk 的情况由流水线 structure_chunk 节点拒绝。
 	// 加工成功：切换 active_index_version，并记录 Embedding 模型与分段配置哈希。
+	effectiveChunkConfigHash := out.ChunkConfigHash
+	if effectiveChunkConfigHash == "" && s.processor != nil {
+		// 兼容尚未返回文档级哈希的自定义 Processor 实现。
+		effectiveChunkConfigHash = s.processor.ChunkConfigHash()
+	}
 	updates := map[string]any{
 		"processing_status": string(contracts.ProcessingSucceeded),
-		"chunk_config_hash": s.chunkConfigHash(doc),
+		"chunk_config_hash": stringPtrOrNil(effectiveChunkConfigHash),
 	}
 	if out.FinalURL != "" {
 		updates["source_url"] = out.FinalURL
@@ -609,6 +635,13 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 		// 新活动版本未生成向量时清空旧模型，避免把关键词索引误报为混合索引。
 		updates["embedding_model_id"] = nil
 	}
+	if publisher, ok := s.docs.(repository.IndexBuildCompletionRepository); ok {
+		if err := publisher.PublishIndexBuildAndCompleteTask(ctx, doc.ID, task.ID, indexVersion, updates); err != nil {
+			return fmt.Errorf("发布活动索引并完成任务失败: %w", err)
+		}
+		return nil
+	}
+	// 兼容测试替身和外部自定义仓储；生产 repository 使用上面的事务路径。
 	if err := s.docs.PublishIndexBuild(ctx, doc.ID, task.ID, indexVersion, updates); err != nil {
 		return fmt.Errorf("切换活动索引版本失败: %w", err)
 	}
@@ -620,16 +653,24 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 	return nil
 }
 
-// chunkConfigHash 返回当前分段配置哈希（与 pipeline 使用的保持一致）。
-func (s *documentProcessService) chunkConfigHash(_ *entity.Document) *string {
-	if s.processor == nil {
-		return nil
+// resolveChunkStrategyOverride 按“文档 > 知识库 > 环境”解析人工覆盖。
+// 环境级策略由 Pipeline 配置承担，因此无覆盖时返回空字符串。
+func (s *documentProcessService) resolveChunkStrategyOverride(ctx context.Context, doc *entity.Document, task *entity.ImportTask) string {
+	if doc != nil && doc.ChunkStrategy != nil {
+		return strings.TrimSpace(*doc.ChunkStrategy)
 	}
-	hash := s.processor.ChunkConfigHash()
-	if hash == "" {
-		return nil
+	if s.kbs == nil || task == nil {
+		return ""
 	}
-	return &hash
+	kb, err := s.kbs.FindByID(ctx, task.UserID, task.KnowledgeBaseID)
+	if err != nil {
+		logger.Warn("读取知识库分块策略失败，回退环境配置", zap.String("knowledge_base_id", task.KnowledgeBaseID), zap.Error(err))
+		return ""
+	}
+	if kb.ChunkStrategy == nil {
+		return ""
+	}
+	return strings.TrimSpace(*kb.ChunkStrategy)
 }
 
 // markDocumentFailed 标记文档处理失败，保留失败步骤与原因。
@@ -721,6 +762,14 @@ func valueOrEmpty(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+// stringPtrOrNil 将空字符串转换为 nil，便于写入可空配置字段。
+func stringPtrOrNil(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 // valueOrZero 将整数指针安全解引用，nil 时返回 0。

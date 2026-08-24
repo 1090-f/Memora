@@ -17,6 +17,8 @@ type DocumentProcessService interface {
 	Retry(ctx context.Context, userID, taskID contracts.ID) error
 	// Reindex 触发文档重新索引，生成新的 index_version。
 	Reindex(ctx context.Context, userID, knowledgeBaseID, documentID contracts.ID) error
+	// ReindexWithStrategy 设置文档级策略覆盖后重新索引；nil 保持现有配置，inherit 由调用层转换为空串。
+	ReindexWithStrategy(ctx context.Context, userID, knowledgeBaseID, documentID contracts.ID, chunkStrategy *string) error
 	// GetProcessingStatus 查询文档处理状态（按文档 ID 与用户，无需知识库 ID）。
 	GetProcessingStatus(ctx context.Context, userID, documentID contracts.ID) (DocumentProcessingStatus, error)
 	// ListIndexVersions 查询文档索引版本聚合视图。

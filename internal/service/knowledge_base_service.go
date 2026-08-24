@@ -202,7 +202,7 @@ func (s *knowledgeBaseService) GetDashboard(ctx context.Context, userID, kbID st
 func (s *knowledgeBaseService) Update(ctx context.Context, userID, kbID string, req *request.UpdateKnowledgeBaseRequest) (*dto.KnowledgeBaseResponse, error) {
 	if req == nil || (req.Name == nil && req.Description == nil && req.Icon == nil &&
 		req.DefaultLanguage == nil && req.QAEnabled == nil && req.AgentEnabled == nil &&
-		req.NetworkEnabled == nil && req.DuplicatePolicy == nil) {
+		req.NetworkEnabled == nil && req.DuplicatePolicy == nil && req.ChunkStrategy == nil) {
 		return nil, apperrors.ErrInvalidArgument
 	}
 	if req.Name != nil && strings.TrimSpace(*req.Name) == "" {
@@ -232,6 +232,13 @@ func (s *knowledgeBaseService) Update(ctx context.Context, userID, kbID string, 
 	}
 	if req.DuplicatePolicy != nil {
 		updates["duplicate_policy"] = *req.DuplicatePolicy
+	}
+	if req.ChunkStrategy != nil {
+		if *req.ChunkStrategy == "inherit" {
+			updates["chunk_strategy"] = nil
+		} else {
+			updates["chunk_strategy"] = *req.ChunkStrategy
+		}
 	}
 	updated, err := s.kbs.Update(ctx, userID, kbID, updates)
 	if errors.Is(err, repository.ErrKnowledgeBaseNotFound) {
@@ -417,7 +424,8 @@ func knowledgeBaseResponse(kb *entity.KnowledgeBase) *dto.KnowledgeBaseResponse 
 		DefaultLanguage: kb.DefaultLanguage, QAEnabled: kb.QAEnabled,
 		AgentEnabled: kb.AgentEnabled, NetworkEnabled: kb.NetworkEnabled,
 		EmbeddingModelID: kb.EmbeddingModelID, DuplicatePolicy: kb.DuplicatePolicy,
-		CreatedAt: kb.CreatedAt, UpdatedAt: kb.UpdatedAt,
+		ChunkStrategy: kb.ChunkStrategy,
+		CreatedAt:     kb.CreatedAt, UpdatedAt: kb.UpdatedAt,
 	}
 }
 

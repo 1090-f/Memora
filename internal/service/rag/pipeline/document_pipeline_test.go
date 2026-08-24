@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/1090-f/Memora/internal/model/entity"
+	"github.com/1090-f/Memora/internal/service/rag/canonical"
 	"github.com/1090-f/Memora/internal/service/rag/chunking"
 	"github.com/1090-f/Memora/internal/service/rag/parser"
 	"github.com/1090-f/Memora/internal/service/rag/transformer"
@@ -182,6 +183,72 @@ func TestPipelineReusesArtifactWithoutReparsing(t *testing.T) {
 	}
 }
 
+type countingCanonicalRenderer struct {
+	delegate canonical.Renderer
+	calls    int
+}
+
+func (r *countingCanonicalRenderer) Info() canonical.RendererInfo { return r.delegate.Info() }
+
+func (r *countingCanonicalRenderer) Render(ctx context.Context, doc *parser.ParsedDocument) (*canonical.CanonicalDocument, error) {
+	r.calls++
+	return r.delegate.Render(ctx, doc)
+}
+
+func TestPipelineReusesCanonicalArtifactWithoutRendering(t *testing.T) {
+	store := newFakeStore()
+	content := "# 标题\n\n正文内容。"
+	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.md", strings.NewReader(content), int64(len(content)), "text/markdown")
+	renderer := &countingCanonicalRenderer{delegate: canonical.NewParsedDocumentRenderer(canonical.RenderOptions{})}
+	cfg := testPipelineConfig(store, `{"splitter":"structure-v1"}`)
+	cfg.CanonicalRenderer = renderer
+
+	first, err := NewDocumentPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Run(context.Background(), processInput(store, "a.md")); err != nil {
+		t.Fatalf("首次运行失败: %v", err)
+	}
+	second, err := NewDocumentPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Run(context.Background(), processInput(store, "a.md")); err != nil {
+		t.Fatalf("复用运行失败: %v", err)
+	}
+	if renderer.calls != 1 {
+		t.Fatalf("Canonical Renderer 调用次数 = %d，期望缓存命中后保持 1", renderer.calls)
+	}
+}
+
+func TestPipelineChunkConfigHashIncludesFinalStrategyDecision(t *testing.T) {
+	store := newFakeStore()
+	content := "# 标题\n\n第一段。\n\n第二段。"
+	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.md", strings.NewReader(content), int64(len(content)), "text/markdown")
+	cfg := testPipelineConfig(store, `{"splitter":"route-aware"}`)
+	p, err := NewDocumentPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	structuredInput := processInput(store, "a.md")
+	structuredInput.ChunkStrategyOverride = chunking.StrategyStructured
+	structured, err := p.Run(context.Background(), structuredInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paragraphInput := processInput(store, "a.md")
+	paragraphInput.DocMeta.IndexVersion = 2
+	paragraphInput.ChunkStrategyOverride = chunking.StrategyParagraph
+	paragraph, err := p.Run(context.Background(), paragraphInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if structured.ChunkConfigHash == "" || paragraph.ChunkConfigHash == "" || structured.ChunkConfigHash == paragraph.ChunkConfigHash {
+		t.Fatalf("最终策略应产生不同文档级哈希: structured=%s paragraph=%s", structured.ChunkConfigHash, paragraph.ChunkConfigHash)
+	}
+}
+
 func TestPipelineChunkEntityFields(t *testing.T) {
 	store := newFakeStore()
 	content := "# 标题\n\n第一章内容。\n\n## 小节\n\n小节正文。"
@@ -194,7 +261,8 @@ func TestPipelineChunkEntityFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("构造 pipeline 失败: %v", err)
 	}
-	if _, err := p.Run(context.Background(), processInput(store, "a.md")); err != nil {
+	out, err := p.Run(context.Background(), processInput(store, "a.md"))
+	if err != nil {
 		t.Fatalf("运行失败: %v", err)
 	}
 	if len(writer.inserts) != 1 || len(writer.inserts[0]) == 0 {
@@ -207,8 +275,8 @@ func TestPipelineChunkEntityFields(t *testing.T) {
 	if chunk.TokenCount <= 0 || chunk.CharCount <= 0 {
 		t.Errorf("计数异常: token=%d char=%d", chunk.TokenCount, chunk.CharCount)
 	}
-	if chunk.ChunkConfigHash != p.ChunkConfigHash() {
-		t.Errorf("chunk_config_hash 不一致: %s != %s", chunk.ChunkConfigHash, p.ChunkConfigHash())
+	if chunk.ChunkConfigHash != out.ChunkConfigHash || out.ChunkConfigHash == "" {
+		t.Errorf("文档级 chunk_config_hash 不一致: chunk=%s output=%s", chunk.ChunkConfigHash, out.ChunkConfigHash)
 	}
 	if len(chunk.HeadingPath) == 0 {
 		t.Error("heading_path 为空")

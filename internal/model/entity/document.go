@@ -32,6 +32,7 @@ type Document struct {
 	IndexBuildStartedAt *time.Time `gorm:"column:index_build_started_at" json:"-"`                            // IndexBuildStartedAt 当前候选构建开始时间
 	EmbeddingModelID    *string    `gorm:"column:embedding_model_id" json:"embedding_model_id,omitempty"`     // EmbeddingModelID 向量化使用的模型配置 ID，可选
 	ChunkConfigHash     *string    `gorm:"column:chunk_config_hash" json:"chunk_config_hash,omitempty"`       // ChunkConfigHash 分块配置哈希，用于判断配置是否变化，可选
+	ChunkStrategy       *string    `gorm:"column:chunk_strategy" json:"chunk_strategy,omitempty"`             // ChunkStrategy 文档级分块策略覆盖，优先于知识库配置
 	ChunkDiffReport     *string    `gorm:"column:chunk_diff_report;type:jsonb" json:"-"`                      // ChunkDiffReport 新旧分块影子比较报告，可选
 	// ParseWarnings 是解析阶段的非致命提示（如 unresolved 图片），可选。
 	ParseWarnings StringSlice `gorm:"column:parse_warnings;type:jsonb" json:"parse_warnings,omitempty"`

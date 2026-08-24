@@ -266,6 +266,12 @@ func putAssetWithRetry(ctx context.Context, store ObjectStore, objectKey string,
 // Resolve 查找兼容 Artifact：
 // manifest 存在且版本/源哈希/解析器一致才算命中；否则返回 ErrArtifactNotFound/ErrArtifactCorrupt。
 func (s *ArtifactStore) Resolve(ctx context.Context, prefix, expectedSourceSHA256 string) (*ArtifactRef, error) {
+	return s.ResolveWithIdentity(ctx, prefix, expectedSourceSHA256, ParseRuntimeIdentity{})
+}
+
+// ResolveWithIdentity 除完整性外校验当前 Parser/Adapter 兼容身份。
+// 版本不匹配表示缓存已过期，返回 ErrArtifactNotFound 触发重新解析，而不是将旧产物视为损坏。
+func (s *ArtifactStore) ResolveWithIdentity(ctx context.Context, prefix, expectedSourceSHA256 string, identity ParseRuntimeIdentity) (*ArtifactRef, error) {
 	manifestKey := path.Join(prefix, ArtifactManifestFile)
 	if _, err := s.store.StatObject(ctx, manifestKey); err != nil {
 		if errors.Is(err, ErrObjectNotFound) {
@@ -289,6 +295,13 @@ func (s *ArtifactStore) Resolve(ctx context.Context, prefix, expectedSourceSHA25
 	}
 	if expectedSourceSHA256 != "" && !strings.EqualFold(manifest.SourceSHA256, expectedSourceSHA256) {
 		return nil, fmt.Errorf("%w: 源哈希不一致", ErrArtifactCorrupt)
+	}
+	if len(identity.ParserVersions) > 0 {
+		expectedVersion, ok := identity.ParserVersions[manifest.ParserName]
+		if !ok || expectedVersion == "" || manifest.ParserVersion != expectedVersion ||
+			manifest.AdapterVersion != identity.AdapterVersion {
+			return nil, ErrArtifactNotFound
+		}
 	}
 	return &ArtifactRef{Prefix: prefix, Manifest: manifest}, nil
 }

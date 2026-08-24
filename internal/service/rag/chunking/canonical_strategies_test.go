@@ -2,6 +2,7 @@ package chunking
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/1090-f/Memora/internal/service/rag/canonical"
@@ -37,6 +38,43 @@ func TestCanonicalStructuredChunkPreservesMultipleSources(t *testing.T) {
 	}
 	if !pages[1] || !pages[2] {
 		t.Fatalf("multi-page sources lost: %+v", chunks[0].SourceSpans)
+	}
+}
+
+func TestCanonicalSpecializedNodesUseTypedPayload(t *testing.T) {
+	doc := &canonical.CanonicalDocument{
+		SchemaVersion: canonical.SchemaVersion, RendererVersion: canonical.DefaultRendererVersion,
+		Profile: canonical.DocumentProfile{SourceFormat: "xlsx"},
+		Nodes: []canonical.CanonicalNode{
+			{
+				ID: "table-node", Kind: canonical.NodeKindTable, BlockIDs: []string{"table-block", "caption-block"},
+				TableRef: "table-1", HeadingPath: []string{"报表"}, Sources: []canonical.SourceRef{{BlockID: "table-block", Page: 2}},
+				Table: &canonical.TableData{ID: "table-1", Caption: "收入表", Headers: [][]string{{"月份", "收入"}}, Rows: [][]string{{"一月", "100"}}},
+			},
+			{
+				ID: "picture-node", Kind: canonical.NodeKindPicture, BlockIDs: []string{"picture-block"}, AssetRefs: []string{"asset-1"},
+				Sources:  []canonical.SourceRef{{BlockID: "picture-block", AssetRef: "asset-1", Page: 3}},
+				Pictures: []canonical.PictureData{{ID: "asset-1", Caption: "图 1", OCRText: "系统架构", Description: "服务关系图"}},
+			},
+		},
+	}
+	opts := DefaultChunkOptions()
+	opts.MinTokens = 0
+	chunks, err := newChunker().ChunkCanonical(context.Background(), doc, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("typed 专用节点 chunks=%d，期望 2: %+v", len(chunks), chunks)
+	}
+	if !strings.Contains(chunks[0].Content, "收入表") || !strings.Contains(chunks[0].Content, "| 一月 | 100 |") {
+		t.Fatalf("表格结构化字段未进入检索文本: %+v", chunks[0])
+	}
+	if len(chunks[0].BlockIDs) != 2 || chunks[0].TableRefs[0] != "table-1" {
+		t.Fatalf("表格多来源关系丢失: %+v", chunks[0])
+	}
+	if !strings.Contains(chunks[1].Content, "系统架构") || !strings.Contains(chunks[1].Content, "服务关系图") {
+		t.Fatalf("图片 typed 文本未进入 Chunk: %+v", chunks[1])
 	}
 }
 

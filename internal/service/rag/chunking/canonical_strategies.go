@@ -77,7 +77,7 @@ func (c *StructureAwareChunker) chunkRecursiveCanonical(ctx context.Context, doc
 			refs.BlockIDs = append(refs.BlockIDs, node.BlockIDs...)
 			refs.TableRefs = appendNonEmpty(refs.TableRefs, node.TableRef)
 			refs.AssetRefs = append(refs.AssetRefs, node.AssetRefs...)
-			refs.ContentTypes = appendUniqueString(refs.ContentTypes, parserBlockType(node.Kind))
+			refs.ContentTypes = appendUniqueString(refs.ContentTypes, canonicalContentType(node.Kind))
 			if refs.SourceLocation.Page == 0 {
 				refs.SourceLocation = primarySource(node.Sources)
 			}

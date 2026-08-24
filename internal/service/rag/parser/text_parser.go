@@ -49,7 +49,7 @@ func (t *TextParser) Parse(ctx context.Context, input ParseInput) (*ParsedDocume
 		SchemaVersion: SchemaVersion,
 		Parser: ParserInfo{
 			Name:           ParserNameGoText,
-			Version:        "1.0",
+			Version:        GoParserVersion,
 			AdapterVersion: AdapterVersion,
 		},
 		Source: SourceInfo{
