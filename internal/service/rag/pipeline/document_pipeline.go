@@ -4,7 +4,8 @@
 // 节点流（见 docs/2026-08-08-docling-document-parsing-execution-plan.md）：
 //
 //	resolve_artifact → parse_if_missing → validate_parsed_document → ocr_assets → persist_artifact
-//	→ document_normalize → asset_enrich → structure_chunk → chunk_clean
+//	→ document_normalize → asset_enrich → canonical_render → validate_canonical_document
+//	→ document_profile → structure_chunk → chunk_clean
 //	→ token_count → persist_chunks → embed_and_index
 package pipeline
 
@@ -23,6 +24,7 @@ import (
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service/rag/asset"
+	"github.com/1090-f/Memora/internal/service/rag/canonical"
 	"github.com/1090-f/Memora/internal/service/rag/chunking"
 	"github.com/1090-f/Memora/internal/service/rag/einoadapter"
 	"github.com/1090-f/Memora/internal/service/rag/indexing"
@@ -74,6 +76,12 @@ type ProcessOutput struct {
 	Title      string
 	// Warnings 是解析/OCR 等阶段的非致命提示（如 unresolved 图片）。
 	Warnings []string
+	// CanonicalHash/CanonicalNodeCount 暴露影子 Canonical 阶段的稳定摘要，
+	// 避免把整份 CanonicalDocument 复制到 Worker 输出。
+	CanonicalHash        string
+	CanonicalNodeCount   int
+	ChunkStrategy        string
+	ChunkStrategyVersion string
 }
 
 // DocumentPipelineConfig 定义文档加工流水线配置。
@@ -106,12 +114,24 @@ type DocumentPipelineConfig struct {
 	AssetLoader parser.AssetLoader
 	// AssetEnricher 是图片资产增强器（nil 时使用 NoopEnricher）。
 	AssetEnricher asset.Enricher
+	// CanonicalRenderer 在 normalize/enrich 后生成稳定的分块中间表示。
+	CanonicalRenderer canonical.Renderer
+	// CanonicalValidator 校验 UTF-8 byte offsets、来源与内容哈希。
+	CanonicalValidator canonical.Validator
+	// CanonicalConfig 是 Renderer 配置的稳定描述（参与 chunk_config_hash）。
+	CanonicalConfig string
+	// UseCanonicalChunker 灰度切换 StructureAwareChunker 的 typed canonical 输入。
+	UseCanonicalChunker bool
+	// ChunkStrategy controls deterministic routing: structured/paragraph/recursive_fallback/auto.
+	ChunkStrategy string
 }
 
 // pipelineState 是 Graph 内部流转状态。
 type pipelineState struct {
 	input          ProcessInput
 	doc            *parser.ParsedDocument
+	canonical      *canonical.CanonicalDocument
+	chunkDecision  chunking.ChunkDecision
 	chunks         []chunking.ParsedChunk
 	artifactPrefix string
 	computedHash   string
@@ -139,13 +159,15 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		return nil, fmt.Errorf("计算解析配置哈希失败: %w", err)
 	}
 
-	router := parser.NewParserRouter(parser.NewTextParser(64*1024*1024), parser.NewMarkdownParser(64*1024*1024), newPythonParser(cfg))
+	parserRouter := parser.NewParserRouter(parser.NewTextParser(64*1024*1024), parser.NewMarkdownParser(64*1024*1024), newPythonParser(cfg))
 	artifactStore := parser.NewArtifactStore(cfg.Store, cfg.ValidateLimits)
 	docNormalizer := normalizer.NewDocumentNormalizer()
 	enricher := cfg.AssetEnricher
 	if enricher == nil {
 		enricher = asset.NewNoopEnricher()
 	}
+	canonicalRenderer := cfg.CanonicalRenderer
+	canonicalValidator := cfg.CanonicalValidator
 	ocrClient := parser.NewPythonOcrClient(cfg.ParserConfig.BaseURL, cfg.ParserConfig.Timeout)
 	assetLoader := cfg.AssetLoader
 	if assetLoader == nil {
@@ -159,6 +181,7 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		return assetLoader
 	}
 	chunker := chunking.NewStructureAwareChunker(cfg.Tokenizer, cfg.ChunkOptions.StrategyVersion)
+	chunkRouter := chunking.NewStrategyRouter(chunking.DefaultRouterConfig())
 	chunkCleaner := transformer.NewChunkCleaner()
 
 	chunkConfigHash := computeChunkConfigHash(cfg)
@@ -254,7 +277,7 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 			}
 		}
 		hashed := parser.NewHashReader(reader)
-		doc, err := router.Parse(ctx, parser.ParseInput{
+		doc, err := parserRouter.Parse(ctx, parser.ParseInput{
 			FileName:    state.input.FileName,
 			Content:     hashed,
 			Size:        -1,
@@ -363,9 +386,65 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		return nil, fmt.Errorf("注册 asset_enrich 节点失败: %w", err)
 	}
 
+	// canonical_render：影子生成 CanonicalDocument；现阶段不改变生产 Chunker 输入。
+	canonicalRenderLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
+		doc, err := canonicalRenderer.Render(ctx, state.doc)
+		if err != nil {
+			return nil, fmt.Errorf("渲染 CanonicalDocument 失败: %w", err)
+		}
+		state.canonical = doc
+		return state, nil
+	})
+	if err := g.AddLambdaNode("canonical_render", canonicalRenderLambda); err != nil {
+		return nil, fmt.Errorf("注册 canonical_render 节点失败: %w", err)
+	}
+
+	// validate_canonical_document：验证 byte offsets、来源映射和稳定 hash。
+	canonicalValidateLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
+		if err := canonicalValidator.Validate(state.canonical); err != nil {
+			return nil, fmt.Errorf("校验 CanonicalDocument 失败: %w", err)
+		}
+		return state, nil
+	})
+	if err := g.AddLambdaNode("validate_canonical_document", canonicalValidateLambda); err != nil {
+		return nil, fmt.Errorf("注册 validate_canonical_document 节点失败: %w", err)
+	}
+
+	// document_profile：提取确定性策略路由特征；当前仍使用 Structured 主策略。
+	profileLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
+		profile, err := canonical.Profile(state.canonical, state.doc, cfg.Tokenizer)
+		if err != nil {
+			return nil, fmt.Errorf("生成 DocumentProfile 失败: %w", err)
+		}
+		state.canonical.Profile = profile
+		return state, nil
+	})
+	if err := g.AddLambdaNode("document_profile", profileLambda); err != nil {
+		return nil, fmt.Errorf("注册 document_profile 节点失败: %w", err)
+	}
+
+	// chunk_strategy_route：固定策略或基于 Profile 的确定性 auto 路由。
+	routeLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
+		decision, err := chunkRouter.Route(state.canonical.Profile, cfg.ChunkStrategy)
+		if err != nil {
+			return nil, fmt.Errorf("选择分块策略失败: %w", err)
+		}
+		state.chunkDecision = decision
+		return state, nil
+	})
+	if err := g.AddLambdaNode("chunk_strategy_route", routeLambda); err != nil {
+		return nil, fmt.Errorf("注册 chunk_strategy_route 节点失败: %w", err)
+	}
+
 	// structure_chunk：结构感知分块。
 	chunkLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
-		chunks, err := chunker.Chunk(ctx, state.doc, cfg.ChunkOptions)
+		var chunks []chunking.ParsedChunk
+		var err error
+		if cfg.UseCanonicalChunker || state.chunkDecision.Strategy != chunking.StrategyStructured {
+			chunks, err = chunker.ChunkCanonicalStrategy(ctx, state.canonical, cfg.ChunkOptions, state.chunkDecision.Strategy)
+		} else {
+			chunks, err = chunker.Chunk(ctx, state.doc, cfg.ChunkOptions)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("结构分块失败: %w", err)
 		}
@@ -373,6 +452,11 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		// 导入（资产与原文件保留）；有正文却分不出 Chunk 才是分块器 bug。
 		if len(chunks) == 0 && !assetOnlyDocument(state.doc) {
 			return nil, fmt.Errorf("文档未产生任何 Chunk")
+		}
+		for i := range chunks {
+			chunks[i].SourceSpans = canonical.SelectSourceSpans(
+				state.canonical, chunks[i].BlockIDs, chunks[i].TableRefs, chunks[i].AssetRefs,
+			)
 		}
 		state.chunks = chunks
 		return state, nil
@@ -453,7 +537,8 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 	}
 	chain := []string{
 		"load_source", "resolve_artifact", "parse_if_missing", "validate_parsed_document", "ocr_assets", "persist_artifact",
-		"document_normalize", "asset_enrich", "structure_chunk", "chunk_clean",
+		"document_normalize", "asset_enrich", "canonical_render", "validate_canonical_document", "document_profile", "chunk_strategy_route",
+		"structure_chunk", "chunk_clean",
 		"token_count", "persist_chunks",
 	}
 	for i := 0; i+1 < len(chain); i++ {
@@ -525,6 +610,12 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 
 func processOutput(state *pipelineState, chunkCount int) ProcessOutput {
 	output := ProcessOutput{ChunkCount: chunkCount, SourceHash: state.input.DocMeta.SourceHash}
+	if state.canonical != nil {
+		output.CanonicalHash = state.canonical.ContentHash
+		output.CanonicalNodeCount = len(state.canonical.Nodes)
+	}
+	output.ChunkStrategy = state.chunkDecision.Strategy
+	output.ChunkStrategyVersion = state.chunkDecision.Version
 	if state.doc != nil && len(state.doc.Warnings) > 0 {
 		output.Warnings = append([]string(nil), state.doc.Warnings...)
 	}
@@ -549,6 +640,15 @@ func applyDefaults(cfg DocumentPipelineConfig) DocumentPipelineConfig {
 	}
 	if cfg.Tokenizer == nil {
 		cfg.Tokenizer = chunking.NewHeuristicTokenizer()
+	}
+	if cfg.CanonicalRenderer == nil {
+		cfg.CanonicalRenderer = canonical.NewParsedDocumentRenderer(canonical.RenderOptions{})
+	}
+	if cfg.CanonicalValidator == nil {
+		cfg.CanonicalValidator = canonical.NewValidator()
+	}
+	if cfg.ChunkStrategy == "" {
+		cfg.ChunkStrategy = chunking.StrategyStructured
 	}
 	if cfg.ValidateLimits.MaxBlocks == 0 {
 		cfg.ValidateLimits = parser.DefaultValidateLimits()
@@ -591,6 +691,11 @@ func computeChunkConfigHash(cfg DocumentPipelineConfig) string {
 		"repeat_table_head":  cfg.ChunkOptions.RepeatTableHead,
 		"tokenizer":          cfg.Tokenizer.Name(),
 		"embedding_model_id": cfg.EmbeddingModelID,
+		"canonical_renderer": cfg.CanonicalRenderer.Info().Identity(),
+		"canonical_config":   cfg.CanonicalConfig,
+		"canonical_chunker":  cfg.UseCanonicalChunker,
+		"chunk_strategy":     cfg.ChunkStrategy,
+		"chunk_router":       chunking.RouterVersion,
 	}
 	data, _ := json.Marshal(payload)
 	return sha256Hex(data)
@@ -671,6 +776,15 @@ func sourceLocationMap(chunk chunking.ParsedChunk, base map[string]any) map[stri
 	}
 	if len(chunk.ContentTypes) > 0 {
 		location["content_types"] = chunk.ContentTypes
+	}
+	if len(chunk.SourceSpans) > 0 {
+		location["source_spans"] = chunk.SourceSpans
+	}
+	if chunk.Strategy != "" {
+		location["strategy"] = chunk.Strategy
+	}
+	if chunk.StrategyVersion != "" {
+		location["strategy_version"] = chunk.StrategyVersion
 	}
 	return location
 }

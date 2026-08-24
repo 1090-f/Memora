@@ -143,7 +143,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("document_parser.table_structure", true)
 	v.SetDefault("document_parser.extract_pictures", true)
 	v.SetDefault("document_parser.include_bboxes", true)
+	v.SetDefault("chunking.strategy", "structured")
 	v.SetDefault("chunking.strategy_version", "structure-v1")
+	v.SetDefault("chunking.use_canonical_chunker", false)
 	v.SetDefault("chunking.max_tokens", 1000)
 	v.SetDefault("chunking.min_tokens", 100)
 	v.SetDefault("chunking.overlap_tokens", 100)
@@ -224,7 +226,9 @@ func bindEnvironment(v *viper.Viper) {
 		"document_parser.table_structure":              "MEMORA_DOCUMENT_PARSER_TABLE_STRUCTURE",
 		"document_parser.extract_pictures":             "MEMORA_DOCUMENT_PARSER_EXTRACT_PICTURES",
 		"document_parser.include_bboxes":               "MEMORA_DOCUMENT_PARSER_INCLUDE_BBOXES",
+		"chunking.strategy":                            "MEMORA_CHUNKING_STRATEGY",
 		"chunking.strategy_version":                    "MEMORA_CHUNKING_STRATEGY_VERSION",
+		"chunking.use_canonical_chunker":               "MEMORA_CHUNKING_USE_CANONICAL_CHUNKER",
 		"chunking.max_tokens":                          "MEMORA_CHUNKING_MAX_TOKENS",
 		"chunking.min_tokens":                          "MEMORA_CHUNKING_MIN_TOKENS",
 		"chunking.overlap_tokens":                      "MEMORA_CHUNKING_OVERLAP_TOKENS",

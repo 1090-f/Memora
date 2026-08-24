@@ -36,6 +36,7 @@ internal/service/preview/          预览路由、调度、Artifact 校验和渲
 internal/service/preview/renderer/ LibreOffice PDF 与 XLSX OpenXML 渲染器
 internal/repository/               数据访问接口与实现
 internal/service/rag/              Eino RAG 内核（einoadapter、pipeline、loader、transformer、indexing、retrieval、observability）
+internal/service/rag/canonical/    ParsedDocument → CanonicalDocument（Nodes + Markdown View + SourceMap）稳定边界
 internal/service/rag/einoadapter   contracts/Entity ↔ Eino schema.Document 的单一转换边界与 metadata 常量
 internal/service/rag/query         查询 NFKC、大小写与空白规范化（不负责分词）
 internal/service/rag/indexing      PostgresIndexer 等 Eino Indexer 实现（向量写入 pgvector）
@@ -91,6 +92,7 @@ RequestID → AccessLog → Recovery → CORS → Auth → Controller
 ### 6.1 RAG 与文档处理职责
 
 - `internal/service/rag` 承载 Eino 组件、Adapter、Compiled Graph、RAG 算法与 Callback；Eino `schema.Document` 只在本层与 `einoadapter` 之间交换，不得泄漏到 HTTP DTO、Entity 与跨成员 contracts。
+- `internal/service/rag/canonical` 位于解析/规范化与分块之间：保留 typed Nodes、UTF-8 byte offsets 和多来源 SourceMap；Canonical Markdown 只是标准文本视图，禁止用 Markdown-only 覆盖 ParsedDocument 中的 Table/Asset/Page/BBox 事实。
 - `internal/service/rag/einoadapter` 是 contracts/Entity ↔ Eino 的唯一转换边界，集中定义 metadata 键常量，禁止在其他包重复转换。
 - `internal/service/rag/mock` 提供 `contracts.RetrievalService` 的确定性 Mock，仅供成员三联调，生产路径不得引用。
 - 数据访问（SQL、GORM、pgvector、全文检索、`SKIP LOCKED`）只允许在 `internal/repository`；自定义 Eino Indexer/Retriever 通过最小 Repository 接口访问数据，组件本身不持有 GORM 查询逻辑。

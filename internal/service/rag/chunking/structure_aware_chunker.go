@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/1090-f/Memora/internal/service/rag/canonical"
 	"github.com/1090-f/Memora/internal/service/rag/parser"
 )
 
@@ -80,7 +81,150 @@ func (c *StructureAwareChunker) Chunk(_ context.Context, doc *parser.ParsedDocum
 	if err != nil {
 		return nil, err
 	}
-	return c.assemble(units, opts)
+	chunks, err := c.assemble(units, opts)
+	if err != nil {
+		return nil, err
+	}
+	for i := range chunks {
+		chunks[i].Strategy = "structured"
+		chunks[i].StrategyVersion = opts.StrategyVersion
+	}
+	return chunks, nil
+}
+
+// ChunkCanonical consumes typed CanonicalDocument nodes. The current strategy
+// adapter reconstructs only the stable semantic fields required by existing
+// specialized splitters; it never parses the Markdown view.
+func (c *StructureAwareChunker) ChunkCanonical(ctx context.Context, doc *canonical.CanonicalDocument, opts ChunkOptions) ([]ParsedChunk, error) {
+	if doc == nil {
+		return nil, fmt.Errorf("CanonicalDocument 不能为空")
+	}
+	parsed := parsedDocumentFromCanonical(doc)
+	chunks, err := c.Chunk(ctx, parsed, opts)
+	if err != nil {
+		return nil, err
+	}
+	for i := range chunks {
+		chunks[i].SourceSpans = canonical.SelectSourceSpans(
+			doc, chunks[i].BlockIDs, chunks[i].TableRefs, chunks[i].AssetRefs,
+		)
+	}
+	return chunks, nil
+}
+
+func parsedDocumentFromCanonical(doc *canonical.CanonicalDocument) *parser.ParsedDocument {
+	parsed := &parser.ParsedDocument{
+		SchemaVersion: parser.SchemaVersion,
+		Source:        parser.SourceInfo{Format: doc.Profile.SourceFormat},
+		Document:      parser.DocumentInfo{Markdown: doc.Markdown, PageCount: doc.Profile.PageCount},
+		Blocks:        make([]parser.Block, 0, len(doc.Nodes)),
+	}
+	seenTables := make(map[string]bool)
+	seenAssets := make(map[string]bool)
+	for _, node := range doc.Nodes {
+		block := parser.Block{
+			ID: node.ID, Type: parserBlockType(node.Kind), Text: node.Text,
+			Markdown: node.Markdown, HeadingPath: append([]string(nil), node.HeadingPath...),
+			TableRef: node.TableRef, AssetRefs: append([]string(nil), node.AssetRefs...),
+			Source: primarySource(node.Sources),
+		}
+		if (node.Kind == canonical.NodeKindPageHeader || node.Kind == canonical.NodeKindPageFooter) && node.Markdown == "" {
+			block.Text = ""
+		}
+		if len(node.BlockIDs) > 0 {
+			block.ID = node.BlockIDs[0]
+		}
+		parsed.Blocks = append(parsed.Blocks, block)
+		if node.Table != nil && !seenTables[node.Table.ID] {
+			seenTables[node.Table.ID] = true
+			parsed.Tables = append(parsed.Tables, parserTable(node.Table))
+		}
+		for _, picture := range node.Pictures {
+			if seenAssets[picture.ID] {
+				continue
+			}
+			seenAssets[picture.ID] = true
+			metadata := map[string]any{}
+			if picture.OCRText != "" {
+				metadata["ocr_text"] = picture.OCRText
+			}
+			if picture.Description != "" {
+				metadata["description"] = picture.Description
+			}
+			parsed.Assets = append(parsed.Assets, parser.Asset{
+				ID: picture.ID, Kind: "picture", Caption: picture.Caption,
+				Page: picture.Page, BBox: append([]float64(nil), picture.BBox...),
+				Omitted: picture.Omitted, Metadata: metadata,
+			})
+		}
+	}
+	return parsed
+}
+
+func parserBlockType(kind canonical.NodeKind) string {
+	switch kind {
+	case canonical.NodeKindHeading:
+		return parser.BlockTypeHeading
+	case canonical.NodeKindParagraph:
+		return parser.BlockTypeParagraph
+	case canonical.NodeKindListItem:
+		return parser.BlockTypeListItem
+	case canonical.NodeKindCode:
+		return parser.BlockTypeCode
+	case canonical.NodeKindFormula:
+		return parser.BlockTypeFormula
+	case canonical.NodeKindTable:
+		return parser.BlockTypeTable
+	case canonical.NodeKindPicture:
+		return parser.BlockTypePicture
+	case canonical.NodeKindCaption:
+		return parser.BlockTypeCaption
+	case canonical.NodeKindFootnote:
+		return parser.BlockTypeFootnote
+	case canonical.NodeKindPageHeader:
+		return parser.BlockTypePageHeader
+	case canonical.NodeKindPageFooter:
+		return parser.BlockTypePageFooter
+	default:
+		return parser.BlockTypeUnknown
+	}
+}
+
+func primarySource(sources []canonical.SourceRef) parser.SourceLocation {
+	for _, source := range sources {
+		if source.BlockID != "" || source.Page > 0 || len(source.BBox) > 0 {
+			return parser.SourceLocation{
+				Page: source.Page, BBox: append([]float64(nil), source.BBox...),
+				DoclingRef: source.DoclingRef,
+			}
+		}
+	}
+	return parser.SourceLocation{}
+}
+
+func parserTable(table *canonical.TableData) parser.Table {
+	cells := make([]parser.TableCell, len(table.Cells))
+	for i, cell := range table.Cells {
+		cells[i] = parser.TableCell{
+			Row: cell.Row, Column: cell.Column, RowSpan: cell.RowSpan,
+			ColSpan: cell.ColSpan, Text: cell.Text,
+		}
+	}
+	return parser.Table{
+		ID: table.ID, Caption: table.Caption, PageStart: table.PageStart,
+		PageEnd: table.PageEnd, BBox: append([]float64(nil), table.BBox...),
+		Headers: cloneStringMatrix(table.Headers), Rows: cloneStringMatrix(table.Rows),
+		Cells: cells, RowCount: table.RowCount, ColumnCount: table.ColumnCount,
+		Markdown: table.Markdown,
+	}
+}
+
+func cloneStringMatrix(value [][]string) [][]string {
+	out := make([][]string, len(value))
+	for i := range value {
+		out[i] = append([]string(nil), value[i]...)
+	}
+	return out
 }
 
 // ---------------------------------------------------------------- 单元构建

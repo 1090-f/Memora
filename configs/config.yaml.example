@@ -149,7 +149,9 @@ document_parser:
 
 # Go 分块策略（进入 chunk_config_hash）
 chunking:
+  strategy: "structured"              # structured / paragraph / recursive_fallback / auto
   strategy_version: "structure-v1"
+  use_canonical_chunker: false         # 灰度开关；false 时 Canonical 仅影子生成
   max_tokens: 1000
   min_tokens: 100
   overlap_tokens: 100

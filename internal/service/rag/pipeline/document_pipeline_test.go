@@ -137,6 +137,9 @@ func TestPipelineParsesTextPersistsChunksAndArtifact(t *testing.T) {
 	if out.ChunkCount == 0 {
 		t.Fatal("未产生 Chunk")
 	}
+	if out.CanonicalHash == "" || out.CanonicalNodeCount == 0 {
+		t.Fatalf("Canonical shadow stage 未输出稳定摘要: %+v", out)
+	}
 	// Artifact 已保存：manifest + 压缩文档。
 	if _, ok := store.objects["derived/u1/d1/content-1/parse-"+hashOfParseOptions()+"/manifest.json"]; !ok {
 		t.Error("Artifact manifest 未保存")
@@ -212,6 +215,89 @@ func TestPipelineChunkEntityFields(t *testing.T) {
 	}
 	if len(chunk.SourceLocation) == 0 {
 		t.Error("source_location 为空")
+	}
+	var source map[string]any
+	if err := json.Unmarshal(chunk.SourceLocation, &source); err != nil {
+		t.Fatalf("解析 source_location 失败: %v", err)
+	}
+	if spans, ok := source["source_spans"].([]any); !ok || len(spans) == 0 {
+		t.Errorf("source_spans 未持久化: %v", source)
+	}
+	if source["strategy"] != "structured" || source["strategy_version"] != "structure-v1" {
+		t.Errorf("策略元数据错误: %v", source)
+	}
+}
+
+func TestPipelineCanonicalChunkerMatchesLegacyForStructuredDocument(t *testing.T) {
+	store := newFakeStore()
+	content := "# 标题\n\n第一段正文。\n\n## 小节\n\n第二段正文。"
+	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.md", strings.NewReader(content), int64(len(content)), "text/markdown")
+
+	legacyWriter := &fakeChunkWriter{}
+	legacyCfg := testPipelineConfig(store, `{}`)
+	legacyCfg.Chunks = legacyWriter
+	legacy, err := NewDocumentPipeline(legacyCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Run(context.Background(), processInput(store, "a.md")); err != nil {
+		t.Fatalf("legacy pipeline: %v", err)
+	}
+
+	canonicalWriter := &fakeChunkWriter{}
+	canonicalCfg := testPipelineConfig(store, `{}`)
+	canonicalCfg.Chunks = canonicalWriter
+	canonicalCfg.UseCanonicalChunker = true
+	canonicalPipeline, err := NewDocumentPipeline(canonicalCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := canonicalPipeline.Run(context.Background(), processInput(store, "a.md")); err != nil {
+		t.Fatalf("canonical pipeline: %v", err)
+	}
+	if legacy.ChunkConfigHash() == canonicalPipeline.ChunkConfigHash() {
+		t.Error("canonical chunker feature flag must participate in chunk_config_hash")
+	}
+	legacyChunks := legacyWriter.inserts[0]
+	canonicalChunks := canonicalWriter.inserts[0]
+	if len(legacyChunks) != len(canonicalChunks) {
+		t.Fatalf("chunk count changed: %d != %d", len(legacyChunks), len(canonicalChunks))
+	}
+	for i := range legacyChunks {
+		if legacyChunks[i].Content != canonicalChunks[i].Content {
+			t.Errorf("chunk %d changed:\nlegacy=%q\ncanonical=%q", i, legacyChunks[i].Content, canonicalChunks[i].Content)
+		}
+	}
+}
+
+func TestPipelineAutoRoutesParagraphDocument(t *testing.T) {
+	store := newFakeStore()
+	content := "第一段正文。\n\n第二段正文。\n\n第三段正文。\n\n第四段正文。"
+	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.txt", strings.NewReader(content), int64(len(content)), "text/plain")
+	writer := &fakeChunkWriter{}
+	cfg := testPipelineConfig(store, `{}`)
+	cfg.Chunks = writer
+	cfg.ChunkStrategy = chunking.StrategyAuto
+	p, err := NewDocumentPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := p.Run(context.Background(), processInput(store, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ChunkStrategy != chunking.StrategyParagraph || out.ChunkStrategyVersion != chunking.RouterVersion {
+		t.Fatalf("unexpected route: %+v", out)
+	}
+	if len(writer.inserts) == 0 || len(writer.inserts[0]) == 0 {
+		t.Fatal("paragraph route did not persist chunks")
+	}
+	var source map[string]any
+	if err := json.Unmarshal(writer.inserts[0][0].SourceLocation, &source); err != nil {
+		t.Fatal(err)
+	}
+	if source["strategy"] != chunking.StrategyParagraph {
+		t.Fatalf("persisted strategy = %v", source)
 	}
 }
 

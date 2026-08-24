@@ -198,8 +198,12 @@ type DocumentParserConfig struct {
 
 // ChunkingConfig 定义 Go 分块策略配置（进入 chunk_config_hash，不进入 parse_config_hash）。
 type ChunkingConfig struct {
+	// Strategy 是 structured/paragraph/recursive_fallback/auto；默认 structured。
+	Strategy string `mapstructure:"strategy"`
 	// StrategyVersion 是分块策略版本。
 	StrategyVersion string `mapstructure:"strategy_version"`
+	// UseCanonicalChunker 灰度启用 typed CanonicalDocument 分块输入。
+	UseCanonicalChunker bool `mapstructure:"use_canonical_chunker"`
 	// MaxTokens 是单个 Chunk 的 token 上限。
 	MaxTokens int `mapstructure:"max_tokens"`
 	// MinTokens 是过短合并阈值。
@@ -313,6 +317,11 @@ func (c Config) Validate() error {
 	}
 	if c.Chunking.MinTokens > c.Chunking.MaxTokens {
 		errs = append(errs, errors.New("chunking.min_tokens 不能大于 max_tokens"))
+	}
+	switch c.Chunking.Strategy {
+	case "", "structured", "paragraph", "recursive_fallback", "auto":
+	default:
+		errs = append(errs, errors.New("chunking.strategy 必须是 structured、paragraph、recursive_fallback 或 auto"))
 	}
 	if c.DocumentParser.MaxFileBytes <= 0 || c.DocumentParser.MaxResponseBytes <= 0 || c.DocumentParser.MaxAssetBytes <= 0 {
 		errs = append(errs, errors.New("document_parser 大小限制必须为正数"))
