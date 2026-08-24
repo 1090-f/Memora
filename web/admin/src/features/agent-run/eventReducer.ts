@@ -18,6 +18,13 @@ export const initialAgentRunState: AgentRunViewState = {
 const stringValue = (value: unknown, fallback = '') => typeof value === 'string' ? value : fallback;
 const numberValue = (value: unknown, fallback = 0) => typeof value === 'number' ? value : fallback;
 
+const isTokenUsage = (v: unknown): v is { input_tokens: number; output_tokens: number; total_tokens: number } => {
+  return typeof v === 'object' && v !== null &&
+    typeof (v as any).input_tokens === 'number' &&
+    typeof (v as any).output_tokens === 'number' &&
+    typeof (v as any).total_tokens === 'number';
+};
+
 // 追加一条执行链路记录。
 function withEntry(state: AgentRunViewState, entry: AgentTimelineEntry): AgentRunViewState {
   return { ...state, timeline: [...state.timeline, entry] };
@@ -136,53 +143,68 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
         sequence: event.sequence,
         execution_mode: payload.execution_mode === 'plan_execute' ? 'plan_execute' : 'react',
         reason_summary: stringValue(payload.reason_summary),
+        input_summary: stringValue(payload.input_summary),
+        confidence: typeof payload.confidence === 'number' ? payload.confidence : undefined,
+        fallback_used: typeof payload.fallback_used === 'boolean' ? payload.fallback_used : undefined,
       });
     case 'agent.plan.created':
       // 初始化计划展示面板，包含版本号、目标、步骤列表等完整信息。
+      const planSteps = Array.isArray(payload.steps)
+        ? payload.steps.map((step: Record<string, unknown>) => ({
+            step_no: numberValue(step.step_no),
+            title: stringValue(step.title),
+            description: stringValue(step.description),
+            recommended_tool: stringValue(step.recommended_tool),
+            depends_on: Array.isArray(step.depends_on) ? step.depends_on.map(String) : [],
+            status: stringValue(step.status, 'pending'),
+          }))
+        : [];
       return withEntry({
         ...next,
         plan: {
           version: numberValue(payload.version, 1),
           reason_summary: stringValue(payload.goal),
-          steps: Array.isArray(payload.steps)
-            ? payload.steps.map((step: Record<string, unknown>) => ({
-                step_no: numberValue(step.step_no),
-                title: stringValue(step.title),
-                status: stringValue(step.status, 'pending'),
-              }))
-            : [],
+          steps: planSteps.map(s => ({ step_no: s.step_no, title: s.title, status: s.status })),
         },
       }, {
         kind: 'plan_created',
         sequence: event.sequence,
         version: numberValue(payload.version, 1),
         goal: stringValue(payload.goal),
-        step_count: Array.isArray(payload.steps) ? payload.steps.length : 0,
+        step_count: planSteps.length,
         replanned: false,
+        input_summary: stringValue(payload.input_summary),
+        steps_detail: planSteps,
       });
     case 'agent.plan.replanned':
       // 计划重新规划后更新计划面板，版本号递增、步骤列表刷新。
       if (!state.plan) return next;
+      const replannedSteps = Array.isArray(payload.steps)
+        ? payload.steps.map((step: Record<string, unknown>) => ({
+            step_no: numberValue(step.step_no),
+            title: stringValue(step.title),
+            description: stringValue(step.description),
+            recommended_tool: stringValue(step.recommended_tool),
+            depends_on: Array.isArray(step.depends_on) ? step.depends_on.map(String) : [],
+            status: stringValue(step.status, 'pending'),
+          }))
+        : state.plan.steps;
       return withEntry({
         ...next,
         plan: {
           version: numberValue(payload.version, state.plan.version),
           reason_summary: stringValue(payload.goal) || state.plan.reason_summary,
-          steps: Array.isArray(payload.steps)
-            ? payload.steps.map((step: Record<string, unknown>) => ({
-                step_no: numberValue(step.step_no),
-                title: stringValue(step.title),
-                status: stringValue(step.status, 'pending'),
-              }))
-            : state.plan.steps,
+          steps: replannedSteps.map(s => ({ step_no: s.step_no, title: s.title, status: s.status })),
         },
       }, {
         kind: 'plan_created',
         sequence: event.sequence,
         version: numberValue(payload.version, state.plan.version),
         goal: stringValue(payload.goal),
-        step_count: Array.isArray(payload.steps) ? payload.steps.length : (state.plan.steps.length || 0),
+        step_count: replannedSteps.length,
         replanned: true,
+        input_summary: stringValue(payload.input_summary),
+        steps_detail: replannedSteps,
       });
     case 'agent.step.started':
     case 'agent.step.completed':
@@ -204,12 +226,30 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
         },
       };
       if (started) {
-        return withEntry(nextPlan, { kind: 'plan_step', sequence: event.sequence, version, step_no: stepNo, title, status: 'running' });
+        return withEntry(nextPlan, {
+          kind: 'plan_step',
+          sequence: event.sequence,
+          version,
+          step_no: stepNo,
+          title,
+          status: 'running',
+          input_summary: stringValue(payload.input_summary),
+        });
       }
       const timeline = updateLastEntry(
         nextPlan.timeline,
         (entry): entry is Extract<AgentTimelineEntry, { kind: 'plan_step' }> => entry.kind === 'plan_step' && entry.version === version && entry.step_no === stepNo,
-        (entry) => ({ ...entry, status: stepStatus }),
+        (entry) => ({
+          ...entry,
+          status: stepStatus,
+          output_summary: stringValue(payload.output_summary),
+          duration_ms: typeof payload.duration_ms === 'number' ? payload.duration_ms : undefined,
+          token_usage: isTokenUsage(payload.token_usage) ? {
+            input_tokens: numberValue(payload.token_usage.input_tokens),
+            output_tokens: numberValue(payload.token_usage.output_tokens),
+            total_tokens: numberValue(payload.token_usage.total_tokens),
+          } : undefined,
+        }),
       );
       return { ...nextPlan, timeline };
     }
@@ -230,6 +270,8 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
           round_no: roundNo,
           status: 'running',
           action_summary: stringValue(payload.action_summary),
+          input_summary: stringValue(payload.input_summary),
+          model_decision: stringValue(payload.model_decision),
         });
       }
     case 'agent.react.round.completed': {
@@ -241,7 +283,17 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
       const timeline = updateLastEntry(
         nextState.timeline,
         (entry): entry is Extract<AgentTimelineEntry, { kind: 'round' }> => entry.kind === 'round' && entry.round_no === roundNo,
-        (entry) => ({ ...entry, status: 'completed' }),
+        (entry) => ({
+          ...entry,
+          status: 'completed',
+          output_summary: stringValue(payload.output_summary),
+          duration_ms: typeof payload.duration_ms === 'number' ? payload.duration_ms : undefined,
+          token_usage: isTokenUsage(payload.token_usage) ? {
+            input_tokens: numberValue(payload.token_usage.input_tokens),
+            output_tokens: numberValue(payload.token_usage.output_tokens),
+            total_tokens: numberValue(payload.token_usage.total_tokens),
+          } : undefined,
+        }),
       );
       return { ...nextState, timeline };
     }

@@ -71,6 +71,7 @@ export function InlineAgentRun({ state, runId }: { state: AgentRunViewState; run
   const [toolRecords, setToolRecords] = useState<AgentToolCall[] | null>(null);
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [expandedToolKey, setExpandedToolKey] = useState<string | null>(null);
+  const [expandedEntryKey, setExpandedEntryKey] = useState<string | null>(null);
   const running = state.status === 'running' || state.status === 'queued';
   const failed = state.status === 'failed';
   const entries = timelineEntries(state);
@@ -100,15 +101,14 @@ export function InlineAgentRun({ state, runId }: { state: AgentRunViewState; run
     let toolIndex = 0;
     for (const entry of entries) {
       if (entry.kind === 'tool') {
-        toolRecordBySeq.set(entry.sequence, toolRecords && toolRecords[toolIndex]);
+        toolRecordBySeq.set(entry.sequence, toolRecords?.[toolIndex]);
         toolIndex += 1;
       }
     }
   }
 
-  const handleToolClick = (key: string) => {
-    if (state.timeline.some((entry) => entry.kind === 'tool')) void fetchToolRecords();
-    setExpandedToolKey((prev) => (prev === key ? null : key));
+  const handleEntryClick = (key: string) => {
+    setExpandedEntryKey((prev) => (prev === key ? null : key));
   };
 
   const detailCount = entries.length;
@@ -184,39 +184,115 @@ export function InlineAgentRun({ state, runId }: { state: AgentRunViewState; run
                     case 'router':
                       return (
                         <Stack key={key} spacing={0.2} sx={{ pl: 0.5 }}>
-                          <Typography sx={{ color: '#4358d0', fontSize: 12.5, fontWeight: 650 }}>
-                            {entry.execution_mode === 'plan_execute' ? '计划执行模式' : 'ReAct 协作模式'}
-                          </Typography>
+                          <Stack direction="row" alignItems="center" spacing={0.5} onClick={() => handleEntryClick(key)} sx={{ cursor: 'pointer' }}>
+                            <Typography sx={{ color: '#4358d0', fontSize: 12.5, fontWeight: 650 }}>
+                              {entry.execution_mode === 'plan_execute' ? '计划执行模式' : 'ReAct 协作模式'}
+                            </Typography>
+                            <Typography sx={{ color: '#8c96a7', fontSize: 10.5 }}>
+                              {expandedEntryKey === key ? '▲' : '▼'}
+                            </Typography>
+                          </Stack>
                           {entry.reason_summary && <Typography sx={{ color: '#8c96a7', fontSize: 11 }}>{entry.reason_summary}</Typography>}
+                          {expandedEntryKey === key && (
+                            <Stack spacing={0.5} sx={{ ml: 1.5, mt: 0.5 }}>
+                              {entry.input_summary && (
+                                <DetailBlock label="输入" value={entry.input_summary} empty="" />
+                              )}
+                              {(entry.confidence !== undefined || entry.fallback_used !== undefined) && (
+                                <Stack direction="row" spacing={1.5} sx={{ mt: 0.5 }}>
+                                  {entry.confidence !== undefined && (
+                                    <Typography sx={{ color: '#8c96a7', fontSize: 10.5 }}>置信度: {entry.confidence}</Typography>
+                                  )}
+                                  {entry.fallback_used !== undefined && (
+                                    <Typography sx={{ color: entry.fallback_used ? '#c98a2e' : '#2ca457', fontSize: 10.5 }}>
+                                      {entry.fallback_used ? '已使用兜底策略' : '未使用兜底策略'}
+                                    </Typography>
+                                  )}
+                                </Stack>
+                              )}
+                            </Stack>
+                          )}
                         </Stack>
                       );
                     case 'plan_created':
                       return (
-                        <Stack key={key} direction="row" spacing={1} alignItems="center" sx={{ pl: 0.5 }}>
-                          <TimelineDot status="completed" index={index} />
-                          <Typography sx={{ color: '#4e5a6f', fontSize: 12.5, flex: 1 }}>
-                            {entry.replanned ? `重新规划执行计划（v${entry.version} · ${entry.step_count} 步）` : `制定执行计划（v${entry.version} · ${entry.step_count} 步）`}
-                          </Typography>
+                        <Stack key={key} spacing={0.2} sx={{ pl: 0.5 }}>
+                          <Stack direction="row" alignItems="center" spacing={0.5} onClick={() => handleEntryClick(key)} sx={{ cursor: 'pointer' }}>
+                            <TimelineDot status="completed" index={index} />
+                            <Typography sx={{ color: '#4e5a6f', fontSize: 12.5, flex: 1 }}>
+                              {entry.replanned ? `重新规划执行计划（v${entry.version} · ${entry.step_count} 步）` : `制定执行计划（v${entry.version} · ${entry.step_count} 步）`}
+                            </Typography>
+                            <Typography sx={{ color: '#8c96a7', fontSize: 10.5 }}>
+                              {expandedEntryKey === key ? '▲' : '▼'}
+                            </Typography>
+                          </Stack>
+                          {expandedEntryKey === key && (
+                            <Stack spacing={0.5} sx={{ ml: 1.5, mt: 0.5 }}>
+                              {entry.input_summary && <DetailBlock label="输入" value={entry.input_summary} empty="" />}
+                              {entry.steps_detail && entry.steps_detail.length > 0 && (
+                                <Stack spacing={0.3}>
+                                  <Typography sx={{ color: '#6d788a', fontSize: 11, fontWeight: 650 }}>步骤详情</Typography>
+                                  {entry.steps_detail.map((step: any, si: number) => (
+                                    <Stack key={si} spacing={0.2} sx={{ pl: 1 }}>
+                                      <Typography sx={{ color: '#4e5a6f', fontSize: 11.5, fontWeight: 550 }}>
+                                        步骤 {step.step_no}: {step.title}
+                                      </Typography>
+                                      {step.description && <Typography sx={{ color: '#8c96a7', fontSize: 10.5 }}>{step.description}</Typography>}
+                                      {step.recommended_tool && <Typography sx={{ color: '#5b6ee1', fontSize: 10.5 }}>推荐工具: {step.recommended_tool}</Typography>}
+                                      {step.depends_on && step.depends_on.length > 0 && <Typography sx={{ color: '#8c96a7', fontSize: 10.5 }}>依赖: {step.depends_on.join(', ')}</Typography>}
+                                    </Stack>
+                                  ))}
+                                </Stack>
+                              )}
+                            </Stack>
+                          )}
                         </Stack>
                       );
                     case 'plan_step':
-                    case 'round':
+                    case 'round': {
+                      const isRound = entry.kind === 'round';
+                      const label = isRound ? (entry.action_summary || `执行轮次 ${entry.round_no}`) : entry.title;
+                      const hasDetail = (entry.input_summary || entry.output_summary ||
+                        (isRound && entry.model_decision) ||
+                        entry.duration_ms || entry.token_usage);
                       return (
-                        <Stack key={key} direction="row" spacing={1} alignItems="center">
-                          <TimelineDot status={entry.status} index={index} />
-                          <Typography sx={{ color: entry.status === 'running' ? '#4358d0' : '#4e5a6f', fontSize: 12.5, flex: 1 }}>
-                            {entry.kind === 'round' ? (entry.action_summary || `执行轮次 ${entry.round_no}`) : entry.title}
-                          </Typography>
-                          <Typography sx={{ color: '#8c96a7', fontSize: 10.5 }}>
-                            {entry.status === 'completed' ? '已完成' : entry.status === 'failed' ? '失败' : entry.status === 'running' ? '进行中' : '等待中'}
-                          </Typography>
+                        <Stack key={key} spacing={0.2} sx={{ pl: 0.5 }}>
+                          <Stack direction="row" alignItems="center" spacing={0.5} onClick={() => handleEntryClick(key)} sx={{ cursor: hasDetail ? 'pointer' : 'default' }}>
+                            <TimelineDot status={entry.status} index={index} />
+                            <Typography sx={{ color: entry.status === 'running' ? '#4358d0' : '#4e5a6f', fontSize: 12.5, flex: 1 }}>
+                              {label}
+                            </Typography>
+                            <Typography sx={{ color: '#8c96a7', fontSize: 10.5 }}>
+                              {entry.status === 'completed' ? '已完成' : entry.status === 'failed' ? '失败' : entry.status === 'running' ? '进行中' : '等待中'}
+                            </Typography>
+                            {hasDetail && <Typography sx={{ color: '#8c96a7', fontSize: 10.5 }}>{expandedEntryKey === key ? '▲' : '▼'}</Typography>}
+                          </Stack>
+                          {expandedEntryKey === key && hasDetail && (
+                            <Stack spacing={0.5} sx={{ ml: 1.5, mt: 0.5 }}>
+                              {entry.input_summary && <DetailBlock label="输入" value={entry.input_summary} empty="" />}
+                              {isRound && entry.model_decision && <DetailBlock label="模型决策" value={entry.model_decision} empty="" />}
+                              {entry.output_summary && <DetailBlock label="输出" value={entry.output_summary} empty="" />}
+                              {entry.duration_ms && (
+                                <Typography sx={{ color: '#8c96a7', fontSize: 10.5 }}>耗时 {formatDuration(entry.duration_ms)}</Typography>
+                              )}
+                              {entry.token_usage && (
+                                <Typography sx={{ color: '#8c96a7', fontSize: 10.5 }}>
+                                  Tokens: 输入 {entry.token_usage.input_tokens} · 输出 {entry.token_usage.output_tokens} · 共 {entry.token_usage.total_tokens}
+                                </Typography>
+                              )}
+                            </Stack>
+                          )}
                         </Stack>
                       );
+                    }
                     case 'tool': {
                       const record = toolRecordBySeq.get(entry.sequence);
                       const failedTool = record?.status === 'failed' || entry.status === 'failed';
                       const toolStatus = record ? record.status : entry.status;
                       const toolStatusLabel = record ? toolStatusText[record.status] || record.status : entry.status === 'completed' ? '✓ 已完成' : entry.status === 'failed' ? '✕ 失败' : '◌ 运行中';
+                      const handleToolRecordClick = (key: string) => {
+                        setExpandedToolKey((prev) => (prev === key ? null : key));
+                      };
                       return (
                         <Stack key={key} spacing={0.6}>
                           <Stack direction="row" spacing={1} alignItems="center">
@@ -228,7 +304,7 @@ export function InlineAgentRun({ state, runId }: { state: AgentRunViewState; run
                               label={entry.tool_name}
                               clickable
                               variant="outlined"
-                              onClick={() => handleToolClick(entry.tool_call_id)}
+                              onClick={() => handleToolRecordClick(entry.tool_call_id)}
                               sx={{
                                 bgcolor: expandedToolKey === entry.tool_call_id ? '#e8edff' : '#fff',
                                 borderColor: expandedToolKey === entry.tool_call_id ? '#aebdff' : '#dde3ec',
