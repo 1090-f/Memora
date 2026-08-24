@@ -148,7 +148,7 @@ func (b *contextBuilder) Build(ctx context.Context, req contracts.AgentContextRe
 
 		// 系统配置（优先使用文件中的默认提示词）
 		SystemPrompt:     systemPrompt,
-		ChatModelID:      agentConfig.ChatModelID,
+		ChatModelID:      string(req.ChatModelID),
 		NetworkEnabled:   agentConfig.NetworkEnabled,
 		MemoryEnabled:    agentConfig.MemoryEnabled,
 		MaxReactRounds:   agentConfig.MaxReactRounds,

@@ -11,7 +11,6 @@ type AgentConfig struct {
 	KnowledgeBaseID       string    `gorm:"column:knowledge_base_id" json:"knowledge_base_id"`                  // KnowledgeBaseID 关联的知识库 ID
 	Name                  string    `gorm:"column:name" json:"name"`                                            // Name Agent 名称
 	SystemPrompt          *string   `gorm:"column:system_prompt" json:"system_prompt,omitempty"`                // SystemPrompt 系统提示词，可选
-	ChatModelID           string    `gorm:"column:chat_model_id" json:"chat_model_id"`                          // ChatModelID 关联的对话模型配置 ID
 	MaxReactRounds        int       `gorm:"column:max_react_rounds" json:"max_react_rounds"`                    // MaxReactRounds ReAct 模式最大轮数
 	MaxPlanSteps          int       `gorm:"column:max_plan_steps" json:"max_plan_steps"`                        // MaxPlanSteps Plan-Execute 最大步骤数
 	MaxReplans            int       `gorm:"column:max_replans" json:"max_replans"`                              // MaxReplans Plan-Execute 最大重规划次数

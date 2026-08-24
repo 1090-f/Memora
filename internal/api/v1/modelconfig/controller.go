@@ -1,7 +1,9 @@
 package modelconfig
 
 import (
+	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/1090-f/Memora/internal/ai/encryption"
 	"github.com/1090-f/Memora/internal/api/response"
@@ -42,31 +44,41 @@ func (ctrl *Controller) ListModelConfigs(c *gin.Context) {
 
 	// 脱敏处理 - 使用已有的 APIKeyMasked 字段
 	type maskedConfig struct {
-		ID              string   `json:"id"`
-		Name            string   `json:"name"`
-		Provider        string   `json:"provider"`
-		ModelType       string   `json:"model_type"`
-		BaseURL         string   `json:"base_url"`
-		APIKeyMasked    string   `json:"api_key_masked"`
-		IsDefault       bool     `json:"is_default"`
-		MaxTokens       *int     `json:"max_tokens,omitempty"`
-		Temperature     *float64 `json:"temperature,omitempty"`
-		VectorDimension *int     `json:"vector_dimension,omitempty"`
+		ID                  string   `json:"id"`
+		Name                string   `json:"name"`
+		Provider            string   `json:"provider"`
+		ModelType           string   `json:"model_type"`
+		BaseURL             string   `json:"base_url"`
+		APIKeyMasked        string   `json:"api_key_masked"`
+		TimeoutSeconds      int      `json:"timeout_seconds"`
+		RetryTimes          int      `json:"retry_times"`
+		IsDefault           bool     `json:"is_default"`
+		Enabled             bool     `json:"enabled"`
+		SupportsToolCalling bool     `json:"supports_tool_calling"`
+		SupportsStreaming   bool     `json:"supports_streaming"`
+		MaxTokens           *int     `json:"max_tokens,omitempty"`
+		Temperature         *float64 `json:"temperature,omitempty"`
+		VectorDimension     *int     `json:"vector_dimension,omitempty"`
 	}
 
 	masked := make([]maskedConfig, len(configs))
 	for i, cfg := range configs {
 		masked[i] = maskedConfig{
-			ID:              cfg.ID,
-			Name:            cfg.Name,
-			Provider:        cfg.Provider,
-			ModelType:       cfg.ModelType,
-			BaseURL:         cfg.BaseURL,
-			APIKeyMasked:    cfg.APIKeyMasked,
-			IsDefault:       cfg.IsDefault,
-			MaxTokens:       cfg.MaxTokens,
-			Temperature:     cfg.Temperature,
-			VectorDimension: cfg.VectorDimension,
+			ID:                  cfg.ID,
+			Name:                cfg.Name,
+			Provider:            cfg.Provider,
+			ModelType:           cfg.ModelType,
+			BaseURL:             cfg.BaseURL,
+			APIKeyMasked:        cfg.APIKeyMasked,
+			TimeoutSeconds:      cfg.TimeoutSeconds,
+			RetryTimes:          cfg.RetryTimes,
+			IsDefault:           cfg.IsDefault,
+			Enabled:             cfg.Enabled,
+			SupportsToolCalling: cfg.SupportsToolCalling,
+			SupportsStreaming:   cfg.SupportsStreaming,
+			MaxTokens:           cfg.MaxTokens,
+			Temperature:         cfg.Temperature,
+			VectorDimension:     cfg.VectorDimension,
 		}
 	}
 
@@ -102,6 +114,11 @@ func (ctrl *Controller) CreateModelConfig(c *gin.Context) {
 
 	if err := c.ShouldBindJSON(&input); err != nil {
 		response.Failure(c, err)
+		return
+	}
+	if strings.TrimSpace(input.Name) == "" || strings.TrimSpace(input.Provider) == "" || strings.TrimSpace(input.BaseURL) == "" ||
+		(input.ModelType == "embedding" && (input.VectorDimension == nil || *input.VectorDimension <= 0)) {
+		response.Failure(c, apperrors.ErrInvalidArgument)
 		return
 	}
 
@@ -207,6 +224,25 @@ func (ctrl *Controller) UpdateModelConfig(c *gin.Context) {
 		return
 	}
 
+	if existing.ModelType == "embedding" {
+		referenced, err := ctrl.repo.IsEmbeddingReferenced(c.Request.Context(), existing.ID, user.ID)
+		if err != nil {
+			response.Failure(c, apperrors.ErrInternal)
+			return
+		}
+		identityChanged :=
+			(input.Name != nil && *input.Name != existing.Name) ||
+				(input.Provider != nil && *input.Provider != existing.Provider) ||
+				(input.ModelType != nil && *input.ModelType != existing.ModelType) ||
+				(input.BaseURL != nil && *input.BaseURL != existing.BaseURL) ||
+				(input.VectorDimension != nil && (existing.VectorDimension == nil || *input.VectorDimension != *existing.VectorDimension)) ||
+				(input.Enabled != nil && !*input.Enabled)
+		if referenced && identityChanged {
+			response.Failure(c, apperrors.ErrConflict)
+			return
+		}
+	}
+
 	// 更新字段
 	if input.Name != nil {
 		existing.Name = *input.Name
@@ -264,9 +300,17 @@ func (ctrl *Controller) UpdateModelConfig(c *gin.Context) {
 	if input.SupportsStreaming != nil {
 		existing.SupportsStreaming = *input.SupportsStreaming
 	}
+	if !modelConfigComplete(existing) {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
 
 	if err := ctrl.repo.Update(c.Request.Context(), existing); err != nil {
-		response.Failure(c, err)
+		if errors.Is(err, repository.ErrModelConfigReferenced) {
+			response.Failure(c, apperrors.ErrConflict)
+		} else {
+			response.Failure(c, err)
+		}
 		return
 	}
 
@@ -286,11 +330,42 @@ func (ctrl *Controller) DeleteModelConfig(c *gin.Context) {
 		response.Failure(c, apperrors.ErrInvalidArgument)
 		return
 	}
+	existing, err := ctrl.repo.FindByID(c.Request.Context(), configID)
+	if err != nil {
+		response.Failure(c, err)
+		return
+	}
+	if existing.UserID != user.ID {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	if existing.ModelType == "embedding" {
+		referenced, err := ctrl.repo.IsEmbeddingReferenced(c.Request.Context(), existing.ID, user.ID)
+		if err != nil {
+			response.Failure(c, apperrors.ErrInternal)
+			return
+		}
+		if referenced {
+			response.Failure(c, apperrors.ErrConflict)
+			return
+		}
+	}
 
 	if err := ctrl.repo.Delete(c.Request.Context(), configID, user.ID); err != nil {
-		response.Failure(c, err)
+		if errors.Is(err, repository.ErrModelConfigReferenced) {
+			response.Failure(c, apperrors.ErrConflict)
+		} else {
+			response.Failure(c, err)
+		}
 		return
 	}
 
 	response.Success(c, http.StatusOK, gin.H{"deleted": true})
+}
+
+func modelConfigComplete(config *entity.AIModelConfig) bool {
+	if config == nil || strings.TrimSpace(config.Name) == "" || strings.TrimSpace(config.Provider) == "" || strings.TrimSpace(config.BaseURL) == "" {
+		return false
+	}
+	return config.ModelType != "embedding" || (config.VectorDimension != nil && *config.VectorDimension > 0)
 }

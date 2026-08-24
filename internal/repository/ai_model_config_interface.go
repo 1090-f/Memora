@@ -22,4 +22,6 @@ type AIModelConfigRepository interface {
 	Update(ctx context.Context, config *entity.AIModelConfig) error
 	// Delete 软删除模型配置。
 	Delete(ctx context.Context, id, userID string) error
+	// IsEmbeddingReferenced 判断 Embedding 配置是否被知识库或历史索引记录引用。
+	IsEmbeddingReferenced(ctx context.Context, id, userID string) (bool, error)
 }

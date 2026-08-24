@@ -39,20 +39,43 @@ func (ctrl *Controller) Create(c *gin.Context) {
 	}
 
 	var req struct {
-		Title string `json:"title"`
+		Title       string `json:"title"`
+		ChatModelID string `json:"chat_model_id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		// 允许空 body
-		req.Title = ""
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
 	}
 
-	conversation, err := ctrl.conversations.Create(c.Request.Context(), user.ID, kbID, req.Title)
+	conversation, err := ctrl.conversations.Create(c.Request.Context(), user.ID, kbID, req.Title, req.ChatModelID)
 	if err != nil {
 		response.Failure(c, err)
 		return
 	}
 
 	response.Success(c, http.StatusCreated, conversation)
+}
+
+// UpdateChatModel 修改 Conversation 后续 Run 默认选择的 Chat 模型。
+func (ctrl *Controller) UpdateChatModel(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	var req struct {
+		ChatModelID string `json:"chat_model_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+	conversation, err := ctrl.conversations.UpdateChatModel(c.Request.Context(), user.ID, c.Param("conversation_id"), req.ChatModelID)
+	if err != nil {
+		response.Failure(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, conversation)
 }
 
 // Get 获取会话详情。

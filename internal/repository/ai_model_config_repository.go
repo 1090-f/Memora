@@ -8,6 +8,7 @@ import (
 
 	"github.com/1090-f/Memora/internal/model/entity"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // aiModelConfigRepository 是 AIModelConfigRepository 接口的 GORM 实现。
@@ -87,27 +88,91 @@ func (r *aiModelConfigRepository) ListByUser(ctx context.Context, userID string,
 
 // Update 更新模型配置。
 func (r *aiModelConfigRepository) Update(ctx context.Context, config *entity.AIModelConfig) error {
-	if err := r.db.WithContext(ctx).Save(config).Error; err != nil {
-		return fmt.Errorf("update model config: %w", err)
-	}
-	return nil
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current entity.AIModelConfig
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND user_id = ? AND deleted_at IS NULL", config.ID, config.UserID).
+			First(&current).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrModelConfigNotFound
+			}
+			return fmt.Errorf("lock model config: %w", err)
+		}
+		if current.ModelType == "embedding" && embeddingIdentityChanged(&current, config) {
+			referenced, err := isEmbeddingReferenced(tx, current.ID, current.UserID)
+			if err != nil {
+				return err
+			}
+			if referenced {
+				return ErrModelConfigReferenced
+			}
+		}
+		if err := tx.Save(config).Error; err != nil {
+			return fmt.Errorf("update model config: %w", err)
+		}
+		return nil
+	})
 }
 
 // Delete 软删除模型配置。
 func (r *aiModelConfigRepository) Delete(ctx context.Context, id, userID string) error {
-	now := time.Now().UTC()
-	result := r.db.WithContext(ctx).
-		Model(&entity.AIModelConfig{}).
-		Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, userID).
-		Updates(map[string]interface{}{
-			"deleted_at": now,
-			"updated_at": now,
-		})
-	if result.Error != nil {
-		return fmt.Errorf("delete model config: %w", result.Error)
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current entity.AIModelConfig
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, userID).
+			First(&current).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrModelConfigNotFound
+			}
+			return fmt.Errorf("lock model config: %w", err)
+		}
+		if current.ModelType == "embedding" {
+			referenced, err := isEmbeddingReferenced(tx, id, userID)
+			if err != nil {
+				return err
+			}
+			if referenced {
+				return ErrModelConfigReferenced
+			}
+		}
+		now := time.Now().UTC()
+		if err := tx.Model(&entity.AIModelConfig{}).
+			Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, userID).
+			Updates(map[string]interface{}{"deleted_at": now, "updated_at": now}).Error; err != nil {
+			return fmt.Errorf("delete model config: %w", err)
+		}
+		return nil
+	})
+}
+
+// IsEmbeddingReferenced 判断 Embedding 配置是否被知识库或历史索引记录引用。
+func (r *aiModelConfigRepository) IsEmbeddingReferenced(ctx context.Context, id, userID string) (bool, error) {
+	return isEmbeddingReferenced(r.db.WithContext(ctx), id, userID)
+}
+
+func isEmbeddingReferenced(db *gorm.DB, id, userID string) (bool, error) {
+	var referenced bool
+	err := db.Raw(`
+		SELECT EXISTS (
+			SELECT 1 FROM knowledge_bases WHERE user_id = ? AND embedding_model_id = ?
+			UNION ALL
+			SELECT 1 FROM documents WHERE user_id = ? AND embedding_model_id = ?
+			UNION ALL
+			SELECT 1 FROM document_vectors WHERE user_id = ? AND embedding_model_id = ?
+		)`, userID, id, userID, id, userID, id).Scan(&referenced).Error
+	if err != nil {
+		return false, fmt.Errorf("query embedding model references: %w", err)
 	}
-	if result.RowsAffected == 0 {
-		return ErrModelConfigNotFound
+	return referenced, nil
+}
+
+func embeddingIdentityChanged(current, target *entity.AIModelConfig) bool {
+	if current.Name != target.Name || current.Provider != target.Provider || current.ModelType != target.ModelType ||
+		current.BaseURL != target.BaseURL || current.Enabled && !target.Enabled {
+		return true
 	}
-	return nil
+	if current.VectorDimension == nil || target.VectorDimension == nil {
+		return current.VectorDimension != nil || target.VectorDimension != nil
+	}
+	return *current.VectorDimension != *target.VectorDimension
 }

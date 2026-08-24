@@ -4,20 +4,18 @@ import "time"
 
 // KnowledgeBaseResponse 表示知识库详情的响应。
 type KnowledgeBaseResponse struct {
-	ID                      string    `json:"id"`                                   // ID 知识库 ID
-	Name                    string    `json:"name"`                                 // Name 知识库名称
-	Description             *string   `json:"description,omitempty"`                // Description 知识库描述，可选
-	Icon                    *string   `json:"icon,omitempty"`                       // Icon 知识库图标 URL，可选
-	DefaultLanguage         string    `json:"default_language"`                     // DefaultLanguage 默认语言（如 "zh"、"en"）
-	QAEnabled               bool      `json:"qa_enabled"`                           // QAEnabled 是否启用问答功能
-	AgentEnabled            bool      `json:"agent_enabled"`                        // AgentEnabled 是否启用 Agent 功能
-	NetworkEnabled          bool      `json:"network_enabled"`                      // NetworkEnabled 是否启用联网搜索
-	DefaultChatModelID      *string   `json:"default_chat_model_id,omitempty"`      // DefaultChatModelID 默认对话模型配置 ID，可选
-	DefaultEmbeddingModelID *string   `json:"default_embedding_model_id,omitempty"` // DefaultEmbeddingModelID 默认向量化模型配置 ID，可选
-	DefaultRerankerModelID  *string   `json:"default_reranker_model_id,omitempty"`  // DefaultRerankerModelID 默认重排序模型配置 ID，可选
-	DuplicatePolicy         string    `json:"duplicate_policy"`                     // DuplicatePolicy 文档导入重复处理策略（skip/create_new）
-	CreatedAt               time.Time `json:"created_at"`                           // CreatedAt 创建时间
-	UpdatedAt               time.Time `json:"updated_at"`                           // UpdatedAt 更新时间
+	ID               string    `json:"id"`                    // ID 知识库 ID
+	Name             string    `json:"name"`                  // Name 知识库名称
+	Description      *string   `json:"description,omitempty"` // Description 知识库描述，可选
+	Icon             *string   `json:"icon,omitempty"`        // Icon 知识库图标 URL，可选
+	DefaultLanguage  string    `json:"default_language"`      // DefaultLanguage 默认语言（如 "zh"、"en"）
+	QAEnabled        bool      `json:"qa_enabled"`            // QAEnabled 是否启用问答功能
+	AgentEnabled     bool      `json:"agent_enabled"`         // AgentEnabled 是否启用 Agent 功能
+	NetworkEnabled   bool      `json:"network_enabled"`       // NetworkEnabled 是否启用联网搜索
+	EmbeddingModelID string    `json:"embedding_model_id"`    // EmbeddingModelID 知识库唯一绑定的向量模型配置 ID
+	DuplicatePolicy  string    `json:"duplicate_policy"`      // DuplicatePolicy 文档导入重复处理策略（skip/create_new）
+	CreatedAt        time.Time `json:"created_at"`            // CreatedAt 创建时间
+	UpdatedAt        time.Time `json:"updated_at"`            // UpdatedAt 更新时间
 }
 
 // KnowledgeBaseListItem 表示知识库列表项。

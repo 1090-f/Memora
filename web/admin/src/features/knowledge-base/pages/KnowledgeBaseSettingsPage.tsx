@@ -19,9 +19,7 @@ export function KnowledgeBaseSettingsContent({ status, kbId, embedded = false }:
   const [description, setDescription] = useState('');
   const [agentEnabled, setAgentEnabled] = useState(true);
   const [networkEnabled, setNetworkEnabled] = useState(false);
-  const [defaultChatModelId, setDefaultChatModelId] = useState('');
-  const [defaultEmbeddingModelId, setDefaultEmbeddingModelId] = useState('');
-  const [defaultRerankerModelId, setDefaultRerankerModelId] = useState('');
+  const [embeddingModelId, setEmbeddingModelId] = useState('');
   const [duplicatePolicy, setDuplicatePolicy] = useState<'skip' | 'create_new'>('skip');
   const [notice, setNotice] = useState('');
 
@@ -42,9 +40,7 @@ export function KnowledgeBaseSettingsContent({ status, kbId, embedded = false }:
     setDescription(kbQuery.data.description || '');
     setAgentEnabled(kbQuery.data.agent_enabled);
     setNetworkEnabled(kbQuery.data.network_enabled);
-    setDefaultChatModelId(kbQuery.data.default_chat_model_id || '');
-    setDefaultEmbeddingModelId(kbQuery.data.default_embedding_model_id || '');
-    setDefaultRerankerModelId(kbQuery.data.default_reranker_model_id || '');
+    setEmbeddingModelId(kbQuery.data.embedding_model_id);
     setDuplicatePolicy(kbQuery.data.duplicate_policy ?? 'skip');
   }, [kbQuery.data]);
 
@@ -54,10 +50,6 @@ export function KnowledgeBaseSettingsContent({ status, kbId, embedded = false }:
       description: description || undefined,
       agent_enabled: agentEnabled,
       network_enabled: networkEnabled,
-      // 始终提交模型字段：空串表示清除默认模型（后端写 NULL），undefined 才表示不修改。
-      default_chat_model_id: defaultChatModelId,
-      default_embedding_model_id: defaultEmbeddingModelId,
-      default_reranker_model_id: defaultRerankerModelId,
       duplicate_policy: duplicatePolicy,
     }),
     onSuccess: () => {
@@ -93,9 +85,7 @@ export function KnowledgeBaseSettingsContent({ status, kbId, embedded = false }:
   if (!kbQuery.data || !modelsQuery.data) return null;
 
   const models = modelsQuery.data.items;
-  const chatModels = models.filter((model) => model.model_type === 'chat');
-  const embeddingModels = models.filter((model) => model.model_type === 'embedding');
-  const rerankerModels = models.filter((model) => model.model_type === 'reranker');
+  const embeddingModel = models.find((model) => model.id === embeddingModelId);
 
   return (
     <Stack spacing={3} maxWidth={embedded ? 960 : 760} mx={embedded ? 'auto' : undefined}>
@@ -125,20 +115,14 @@ export function KnowledgeBaseSettingsContent({ status, kbId, embedded = false }:
             <MenuItem value="create_new">重复内容创建新文档</MenuItem>
           </TextField>
           <Divider />
-          <Typography component="h3" variant="h6">RAG 默认模型</Typography>
-          {embeddingModels.length === 0 && <Alert severity="warning">尚未配置 Embedding 模型，向量与混合检索将不可用。</Alert>}
-          <TextField select label="默认 Chat 模型" value={defaultChatModelId} onChange={(event) => setDefaultChatModelId(event.target.value)} helperText="供后续问答与 Agent 使用">
-            <MenuItem value="">未指定</MenuItem>
-            {chatModels.map((model) => <MenuItem key={model.id} value={model.id}>{model.name} · {model.provider}</MenuItem>)}
-          </TextField>
-          <TextField select label="默认 Embedding 模型" value={defaultEmbeddingModelId} onChange={(event) => setDefaultEmbeddingModelId(event.target.value)} helperText="文档索引与向量检索必须使用兼容维度的模型">
-            <MenuItem value="">使用用户默认模型</MenuItem>
-            {embeddingModels.map((model) => <MenuItem key={model.id} value={model.id}>{model.name} · {model.provider}{model.vector_dimension ? ` · ${model.vector_dimension} 维` : ''}</MenuItem>)}
-          </TextField>
-          <TextField select label="默认 Reranker 模型" value={defaultRerankerModelId} onChange={(event) => setDefaultRerankerModelId(event.target.value)} helperText="未指定或调用失败时自动降级为 RRF 排序">
-            <MenuItem value="">不指定（使用 RRF）</MenuItem>
-            {rerankerModels.map((model) => <MenuItem key={model.id} value={model.id}>{model.name} · {model.provider}</MenuItem>)}
-          </TextField>
+          <Typography component="h3" variant="h6">索引模型</Typography>
+          {!embeddingModel && <Alert severity="warning">绑定的 Embedding 模型配置不可用，请联系管理员检查历史数据。</Alert>}
+          <TextField
+            label="Embedding 模型"
+            value={embeddingModel ? `${embeddingModel.name} · ${embeddingModel.provider}${embeddingModel.vector_dimension ? ` · ${embeddingModel.vector_dimension} 维` : ''}` : embeddingModelId}
+            helperText="知识库创建后无法修改向量模型；如需使用其他模型，请重新创建知识库。"
+            slotProps={{ input: { readOnly: true } }}
+          />
           {saveMutation.error && <Alert severity="error">{errorMessage(saveMutation.error)}</Alert>}
           <Stack direction="row" justifyContent="flex-end">
             <Button variant="contained" disabled={name.trim() === '' || saveMutation.isPending} onClick={() => saveMutation.mutate()}>保存设置</Button>

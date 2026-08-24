@@ -16,12 +16,8 @@ type CreateKnowledgeBaseRequest struct {
 	AgentEnabled *bool `json:"agent_enabled"`
 	// NetworkEnabled 是否启用联网搜索。
 	NetworkEnabled *bool `json:"network_enabled"`
-	// DefaultChatModelID 默认对话模型 ID，可选。
-	DefaultChatModelID *string `json:"default_chat_model_id" binding:"omitempty"`
-	// DefaultEmbeddingModelID 默认向量化模型 ID，可选。
-	DefaultEmbeddingModelID *string `json:"default_embedding_model_id" binding:"omitempty"`
-	// DefaultRerankerModelID 默认重排序模型 ID，可选。
-	DefaultRerankerModelID *string `json:"default_reranker_model_id" binding:"omitempty"`
+	// EmbeddingModelID 知识库唯一绑定的向量模型 ID，必填，创建后不可修改。
+	EmbeddingModelID string `json:"embedding_model_id" binding:"required"`
 }
 
 // UpdateKnowledgeBaseRequest 表示修改知识库的请求，所有字段均为可选。
@@ -41,12 +37,6 @@ type UpdateKnowledgeBaseRequest struct {
 	AgentEnabled *bool `json:"agent_enabled"`
 	// NetworkEnabled 是否启用联网搜索。
 	NetworkEnabled *bool `json:"network_enabled"`
-	// DefaultChatModelID 默认对话模型 ID。
-	DefaultChatModelID *string `json:"default_chat_model_id" binding:"omitempty"`
-	// DefaultEmbeddingModelID 默认向量化模型 ID。
-	DefaultEmbeddingModelID *string `json:"default_embedding_model_id" binding:"omitempty"`
-	// DefaultRerankerModelID 默认重排序模型 ID。
-	DefaultRerankerModelID *string `json:"default_reranker_model_id" binding:"omitempty"`
 	// DuplicatePolicy 文档导入重复处理策略（skip/create_new）。
 	DuplicatePolicy *string `json:"duplicate_policy" binding:"omitempty,oneof=skip create_new"`
 }

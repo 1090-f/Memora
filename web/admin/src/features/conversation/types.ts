@@ -1,6 +1,7 @@
 export interface Conversation {
   id: string;
   knowledge_base_id: string;
+  chat_model_id: string;
   title: string;
   created_at: string;
   updated_at?: string;

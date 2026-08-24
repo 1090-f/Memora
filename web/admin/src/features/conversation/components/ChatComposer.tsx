@@ -5,14 +5,17 @@ import StopCircleOutlined from '@mui/icons-material/StopCircleOutlined';
 import { Box, IconButton, ListItemIcon, ListItemText, Menu, MenuItem, Stack, TextField } from '@mui/material';
 import { useState, type FormEvent, type KeyboardEvent, type MouseEvent } from 'react';
 
-export function ChatComposer({ draft, disabled, streaming, knowledgeBases, selectedKnowledgeBaseId, onDraftChange, onKnowledgeBaseChange, onSend, onStop }: {
+export function ChatComposer({ draft, disabled, streaming, knowledgeBases, selectedKnowledgeBaseId, chatModels, selectedChatModelId, onDraftChange, onKnowledgeBaseChange, onChatModelChange, onSend, onStop }: {
   draft: string;
   disabled: boolean;
   streaming: boolean;
   knowledgeBases: Array<{ id: string; name: string }>;
   selectedKnowledgeBaseId: string;
+  chatModels: Array<{ id: string; name: string }>;
+  selectedChatModelId: string;
   onDraftChange: (value: string) => void;
   onKnowledgeBaseChange: (knowledgeBaseId: string) => void;
+  onChatModelChange: (chatModelId: string) => void;
   onSend: () => void;
   onStop: () => void;
 }) {
@@ -77,6 +80,18 @@ export function ChatComposer({ draft, disabled, streaming, knowledgeBases, selec
               </MenuItem>
             ))}
           </Menu>
+          <TextField
+            select
+            size="small"
+            value={selectedChatModelId}
+            onChange={(event) => onChatModelChange(event.target.value)}
+            disabled={streaming || chatModels.length === 0}
+            aria-label="选择 Chat 模型"
+            sx={{ minWidth: 180, '& .MuiInputBase-root': { height: 36, borderRadius: 2 } }}
+          >
+            {chatModels.length === 0 && <MenuItem value="">暂无可用 Chat 模型</MenuItem>}
+            {chatModels.map((model) => <MenuItem key={model.id} value={model.id}>{model.name}</MenuItem>)}
+          </TextField>
           {streaming ? (
             <IconButton sx={{ ml: 'auto', width: 40, height: 40 }} color="error" aria-label="停止生成" onClick={onStop}><StopCircleOutlined /></IconButton>
           ) : (
