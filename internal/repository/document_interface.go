@@ -60,6 +60,12 @@ type DocumentRepository interface {
 	FindBySourceHash(ctx context.Context, userID, kbID, sourceHash string) (*entity.Document, error)
 	// UpdateProcessing 更新文档处理状态、失败信息与活动索引版本。
 	UpdateProcessing(ctx context.Context, docID string, updates map[string]any) error
+	// BeginIndexBuild 原子领取候选索引构建权；同一 owner 重试时复用版本，过期 owner 被接管时分配更高版本。
+	BeginIndexBuild(ctx context.Context, docID, owner string, staleBefore time.Time) (int, error)
+	// PublishIndexBuild 仅允许当前 owner 发布其持有的候选版本，并释放构建权。
+	PublishIndexBuild(ctx context.Context, docID, owner string, indexVersion int, updates map[string]any) error
+	// FailIndexBuild 仅在 owner 仍持有构建权时标记失败并释放；失去所有权的旧 Worker 不得覆盖新状态。
+	FailIndexBuild(ctx context.Context, docID, owner, failureStep, failureReason string) error
 	// FindByImportTask 查询导入任务关联的文档（任务包 03 创建文档后回填）。
 	FindByImportTask(ctx context.Context, taskID string) (*entity.Document, error)
 }

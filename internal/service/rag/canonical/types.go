@@ -4,6 +4,10 @@ package canonical
 
 import (
 	"context"
+	"sort"
+	"strconv"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/1090-f/Memora/internal/service/rag/parser"
 )
@@ -195,6 +199,215 @@ func SelectSourceSpans(doc *CanonicalDocument, blockIDs, tableRefs, assetRefs []
 		}
 	}
 	return out
+}
+
+// SelectChunkSourceSpans 将实际 Chunk 内容反向定位到 Canonical Markdown，
+// 再与 SourceMap 求交。普通长文本拆分因此只携带真正命中的 byte 区间；
+// 表格、图片等检索文本包含较多生成前缀、无法逐字定位时，才回退到对象级来源。
+func SelectChunkSourceSpans(doc *CanonicalDocument, content string, blockIDs, tableRefs, assetRefs []string) []SourceSpan {
+	if doc == nil || strings.TrimSpace(content) == "" {
+		return nil
+	}
+	blocks, tables, assets := stringSet(blockIDs), stringSet(tableRefs), stringSet(assetRefs)
+	atoms := chunkContentAtoms(content)
+	ranges := make([]byteRange, 0)
+	fallbackNodes := make([]CanonicalNode, 0)
+	for _, node := range doc.Nodes {
+		if !nodeMatches(node, blocks, tables, assets) {
+			continue
+		}
+		segment := canonicalNodeSegment(doc, node)
+		nodeRanges := locateAtoms(segment, node.StartByte, atoms)
+		if len(nodeRanges) == 0 {
+			fallbackNodes = append(fallbackNodes, node)
+			continue
+		}
+		ranges = append(ranges, nodeRanges...)
+	}
+	ranges = mergeByteRanges(ranges)
+	out := intersectSourceMap(doc.SourceMap, ranges, blocks, tables, assets)
+	if len(fallbackNodes) == 0 {
+		return out
+	}
+
+	// 专用 splitter 生成的表头、行范围、图片标签不一定逐字存在于 Canonical
+	// Markdown；只为完全无法定位的对象追加保守来源，不扩大已精确定位的文本节点。
+	for _, node := range fallbackNodes {
+		fallback := SelectSourceSpans(doc, node.BlockIDs, []string{node.TableRef}, node.AssetRefs)
+		out = append(out, fallback...)
+	}
+	return deduplicateSourceSpans(out)
+}
+
+type byteRange struct{ start, end int }
+
+func nodeMatches(node CanonicalNode, blocks, tables, assets map[string]bool) bool {
+	for _, id := range node.BlockIDs {
+		if blocks[id] {
+			return true
+		}
+	}
+	if tables[node.TableRef] {
+		return true
+	}
+	for _, id := range node.AssetRefs {
+		if assets[id] {
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalNodeSegment(doc *CanonicalDocument, node CanonicalNode) string {
+	if node.StartByte >= 0 && node.EndByte >= node.StartByte && node.EndByte <= len(doc.Markdown) {
+		return doc.Markdown[node.StartByte:node.EndByte]
+	}
+	if node.Markdown != "" {
+		return node.Markdown
+	}
+	return node.Text
+}
+
+func chunkContentAtoms(content string) []string {
+	seen := make(map[string]bool)
+	var atoms []string
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || seen[line] {
+			continue
+		}
+		seen[line] = true
+		atoms = append(atoms, line)
+	}
+	// 先匹配长文本，避免短标题或常见词抢先命中。
+	sort.SliceStable(atoms, func(i, j int) bool { return len(atoms[i]) > len(atoms[j]) })
+	return atoms
+}
+
+func locateAtoms(segment string, base int, atoms []string) []byteRange {
+	var ranges []byteRange
+	for _, atom := range atoms {
+		searchAt := 0
+		for searchAt <= len(segment) {
+			index := strings.Index(segment[searchAt:], atom)
+			if index < 0 {
+				break
+			}
+			start := searchAt + index
+			end := start + len(atom)
+			if utf8.ValidString(segment[:start]) && utf8.ValidString(segment[:end]) {
+				ranges = append(ranges, byteRange{start: base + start, end: base + end})
+			}
+			searchAt = end
+		}
+	}
+	return mergeByteRanges(ranges)
+}
+
+func mergeByteRanges(ranges []byteRange) []byteRange {
+	if len(ranges) < 2 {
+		return ranges
+	}
+	sort.Slice(ranges, func(i, j int) bool {
+		if ranges[i].start == ranges[j].start {
+			return ranges[i].end < ranges[j].end
+		}
+		return ranges[i].start < ranges[j].start
+	})
+	out := []byteRange{ranges[0]}
+	for _, current := range ranges[1:] {
+		last := &out[len(out)-1]
+		if current.start <= last.end {
+			if current.end > last.end {
+				last.end = current.end
+			}
+			continue
+		}
+		out = append(out, current)
+	}
+	return out
+}
+
+func intersectSourceMap(sourceMap []SourceSpan, ranges []byteRange, blocks, tables, assets map[string]bool) []SourceSpan {
+	var out []SourceSpan
+	for _, target := range ranges {
+		for _, span := range sourceMap {
+			start, end := maxInt(target.start, span.StartByte), minInt(target.end, span.EndByte)
+			if start >= end {
+				continue
+			}
+			matched := span.Generated
+			for _, source := range span.Sources {
+				if blocks[source.BlockID] || tables[source.TableRef] || assets[source.AssetRef] {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+			copySpan := span
+			copySpan.StartByte, copySpan.EndByte = start, end
+			copySpan.Sources = cloneSources(span.Sources)
+			out = append(out, copySpan)
+		}
+	}
+	return deduplicateSourceSpans(out)
+}
+
+func deduplicateSourceSpans(spans []SourceSpan) []SourceSpan {
+	seen := make(map[string]bool)
+	out := make([]SourceSpan, 0, len(spans))
+	for _, span := range spans {
+		key := fmtSourceSpanKey(span)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, span)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].StartByte == out[j].StartByte {
+			return out[i].EndByte < out[j].EndByte
+		}
+		return out[i].StartByte < out[j].StartByte
+	})
+	return out
+}
+
+func fmtSourceSpanKey(span SourceSpan) string {
+	var builder strings.Builder
+	builder.WriteString(strconv.Itoa(span.StartByte))
+	builder.WriteByte(':')
+	builder.WriteString(strconv.Itoa(span.EndByte))
+	builder.WriteByte(':')
+	builder.WriteString(span.Reason)
+	if span.Generated {
+		builder.WriteString(":generated")
+	}
+	for _, source := range span.Sources {
+		builder.WriteByte('|')
+		builder.WriteString(source.BlockID)
+		builder.WriteByte('/')
+		builder.WriteString(source.TableRef)
+		builder.WriteByte('/')
+		builder.WriteString(source.AssetRef)
+	}
+	return builder.String()
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func stringSet(values []string) map[string]bool {

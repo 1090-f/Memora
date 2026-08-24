@@ -105,11 +105,30 @@ func (c *StructureAwareChunker) ChunkCanonical(ctx context.Context, doc *canonic
 		return nil, err
 	}
 	for i := range chunks {
-		chunks[i].SourceSpans = canonical.SelectSourceSpans(
-			doc, chunks[i].BlockIDs, chunks[i].TableRefs, chunks[i].AssetRefs,
+		chunks[i].SourceSpans = canonical.SelectChunkSourceSpans(
+			doc, chunks[i].Content, chunks[i].BlockIDs, chunks[i].TableRefs, chunks[i].AssetRefs,
 		)
 	}
+	MarkOverlapSpans(chunks)
 	return chunks, nil
+}
+
+// MarkOverlapSpans 标记后续 Chunk 对既有 Canonical 来源区间的重复引用。
+// overlap 不改变真实来源，也不伪装为 generated 文本。
+func MarkOverlapSpans(chunks []ParsedChunk) {
+	var seen []canonical.SourceSpan
+	for i := range chunks {
+		for j := range chunks[i].SourceSpans {
+			span := &chunks[i].SourceSpans[j]
+			for _, previous := range seen {
+				if span.StartByte < previous.EndByte && previous.StartByte < span.EndByte {
+					span.Reason = "overlap"
+					break
+				}
+			}
+		}
+		seen = append(seen, chunks[i].SourceSpans...)
+	}
 }
 
 func parsedDocumentFromCanonical(doc *canonical.CanonicalDocument) *parser.ParsedDocument {

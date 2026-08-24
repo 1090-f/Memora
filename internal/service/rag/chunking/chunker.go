@@ -46,6 +46,7 @@ type ParsedChunk struct {
 	SourceSpans     []canonical.SourceSpan
 	Strategy        string
 	StrategyVersion string
+	Decision        *ChunkDecision
 	TokenCount      int
 }
 

@@ -474,7 +474,7 @@ func (s *documentProcessService) ProcessImportTask(ctx context.Context, taskID c
 		if err := s.processDocument(ctx, task, doc); err != nil {
 			// 加工失败：文档标记 failed，旧索引不受影响。
 			// 任务状态由 Runner 的 Fail 路径统一回写（Source.Fail → FailTask），避免双重标记。
-			s.markDocumentFailed(ctx, doc.ID, err)
+			s.markDocumentFailed(ctx, doc.ID, task.ID, err)
 			return err
 		}
 	} else {
@@ -492,18 +492,12 @@ func (s *documentProcessService) ProcessImportTask(ctx context.Context, taskID c
 // processDocument 调用 Eino 文档加工 Graph，并在加工过程中更新文档处理状态。
 // 注意：active_index_version 只在新版本全部成功落库后才更新，构建期间旧版本继续可用。
 func (s *documentProcessService) processDocument(ctx context.Context, task *entity.ImportTask, doc *entity.Document) error {
-	indexVersion := 1
-	if doc.ActiveIndexVersion != nil {
-		indexVersion = *doc.ActiveIndexVersion + 1
+	// 在数据库行锁内领取候选版本。owner 使用稳定的任务 ID：同任务重试复用版本，
+	// 并发任务不能清理当前候选；过期任务被接管时会分配更高版本。
+	indexVersion, err := s.docs.BeginIndexBuild(ctx, doc.ID, task.ID, time.Now().UTC().Add(-repository.ImportTaskLease()))
+	if err != nil {
+		return fmt.Errorf("领取文档加工版本失败: %w", err)
 	}
-	// 每次加工递增 index_version：新版本全部落库成功前不切换 active_index_version，
-	// 构建期间旧版本索引继续对外可用。
-	// 加工开始：仅更新状态，不切换 active_index_version。
-	_ = s.docs.UpdateProcessing(ctx, doc.ID, map[string]any{
-		"processing_status": string(contracts.ProcessingParsing),
-		"failure_step":      nil,
-		"failure_reason":    nil,
-	})
 	_ = s.tasks.SetRunningStep(ctx, task.ID, "parsing")
 
 	// 清理同索引版本的残留 Chunk 与向量（重试/部分失败后的幂等保障）。
@@ -572,9 +566,8 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 	// 有正文却分不出 Chunk 的情况由流水线 structure_chunk 节点拒绝。
 	// 加工成功：切换 active_index_version，并记录 Embedding 模型与分段配置哈希。
 	updates := map[string]any{
-		"processing_status":    string(contracts.ProcessingSucceeded),
-		"active_index_version": indexVersion,
-		"chunk_config_hash":    s.chunkConfigHash(doc),
+		"processing_status": string(contracts.ProcessingSucceeded),
+		"chunk_config_hash": s.chunkConfigHash(doc),
 	}
 	if out.FinalURL != "" {
 		updates["source_url"] = out.FinalURL
@@ -594,6 +587,15 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 	} else {
 		updates["parse_warnings"] = nil
 	}
+	if out.ChunkDiffReport != nil {
+		diffJSON, marshalErr := json.Marshal(out.ChunkDiffReport)
+		if marshalErr != nil {
+			return fmt.Errorf("序列化分块差异报告失败: %w", marshalErr)
+		}
+		updates["chunk_diff_report"] = string(diffJSON)
+	} else {
+		updates["chunk_diff_report"] = nil
+	}
 	if task.SourceType == string(contracts.DocumentSourceURL) {
 		if err := s.tasks.UpdateURLResult(ctx, task.ID, out.FinalURL, out.SourceHash); err != nil {
 			return fmt.Errorf("保存 URL 导入结果失败: %w", err)
@@ -607,11 +609,13 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 		// 新活动版本未生成向量时清空旧模型，避免把关键词索引误报为混合索引。
 		updates["embedding_model_id"] = nil
 	}
-	if err := s.docs.UpdateProcessing(ctx, doc.ID, updates); err != nil {
+	if err := s.docs.PublishIndexBuild(ctx, doc.ID, task.ID, indexVersion, updates); err != nil {
 		return fmt.Errorf("切换活动索引版本失败: %w", err)
 	}
 	if err := s.tasks.SetRunningStep(ctx, task.ID, "succeeded"); err != nil {
-		return fmt.Errorf("更新导入任务完成步骤失败: %w", err)
+		// active 已经由 fencing 条件安全发布；步骤字段只是过程可观测信息，
+		// 最终任务状态仍由 CompleteSucceeded 统一写入，不能因此把已发布文档误标失败。
+		logger.Warn("更新导入任务完成步骤失败", zap.String("task_id", task.ID), zap.Error(err))
 	}
 	return nil
 }
@@ -630,13 +634,9 @@ func (s *documentProcessService) chunkConfigHash(_ *entity.Document) *string {
 
 // markDocumentFailed 标记文档处理失败，保留失败步骤与原因。
 // 任务状态由 Runner 的 Fail 路径统一回写。
-func (s *documentProcessService) markDocumentFailed(ctx context.Context, docID string, cause error) {
+func (s *documentProcessService) markDocumentFailed(ctx context.Context, docID, owner string, cause error) {
 	reason := cause.Error()
-	if err := s.docs.UpdateProcessing(ctx, docID, map[string]any{
-		"processing_status": string(contracts.ProcessingFailed),
-		"failure_step":      "document_pipeline",
-		"failure_reason":    reason,
-	}); err != nil {
+	if err := s.docs.FailIndexBuild(ctx, docID, owner, "document_pipeline", reason); err != nil {
 		logger.Error("标记文档处理失败失败", zap.String("document_id", docID), zap.Error(err))
 	}
 }

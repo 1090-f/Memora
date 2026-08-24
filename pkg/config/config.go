@@ -204,6 +204,8 @@ type ChunkingConfig struct {
 	StrategyVersion string `mapstructure:"strategy_version"`
 	// UseCanonicalChunker 灰度启用 typed CanonicalDocument 分块输入。
 	UseCanonicalChunker bool `mapstructure:"use_canonical_chunker"`
+	// EnableCanonicalChunkDiff 影子双跑旧/新分块器并输出差异报告。
+	EnableCanonicalChunkDiff bool `mapstructure:"enable_canonical_chunk_diff"`
 	// MaxTokens 是单个 Chunk 的 token 上限。
 	MaxTokens int `mapstructure:"max_tokens"`
 	// MinTokens 是过短合并阈值。

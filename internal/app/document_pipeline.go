@@ -29,7 +29,8 @@ func buildDocumentProcessService(cfg *config.Config, store *objectstore.Client, 
 		ParseOptions: parseOptions, ParserConfig: parser.PythonParserConfig{BaseURL: cfg.DocumentParser.BaseURL, Timeout: cfg.DocumentParser.Timeout, MaxResponseBytes: cfg.DocumentParser.MaxResponseBytes},
 		ValidateLimits: parser.DefaultValidateLimits(), AssetEnricher: asset.NewNoopEnricher(),
 		ChunkStrategy: cfg.Chunking.Strategy, UseCanonicalChunker: cfg.Chunking.UseCanonicalChunker,
-		WebLoader: loader.NewSafeWebLoader(loader.SafeWebConfig{Timeout: cfg.URLImport.Timeout, MaxBytes: cfg.URLImport.MaxResponseBytes, MaxRedirects: cfg.URLImport.MaxRedirects}),
+		EnableCanonicalChunkDiff: cfg.Chunking.EnableCanonicalChunkDiff,
+		WebLoader:                loader.NewSafeWebLoader(loader.SafeWebConfig{Timeout: cfg.URLImport.Timeout, MaxBytes: cfg.URLImport.MaxResponseBytes, MaxRedirects: cfg.URLImport.MaxRedirects}),
 	}
 	if cfg.AssetEnrichment.Mode != "" && cfg.AssetEnrichment.Mode != "none" {
 		return nil, fmt.Errorf("不支持的 asset_enrichment.mode %q", cfg.AssetEnrichment.Mode)

@@ -152,6 +152,7 @@ chunking:
   strategy: "structured"              # structured / paragraph / recursive_fallback / auto
   strategy_version: "structure-v1"
   use_canonical_chunker: false         # 灰度开关；false 时 Canonical 仅影子生成
+  enable_canonical_chunk_diff: false   # 影子双跑旧/新分块器并生成边界、来源差异报告
   max_tokens: 1000
   min_tokens: 100
   overlap_tokens: 100

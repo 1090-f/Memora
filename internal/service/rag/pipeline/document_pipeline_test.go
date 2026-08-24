@@ -226,6 +226,11 @@ func TestPipelineChunkEntityFields(t *testing.T) {
 	if source["strategy"] != "structured" || source["strategy_version"] != "structure-v1" {
 		t.Errorf("策略元数据错误: %v", source)
 	}
+	decision, ok := source["decision"].(map[string]any)
+	reasons, reasonsOK := decision["reasons"].([]any)
+	if !ok || decision["strategy"] != "structured" || !reasonsOK || len(reasons) == 0 {
+		t.Errorf("Router decision 未持久化: %v", source)
+	}
 }
 
 func TestPipelineCanonicalChunkerMatchesLegacyForStructuredDocument(t *testing.T) {
@@ -267,6 +272,36 @@ func TestPipelineCanonicalChunkerMatchesLegacyForStructuredDocument(t *testing.T
 		if legacyChunks[i].Content != canonicalChunks[i].Content {
 			t.Errorf("chunk %d changed:\nlegacy=%q\ncanonical=%q", i, legacyChunks[i].Content, canonicalChunks[i].Content)
 		}
+	}
+}
+
+func TestPipelineCanonicalChunkDiffRunsInShadowMode(t *testing.T) {
+	store := newFakeStore()
+	content := "# 标题\n\n第一段正文。\n\n## 小节\n\n第二段正文。"
+	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.md", strings.NewReader(content), int64(len(content)), "text/markdown")
+
+	writer := &fakeChunkWriter{}
+	cfg := testPipelineConfig(store, `{}`)
+	cfg.Chunks = writer
+	cfg.EnableCanonicalChunkDiff = true
+	cfg.UseCanonicalChunker = false
+	p, err := NewDocumentPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := p.Run(context.Background(), processInput(store, "a.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ChunkDiffReport == nil {
+		t.Fatal("影子双跑未输出 ChunkDiffReport")
+	}
+	if out.ChunkDiffReport.LegacyChunkCount != out.ChunkCount ||
+		out.ChunkDiffReport.CandidateChunkCount == 0 {
+		t.Fatalf("差异报告计数异常: %+v output=%+v", out.ChunkDiffReport, out)
+	}
+	if out.ChunkDiffReport.BoundaryDifferenceRate != 0 || out.ChunkDiffReport.SourceDifferenceRate != 0 {
+		t.Fatalf("兼容迁移文档不应产生差异: %+v", out.ChunkDiffReport)
 	}
 }
 

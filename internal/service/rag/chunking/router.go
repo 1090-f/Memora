@@ -13,6 +13,8 @@ const (
 	StrategyParagraph  = "paragraph"
 	StrategyRecursive  = "recursive_fallback"
 	RouterVersion      = "deterministic-router-v1"
+	ParagraphVersion   = "paragraph-v1"
+	RecursiveVersion   = "recursive-v1"
 )
 
 // RouterConfig contains deterministic and versionable routing thresholds.
@@ -46,6 +48,24 @@ type ChunkDecision struct {
 type StrategyRouter struct{ cfg RouterConfig }
 
 func NewStrategyRouter(cfg RouterConfig) *StrategyRouter { return &StrategyRouter{cfg: cfg} }
+
+// RouteWithOverride 优先应用文档/知识库级显式覆盖；未提供覆盖时使用 configured。
+func (r *StrategyRouter) RouteWithOverride(profile canonical.DocumentProfile, configured, override string) (ChunkDecision, error) {
+	override = strings.TrimSpace(strings.ToLower(override))
+	if override == "" {
+		return r.Route(profile, configured)
+	}
+	if !validStrategy(override) {
+		return ChunkDecision{}, fmt.Errorf("不支持的分块策略覆盖 %q", override)
+	}
+	decision, err := r.Route(profile, override)
+	if err != nil {
+		return ChunkDecision{}, err
+	}
+	decision.ManualOverride = true
+	decision.Reasons = []string{"document or knowledge-base strategy override"}
+	return decision, nil
+}
 
 // Route applies an explicit strategy or evaluates canonical profile features.
 func (r *StrategyRouter) Route(profile canonical.DocumentProfile, requested string) (ChunkDecision, error) {

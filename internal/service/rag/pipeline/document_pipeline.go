@@ -65,6 +65,8 @@ type ProcessInput struct {
 	// Embedder/EmbeddingModelID 是本任务按用户与知识库解析出的可选向量模型。
 	Embedder         embedding.Embedder
 	EmbeddingModelID string
+	// ChunkStrategyOverride 是文档/知识库级显式策略覆盖；为空时使用流水线配置。
+	ChunkStrategyOverride string
 }
 
 // ProcessOutput 是文档加工 Graph 的输出。
@@ -82,6 +84,8 @@ type ProcessOutput struct {
 	CanonicalNodeCount   int
 	ChunkStrategy        string
 	ChunkStrategyVersion string
+	// ChunkDiffReport 仅在影子双跑开启时返回，不改变生产分块与索引内容。
+	ChunkDiffReport *chunking.ChunkDiffReport
 }
 
 // DocumentPipelineConfig 定义文档加工流水线配置。
@@ -122,6 +126,8 @@ type DocumentPipelineConfig struct {
 	CanonicalConfig string
 	// UseCanonicalChunker 灰度切换 StructureAwareChunker 的 typed canonical 输入。
 	UseCanonicalChunker bool
+	// EnableCanonicalChunkDiff 同时运行 legacy 与候选策略并生成边界/来源差异报告。
+	EnableCanonicalChunkDiff bool
 	// ChunkStrategy controls deterministic routing: structured/paragraph/recursive_fallback/auto.
 	ChunkStrategy string
 }
@@ -132,6 +138,7 @@ type pipelineState struct {
 	doc            *parser.ParsedDocument
 	canonical      *canonical.CanonicalDocument
 	chunkDecision  chunking.ChunkDecision
+	chunkDiff      *chunking.ChunkDiffReport
 	chunks         []chunking.ParsedChunk
 	artifactPrefix string
 	computedHash   string
@@ -425,7 +432,9 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 
 	// chunk_strategy_route：固定策略或基于 Profile 的确定性 auto 路由。
 	routeLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
-		decision, err := chunkRouter.Route(state.canonical.Profile, cfg.ChunkStrategy)
+		decision, err := chunkRouter.RouteWithOverride(
+			state.canonical.Profile, cfg.ChunkStrategy, state.input.ChunkStrategyOverride,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("选择分块策略失败: %w", err)
 		}
@@ -440,7 +449,26 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 	chunkLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
 		var chunks []chunking.ParsedChunk
 		var err error
-		if cfg.UseCanonicalChunker || state.chunkDecision.Strategy != chunking.StrategyStructured {
+		useCanonical := cfg.UseCanonicalChunker || state.chunkDecision.Strategy != chunking.StrategyStructured
+		if cfg.EnableCanonicalChunkDiff {
+			legacyChunks, legacyErr := chunker.Chunk(ctx, state.doc, cfg.ChunkOptions)
+			if legacyErr != nil {
+				return nil, fmt.Errorf("旧分块器影子运行失败: %w", legacyErr)
+			}
+			candidateChunks, candidateErr := chunker.ChunkCanonicalStrategy(ctx, state.canonical, cfg.ChunkOptions, state.chunkDecision.Strategy)
+			if candidateErr != nil {
+				return nil, fmt.Errorf("Canonical 分块器影子运行失败: %w", candidateErr)
+			}
+			report := chunking.CompareChunks(
+				legacyChunks, candidateChunks, state.chunkDecision.Strategy, state.chunkDecision.Version,
+			)
+			state.chunkDiff = &report
+			if useCanonical {
+				chunks = candidateChunks
+			} else {
+				chunks = legacyChunks
+			}
+		} else if useCanonical {
 			chunks, err = chunker.ChunkCanonicalStrategy(ctx, state.canonical, cfg.ChunkOptions, state.chunkDecision.Strategy)
 		} else {
 			chunks, err = chunker.Chunk(ctx, state.doc, cfg.ChunkOptions)
@@ -454,9 +482,14 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 			return nil, fmt.Errorf("文档未产生任何 Chunk")
 		}
 		for i := range chunks {
-			chunks[i].SourceSpans = canonical.SelectSourceSpans(
-				state.canonical, chunks[i].BlockIDs, chunks[i].TableRefs, chunks[i].AssetRefs,
+			chunks[i].SourceSpans = canonical.SelectChunkSourceSpans(
+				state.canonical, chunks[i].Content, chunks[i].BlockIDs, chunks[i].TableRefs, chunks[i].AssetRefs,
 			)
+		}
+		chunking.MarkOverlapSpans(chunks)
+		for i := range chunks {
+			decision := state.chunkDecision
+			chunks[i].Decision = &decision
 		}
 		state.chunks = chunks
 		return state, nil
@@ -616,6 +649,7 @@ func processOutput(state *pipelineState, chunkCount int) ProcessOutput {
 	}
 	output.ChunkStrategy = state.chunkDecision.Strategy
 	output.ChunkStrategyVersion = state.chunkDecision.Version
+	output.ChunkDiffReport = state.chunkDiff
 	if state.doc != nil && len(state.doc.Warnings) > 0 {
 		output.Warnings = append([]string(nil), state.doc.Warnings...)
 	}
@@ -696,6 +730,8 @@ func computeChunkConfigHash(cfg DocumentPipelineConfig) string {
 		"canonical_chunker":  cfg.UseCanonicalChunker,
 		"chunk_strategy":     cfg.ChunkStrategy,
 		"chunk_router":       chunking.RouterVersion,
+		"paragraph_chunker":  chunking.ParagraphVersion,
+		"recursive_chunker":  chunking.RecursiveVersion,
 	}
 	data, _ := json.Marshal(payload)
 	return sha256Hex(data)
@@ -785,6 +821,9 @@ func sourceLocationMap(chunk chunking.ParsedChunk, base map[string]any) map[stri
 	}
 	if chunk.StrategyVersion != "" {
 		location["strategy_version"] = chunk.StrategyVersion
+	}
+	if chunk.Decision != nil {
+		location["decision"] = chunk.Decision
 	}
 	return location
 }
