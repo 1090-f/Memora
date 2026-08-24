@@ -55,6 +55,7 @@ export interface AgentRun {
   knowledge_base_id?: string;
   conversation_id?: string;
   agent_config_id?: string;
+  chat_model_id?: string;
   retry_of_run_id?: string;
   query: string;
   execution_mode?: 'react' | 'plan_execute' | null;

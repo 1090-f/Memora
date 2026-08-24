@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/1090-f/Memora/internal/contracts"
@@ -11,7 +10,7 @@ import (
 	"github.com/cloudwego/eino/components/embedding"
 )
 
-// DocumentEmbeddingResolver 按任务所有权解析 Embedding 模型，未配置时返回空模型以保留关键词链。
+// DocumentEmbeddingResolver 按知识库不可变绑定解析 Embedding 模型。
 type DocumentEmbeddingResolver interface {
 	Resolve(ctx context.Context, userID, knowledgeBaseID string) (string, embedding.Embedder, error)
 }
@@ -34,20 +33,11 @@ func (r *documentEmbeddingResolver) Resolve(ctx context.Context, userID, knowled
 	if err != nil {
 		return "", nil, err
 	}
-	var modelID string
-	if kb.DefaultEmbeddingModelID != nil {
-		modelID = *kb.DefaultEmbeddingModelID
-	}
+	modelID := kb.EmbeddingModelID
 	if modelID == "" {
-		cfg, findErr := r.models.FindDefaultByUserAndType(ctx, userID, "embedding")
-		if errors.Is(findErr, repository.ErrModelConfigNotFound) {
-			return "", nil, nil
-		}
-		if findErr != nil {
-			return "", nil, findErr
-		}
-		modelID = cfg.ID
-	} else if _, err := r.models.FindByIDForUserAndType(ctx, userID, modelID, "embedding"); err != nil {
+		return "", nil, fmt.Errorf("知识库 %s 缺少绑定的 Embedding 模型", knowledgeBaseID)
+	}
+	if _, err := r.models.FindByIDForUserAndType(ctx, userID, modelID, "embedding"); err != nil {
 		return "", nil, err
 	}
 	model, err := r.factory.GetEmbeddingModel(ctx, contracts.ID(modelID))

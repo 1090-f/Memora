@@ -214,6 +214,7 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 		KnowledgeBaseID: contracts.ID(run.KnowledgeBaseID.String()),
 		ConversationID:  contracts.ID(run.ConversationID.String()),
 		RunID:           runID,
+		ChatModelID:     contracts.ID(run.ChatModelID.String()),
 		Query:           run.Query,
 	})
 	if err != nil {
@@ -319,6 +320,7 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 			UserID:          run.UserID.String(),
 			KnowledgeBaseID: run.KnowledgeBaseID.String(),
 			AgentRunID:      &runIDStr,
+			ModelConfigID:   stringPtr(run.ChatModelID.String()),
 			Role:            "assistant",
 			Content:         result.FinalResult,
 			Status:          "completed",
@@ -366,6 +368,8 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 
 	logger.Info("Agent 运行执行完成", zap.String("run_id", run.ID.String()))
 }
+
+func stringPtr(value string) *string { return &value }
 
 // createFailureMessage 创建失败状态的助手消息，确保失败运行也能在问答页面留下可见结果。
 func (w *AgentWorker) createFailureMessage(ctx context.Context, run *entity.AgentRun, content string) {

@@ -1,14 +1,16 @@
-import { Alert, Stack } from '@mui/material';
+import { Alert, Button, Stack } from '@mui/material';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useReducer, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { capabilities } from '@/app/capabilities';
 import { initialAgentRunState, reduceAgentEvent } from '@/features/agent-run/eventReducer';
 import { cancelAgentRun, createAgentRun, getAgentRun, retryAgentRun } from '@/features/agent-run/api';
 import { queryKeys } from '@/api/queryKeys';
 import { listKnowledgeBases } from '@/features/knowledge-base/api';
+import { listModelConfigs } from '@/features/model/api';
 import { ChatWorkspace } from '@/layouts/ChatWorkspace';
-import { createConversation, listMessages, updateConversation } from '../api';
+import { ActionNotice } from '@/components/shared/ActionNotice';
+import { createConversation, getConversation, listMessages, updateConversation, updateConversationChatModel } from '../api';
 import { streamAgentEvents } from '../events';
 import { ChatComposer } from '../components/ChatComposer';
 import { MessageList } from '../components/MessageList';
@@ -103,6 +105,8 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
   const [resumingRun, setResumingRun] = useState(false);
   const [historicalRunStates, setHistoricalRunStates] = useState<Record<string, AgentRunViewState>>({});
   const historicalHydratedRef = useRef<Set<string>>(new Set());
+  const [selectedChatModelId, setSelectedChatModelId] = useState('');
+  const [modelNotice, setModelNotice] = useState('');
 
   /**
    * Wrapper around setMessages that auto-applies merge logic.
@@ -134,6 +138,7 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
     hydratedRunIdRef.current = null;
     dispatchRun({ type: 'RESET_AGENT_RUN_STATE' });
     setHistoricalRunStates({});
+    setSelectedChatModelId('');
     historicalHydratedRef.current = new Set();
   }, [kbId, conversationId]);
 
@@ -148,6 +153,33 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
     enabled,
     staleTime: 30_000,
   });
+
+  const modelsQuery = useQuery({
+    queryKey: [...queryKeys.models, 'chat'],
+    queryFn: () => listModelConfigs({ model_type: 'chat' }),
+    enabled,
+    staleTime: 30_000,
+  });
+  const chatModels = useMemo(() => (modelsQuery.data?.items ?? []).filter((model) => model.enabled), [modelsQuery.data?.items]);
+
+  const conversationQuery = useQuery({
+    queryKey: ['conversations', activeConversationId],
+    queryFn: () => getConversation(activeConversationId as string),
+    enabled: enabled && Boolean(activeConversationId),
+  });
+
+  useEffect(() => {
+    if (conversationQuery.data) {
+      if (!modelsQuery.data) return;
+      const currentModelAvailable = chatModels.some((model) => model.id === conversationQuery.data.chat_model_id);
+      setSelectedChatModelId(currentModelAvailable ? conversationQuery.data.chat_model_id : '');
+      return;
+    }
+    if (!activeConversationId && !selectedChatModelId && chatModels.length > 0) {
+      const preferred = chatModels.find((model) => model.is_default) ?? chatModels[0];
+      setSelectedChatModelId(preferred.id);
+    }
+  }, [conversationQuery.data, modelsQuery.data, activeConversationId, selectedChatModelId, chatModels]);
 
   const messagesQuery = useQuery({
     queryKey: ['conversations', activeConversationId, 'messages'],
@@ -292,13 +324,29 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
 
   const getConversationId = async () => {
     if (activeConversationId) return activeConversationId;
-    const conversation = await createConversation(kbId, '新会话');
+    if (!selectedChatModelId) throw new Error('请先选择可用的 Chat 模型');
+    const conversation = await createConversation(kbId, '新会话', selectedChatModelId);
     sessionStorage.setItem(conversationStorageKey(kbId), conversation.id);
     pendingConversationNavigationRef.current = conversation.id;
     setActiveConversationId(conversation.id);
     navigate(`/chat/${kbId}/${conversation.id}`, { replace: true });
     void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
     return conversation.id;
+  };
+
+  const changeChatModel = async (chatModelId: string) => {
+    if (!chatModelId || chatModelId === selectedChatModelId) return;
+    try {
+      setErrorMessage(null);
+      if (activeConversationId) {
+        await updateConversationChatModel(activeConversationId, chatModelId);
+        await queryClient.invalidateQueries({ queryKey: ['conversations', activeConversationId] });
+      }
+      setSelectedChatModelId(chatModelId);
+      setModelNotice('Chat 模型已切换，后续请求将使用该模型');
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '切换 Chat 模型失败');
+    }
   };
 
   const updateConversationTitle = (id: string, title: string) => {
@@ -475,12 +523,15 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
   const composer = (
     <ChatComposer
       draft={draft}
-      disabled={!enabled}
+      disabled={!enabled || !selectedChatModelId}
       streaming={submitting}
       knowledgeBases={knowledgeBasesQuery.data?.items ?? []}
       selectedKnowledgeBaseId={kbId}
+      chatModels={chatModels}
+      selectedChatModelId={selectedChatModelId}
       onDraftChange={setDraft}
       onKnowledgeBaseChange={(knowledgeBaseId) => navigate(`/chat/${knowledgeBaseId}`)}
+      onChatModelChange={(chatModelId) => void changeChatModel(chatModelId)}
       onSend={() => void send()}
       onStop={stop}
     />
@@ -495,6 +546,11 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
   const messageArea = (
     <Stack sx={{ flex: 1, minHeight: 0 }}>
       {!enabled && <Alert severity="info" sx={{ m: 2, mb: 0 }}>智能问答后端未启用，请检查服务配置。</Alert>}
+      {!modelsQuery.isPending && chatModels.length === 0 && (
+        <Alert severity="warning" sx={{ m: 2, mb: 0 }} action={<Button component={Link} to="/settings/models" size="small">前往配置</Button>}>
+          暂无可用的 Chat 模型，请先完成模型配置。
+        </Alert>
+      )}
       {errorMessage && <Alert severity="error" sx={{ m: 2, mb: 0 }}>{errorMessage}</Alert>}
       {messagesQuery.error && <Alert severity="warning" sx={{ m: 2, mb: 0 }}>历史消息加载失败，请稍后重试。</Alert>}
       <MessageList messages={messages} streamingAnswer={submitting && !resumingRun ? runState.answer : ''} agentRunState={runState} agentRunId={activeRunId} agentRunStates={allRunStates} retryingMessageId={retryingMessageId} resumingRun={resumingRun} emptyComposer={empty ? composer : undefined} onSuggestion={setDraft} onRetry={retry} onSwitchVersion={switchVersion} />
@@ -502,7 +558,10 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
   );
 
   return (
-    <ChatWorkspace messages={messageArea} composer={empty ? null : composer} />
+    <>
+      <ChatWorkspace messages={messageArea} composer={empty ? null : composer} />
+      <ActionNotice message={modelNotice} onClose={() => setModelNotice('')} />
+    </>
   );
 }
 

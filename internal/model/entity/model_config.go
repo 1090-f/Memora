@@ -9,6 +9,7 @@ type ModelConfig struct {
 	ModelType       string `gorm:"column:model_type" json:"model_type"`                       // ModelType 模型类型：chat/embedding/reranker
 	Provider        string `gorm:"column:provider" json:"provider"`                           // Provider 模型提供商（如 OpenAI、通义千问等）
 	Name            string `gorm:"column:name" json:"name"`                                   // Name 模型名称
+	BaseURL         string `gorm:"column:base_url" json:"base_url"`                           // BaseURL 模型服务地址
 	IsDefault       bool   `gorm:"column:is_default" json:"is_default"`                       // IsDefault 是否为该类型下的默认模型
 	Enabled         bool   `gorm:"column:enabled" json:"enabled"`                             // Enabled 是否启用
 	VectorDimension *int   `gorm:"column:vector_dimension" json:"vector_dimension,omitempty"` // VectorDimension 向量化模型的向量维度，非 embedding 模型为空

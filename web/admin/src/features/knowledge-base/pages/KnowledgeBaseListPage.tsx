@@ -24,6 +24,7 @@ import { ErrorState } from '@/components/shared/ErrorState';
 import { LoadingState } from '@/components/shared/LoadingState';
 import { UnavailableState } from '@/components/shared/UnavailableState';
 import { useAppSelector } from '@/store';
+import { listModelConfigs } from '@/features/model/api';
 import { createKnowledgeBase, deleteKnowledgeBase, updateKnowledgeBase, listKnowledgeBases } from '../api';
 import type { KnowledgeBase } from '../types';
 
@@ -33,9 +34,10 @@ interface KnowledgeBaseForm {
   description: string;
   agent_enabled: boolean;
   network_enabled: boolean;
+  embedding_model_id: string;
 }
 
-const emptyForm: KnowledgeBaseForm = { id: null, name: '', description: '', agent_enabled: true, network_enabled: false };
+const emptyForm: KnowledgeBaseForm = { id: null, name: '', description: '', agent_enabled: true, network_enabled: false, embedding_model_id: '' };
 
 function KnowledgeBaseDialog({ open, form, onClose, onSaved }: {
   open: boolean;
@@ -45,10 +47,22 @@ function KnowledgeBaseDialog({ open, form, onClose, onSaved }: {
 }) {
   const queryClient = useQueryClient();
   const [value, setValue] = useState<KnowledgeBaseForm>(form);
+  const modelsQuery = useQuery({
+    queryKey: [...queryKeys.models, 'embedding'],
+    queryFn: () => listModelConfigs({ model_type: 'embedding' }),
+    enabled: open && !form.id,
+  });
+  const embeddingModels = useMemo(() => (modelsQuery.data?.items ?? []).filter((model) => model.enabled), [modelsQuery.data?.items]);
 
   useEffect(() => {
     if (open) setValue(form);
   }, [open, form]);
+
+  useEffect(() => {
+    if (!open || form.id || value.embedding_model_id || embeddingModels.length === 0) return;
+    const preferred = embeddingModels.find((model) => model.is_default) ?? embeddingModels[0];
+    setValue((current) => ({ ...current, embedding_model_id: preferred.id }));
+  }, [open, form.id, value.embedding_model_id, embeddingModels]);
 
   const mutation = useMutation({
     mutationFn: (input: KnowledgeBaseForm) => {
@@ -65,6 +79,7 @@ function KnowledgeBaseDialog({ open, form, onClose, onSaved }: {
         description: input.description || undefined,
         agent_enabled: input.agent_enabled,
         network_enabled: input.network_enabled,
+        embedding_model_id: input.embedding_model_id,
       });
     },
     onSuccess: (result, input) => {
@@ -87,6 +102,29 @@ function KnowledgeBaseDialog({ open, form, onClose, onSaved }: {
             error={value.name.trim() === ''}
             helperText={value.name.trim() === '' ? '请输入知识库名称' : undefined}
           />
+          {!value.id && (
+            <TextField
+              select
+              required
+              label="Embedding 模型"
+              value={value.embedding_model_id}
+              onChange={(event) => setValue({ ...value, embedding_model_id: event.target.value })}
+              helperText="向量模型决定知识库索引，创建后无法修改"
+              disabled={modelsQuery.isPending || embeddingModels.length === 0}
+            >
+              {embeddingModels.map((model) => (
+                <MenuItem key={model.id} value={model.id}>
+                  {model.name} · {model.provider}{model.vector_dimension ? ` · ${model.vector_dimension} 维` : ''}
+                </MenuItem>
+              ))}
+            </TextField>
+          )}
+          {!value.id && !modelsQuery.isPending && embeddingModels.length === 0 && (
+            <Alert severity="warning" action={<Button component={Link} to="/settings/models" size="small">前往配置</Button>}>
+              暂无可用的 Embedding 模型，请先完成模型配置。
+            </Alert>
+          )}
+          {modelsQuery.error && <Alert severity="error">{errorMessage(modelsQuery.error)}</Alert>}
           <TextField
             label="描述"
             multiline
@@ -109,7 +147,7 @@ function KnowledgeBaseDialog({ open, form, onClose, onSaved }: {
         <Button onClick={onClose}>取消</Button>
         <Button
           variant="contained"
-          disabled={value.name.trim() === '' || mutation.isPending}
+          disabled={value.name.trim() === '' || (!value.id && !value.embedding_model_id) || mutation.isPending}
           onClick={() => mutation.mutate({ ...value, name: value.name.trim() })}
         >
           {form.id ? '保存' : '创建'}
@@ -265,6 +303,7 @@ export function KnowledgeBaseListContent({ status }: { status: CapabilityStatus 
       description: kb.description || '',
       agent_enabled: kb.agent_enabled,
       network_enabled: kb.network_enabled,
+      embedding_model_id: '',
     });
     setDialogOpen(true);
   };

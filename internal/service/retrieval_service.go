@@ -71,9 +71,6 @@ func (s *retrievalService) Retrieve(ctx context.Context, request contracts.Retri
 		AmbiguousScore: cfg.AmbiguousScore,
 	}
 	rerankerModelID := cfg.RerankerModelID
-	if rerankerModelID == nil {
-		rerankerModelID = kb.DefaultRerankerModelID
-	}
 	if rerankerModelID != nil {
 		request.Config.RerankerModelID = contracts.ID(*rerankerModelID)
 	}
@@ -81,23 +78,14 @@ func (s *retrievalService) Retrieve(ctx context.Context, request contracts.Retri
 	var embedder embedding.Embedder
 	var modelCfgID string
 	if request.Mode == contracts.RetrievalVector || request.Mode == contracts.RetrievalHybrid {
-		var modelID string
-		if kb.DefaultEmbeddingModelID != nil {
-			modelID = *kb.DefaultEmbeddingModelID
+		if kb.EmbeddingModelID == "" {
+			return contracts.RetrievalResult{}, apperrors.New(contracts.ErrInvalidState, errors.New("知识库缺少绑定的 Embedding 模型"))
 		}
-		if modelID != "" {
-			modelCfg, modelErr := s.models.FindByIDForUserAndType(ctx, string(request.UserID), modelID, "embedding")
-			if modelErr != nil {
-				return contracts.RetrievalResult{}, apperrors.New(contracts.ErrServiceUnavailable, modelErr)
-			}
-			modelCfgID = modelCfg.ID
-		} else {
-			modelCfg, modelErr := s.models.FindDefaultByUserAndType(ctx, string(request.UserID), "embedding")
-			if modelErr != nil {
-				return contracts.RetrievalResult{}, apperrors.New(contracts.ErrServiceUnavailable, modelErr)
-			}
-			modelCfgID = modelCfg.ID
+		modelCfg, modelErr := s.models.FindByIDForUserAndType(ctx, string(request.UserID), kb.EmbeddingModelID, "embedding")
+		if modelErr != nil {
+			return contracts.RetrievalResult{}, apperrors.New(contracts.ErrServiceUnavailable, modelErr)
 		}
+		modelCfgID = modelCfg.ID
 		model, modelErr := s.factory.GetEmbeddingModel(ctx, contracts.ID(modelCfgID))
 		if modelErr != nil {
 			return contracts.RetrievalResult{}, mapModelError(modelErr)

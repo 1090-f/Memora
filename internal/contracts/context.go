@@ -12,6 +12,7 @@ type AgentContextRequest struct {
 	KnowledgeBaseID ID     `json:"knowledge_base_id"` // 知识库标识
 	ConversationID  ID     `json:"conversation_id"`   // 会话标识
 	RunID           ID     `json:"run_id"`            // 运行标识
+	ChatModelID     ID     `json:"chat_model_id"`     // 本次运行固化的 Chat 模型身份引用
 	Query           string `json:"query"`             // 用户查询
 }
 
