@@ -3,6 +3,7 @@ package adkcore
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/cloudwego/eino/adk"
@@ -35,6 +36,8 @@ type AgentMiddleware struct {
 	Usage contracts.TokenUsage
 	// RoundNo 记录当前 ReAct 模型调用轮次。
 	RoundNo int
+	// roundStartTime 记录当前轮次开始时间，用于计算耗时
+	roundStartTime time.Time
 }
 
 // Ensure AgentMiddleware implements the interface.
@@ -42,10 +45,6 @@ var _ adk.ChatModelAgentMiddleware = (*AgentMiddleware)(nil)
 
 // BeforeAgent 在 Agent 开始执行前调用。
 func (m *AgentMiddleware) BeforeAgent(ctx context.Context, runCtx *adk.ChatModelAgentContext) (context.Context, *adk.ChatModelAgentContext, error) {
-	if m.EventPublisher == nil {
-		return ctx, runCtx, nil
-	}
-	_ = m.EventPublisher.PublishRunStarted(ctx, m.RunID, contracts.ExecutionReact)
 	return ctx, runCtx, nil
 }
 
@@ -63,9 +62,20 @@ func (m *AgentMiddleware) BeforeModelRewriteState(ctx context.Context, state *ad
 		}
 	}
 	m.RoundNo++
+	m.roundStartTime = time.Now()
+
+	// 构建输入摘要
+	var inputSummary string
 	if m.EventPublisher != nil {
-		_ = m.EventPublisher.PublishReactRoundStarted(ctx, m.RunID, m.RoundNo)
+		var msgCount int
+		if state.Messages != nil {
+			msgCount = len(state.Messages)
+		}
+		toolNames := getToolNamesFromInfos(state.ToolInfos)
+		inputSummary = fmt.Sprintf("消息历史: %d 条\n可用工具: %v", msgCount, toolNames)
+		_ = m.EventPublisher.PublishReactRoundStarted(ctx, m.RunID, m.RoundNo, inputSummary)
 	}
+
 	return ctx, state, nil
 }
 
@@ -78,7 +88,30 @@ func (m *AgentMiddleware) AfterModelRewriteState(ctx context.Context, state *adk
 	if last != nil && last.Content != "" {
 		_ = m.EventPublisher.PublishAnswerDelta(ctx, m.RunID, last.Content)
 	}
-	_ = m.EventPublisher.PublishReactRoundCompleted(ctx, m.RunID, m.RoundNo, 0)
+
+	durationMs := int64(time.Since(m.roundStartTime).Milliseconds())
+
+	// 提取 token 用量
+	var tokenUsage contracts.TokenUsage
+	if last != nil && last.ResponseMeta != nil && last.ResponseMeta.Usage != nil {
+		tokenUsage.InputTokens = last.ResponseMeta.Usage.PromptTokens
+		tokenUsage.OutputTokens = last.ResponseMeta.Usage.CompletionTokens
+		tokenUsage.TotalTokens = last.ResponseMeta.Usage.TotalTokens
+	}
+
+	// 构建模型决策摘要
+	modelDecision := ""
+	if last != nil && len(last.ToolCalls) > 0 {
+		var decisions []string
+		for _, tc := range last.ToolCalls {
+			decisions = append(decisions, fmt.Sprintf("调用 %s: %s", tc.Function.Name, tc.Function.Arguments))
+		}
+		modelDecision = strings.Join(decisions, "; ")
+	} else if last != nil && last.Content != "" {
+		modelDecision = fmt.Sprintf("直接回答: %s", truncateString(last.Content, 300))
+	}
+
+	_ = m.EventPublisher.PublishReactRoundCompleted(ctx, m.RunID, m.RoundNo, len(last.ToolCalls), modelDecision, durationMs, tokenUsage)
 	return ctx, state, nil
 }
 
@@ -183,4 +216,26 @@ func extractCitationsFromContext(ctx context.Context) []contracts.Citation {
 		return v
 	}
 	return nil
+}
+
+// truncateString 截断字符串到指定长度
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+// getToolNamesFromInfos 从 ToolInfo 列表获取工具名称
+func getToolNamesFromInfos(infos []*schema.ToolInfo) []string {
+	if infos == nil {
+		return nil
+	}
+	names := make([]string, 0, len(infos))
+	for _, info := range infos {
+		if info != nil {
+			names = append(names, info.Name)
+		}
+	}
+	return names
 }

@@ -84,9 +84,23 @@ export interface CreateAgentRunResponse {
   status: 'queued';
 }
 
+// AgentTimelineEntry 表示执行链路中的一条记录。
+// reducer 按事件 sequence 顺序追加，started/completed 合并为同一条目，
+// 渲染端按数组顺序严格还原真实执行顺序（工具与步骤/轮次穿插展示）。
+export type AgentTimelineEntry =
+  | { kind: 'status'; sequence: number; title: string; status: string; error_message?: string }
+  | { kind: 'router'; sequence: number; execution_mode: 'react' | 'plan_execute'; reason_summary: string; input_summary?: string; confidence?: number; fallback_used?: boolean }
+  | { kind: 'plan_created'; sequence: number; version: number; goal: string; step_count: number; replanned?: boolean; input_summary?: string; steps_detail?: Array<{ step_no: number; title: string; description?: string; recommended_tool?: string; depends_on?: string[]; status: string }> }
+  | { kind: 'plan_step'; sequence: number; version: number; step_no: number; title: string; status: string; error_message?: string; input_summary?: string; output_summary?: string; duration_ms?: number; token_usage?: { input_tokens: number; output_tokens: number; total_tokens: number } }
+  | { kind: 'round'; sequence: number; round_no: number; status: string; action_summary: string; input_summary?: string; model_decision?: string; output_summary?: string; duration_ms?: number; token_usage?: { input_tokens: number; output_tokens: number; total_tokens: number } }
+  | { kind: 'tool'; sequence: number; tool_call_id: string; tool_name: string; status: string; input_summary?: string; output_summary?: string; error_message?: string }
+  | { kind: 'citation'; sequence: number; citation: Record<string, unknown> }
+  | { kind: 'answer'; sequence: number; delta: string };
+
 export interface AgentRunViewState {
   highest_sequence: number;
   status: AgentRunStatus;
+  timeline: AgentTimelineEntry[];
   answer: string;
   router: {
     execution_mode: 'react' | 'plan_execute';

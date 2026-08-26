@@ -38,7 +38,8 @@ import { listConversations } from '@/features/conversation/api';
 import { streamAgentEvents } from '@/features/conversation/events';
 import { getAgentRun, getAgentRunToolCalls, listAgentRuns } from '../api';
 import { initialAgentRunState, reduceAgentEvent } from '../eventReducer';
-import type { AgentRun, AgentRunViewState, AgentToolCall } from '../types';
+import { timelineEntries } from '../timeline';
+import type { AgentRun, AgentRunViewState, AgentTimelineEntry, AgentToolCall } from '../types';
 
 const statusLabel: Record<string, string> = {
   queued: '排队中', running: '运行中', completed: '已完成', failed: '失败', cancelled: '已取消',
@@ -129,49 +130,118 @@ function inputSummary(value?: string) {
     .join(' · ');
 }
 
-function RunTimeline({ run, toolCalls, liveState }: { run: AgentRun; toolCalls: AgentToolCall[]; liveState: AgentRunViewState }) {
-  const liveSteps = liveState.plan?.steps.map((step) => ({ title: step.title, detail: step.status, duration: undefined, status: step.status }))
-    ?? liveState.rounds.map((round) => ({ title: round.action_summary || `执行轮次 ${round.round_no}`, detail: round.status, duration: undefined, status: round.status }));
-  const liveTools = liveState.tools.map((tool, index) => ({
-    title: tool.tool_name,
-    detail: tool.input_summary || tool.output_summary || '',
-    duration: undefined,
-    status: tool.status === 'completed' ? 'succeeded' : tool.status,
-    call: toolCalls[index],
-  }));
-  const steps = [
-    ...(liveState.router || run.execution_mode ? [{ title: '分析问题并确定执行模式', detail: liveState.router?.reason_summary || run.router_reason_summary || run.router_reason || `${run.execution_mode} 模式`, duration: undefined, status: 'completed' as const }] : []),
-    ...(liveSteps.length > 0 ? liveSteps : []),
-    ...(liveTools.length > 0 ? liveTools : toolCalls.map((call) => ({
-      title: call.tool_name,
-      detail: call.input_summary || call.output_summary || '',
-      duration: call.duration_ms,
-      status: call.status,
-      call,
-    }))),
-    ...(run.final_result ? [{ title: '生成最终回答', detail: '回答生成完成', duration: undefined, status: 'completed' as const }] : []),
-  ];
+function stepStatusText(status: string) {
+  return status === 'completed' || status === 'succeeded' ? '已完成' : status === 'failed' ? '失败' : status === 'running' ? '进行中' : '等待中';
+}
 
-  if (steps.length === 0) return <Typography color="text.secondary">暂无执行步骤。</Typography>;
+function RunTimeline({ run, toolCalls, liveState }: { run: AgentRun; toolCalls: AgentToolCall[]; liveState: AgentRunViewState }) {
+  const entries = timelineEntries(liveState);
+  const toolRecordBySeq = new Map<number, AgentToolCall | undefined>();
+  {
+    let toolIndex = 0;
+    for (const entry of entries) {
+      if (entry.kind === 'tool') {
+        toolRecordBySeq.set(entry.sequence, toolCalls[toolIndex]);
+        toolIndex += 1;
+      }
+    }
+  }
+  const rows: AgentTimelineEntry[] = [...entries];
+  const hasCompletion = rows.some((entry) => entry.kind === 'answer' || (entry.kind === 'status' && entry.status === 'completed'));
+  if (run.final_result && !hasCompletion) {
+    rows.push({ kind: 'answer', sequence: (rows[rows.length - 1]?.sequence ?? 0) + 1, delta: run.final_result });
+  }
+
+  if (rows.length === 0) return <Typography color="text.secondary">暂无执行步骤。</Typography>;
 
   return (
     <Stack spacing={0}>
-      {steps.map((step, index) => {
-        const call = 'call' in step ? step.call : undefined;
-        const completed = step.status === 'completed' || step.status === 'succeeded';
+      {rows.map((entry, index) => {
+        const isLast = index === rows.length - 1;
+        const key = `${entry.kind}-${entry.sequence}-${index}`;
+        const call = entry.kind === 'tool' ? toolRecordBySeq.get(entry.sequence) : undefined;
+
+        let title = '';
+        let detail = '';
+        let duration: number | null | undefined;
+        let circleStatus: 'completed' | 'failed' | 'running' | 'pending' = 'pending';
+
+        switch (entry.kind) {
+          case 'status':
+            if (entry.status === 'completed') {
+              title = '生成最终回答';
+              detail = '回答生成完成';
+              circleStatus = 'completed';
+            } else if (entry.status === 'failed') {
+              title = '运行失败';
+              detail = entry.error_message ?? '';
+              circleStatus = 'failed';
+            } else if (entry.status === 'cancelled') {
+              title = '运行已取消';
+              circleStatus = 'failed';
+            } else {
+              title = entry.title;
+              circleStatus = entry.status === 'running' ? 'running' : 'pending';
+            }
+            break;
+          case 'router':
+            title = '分析问题并确定执行模式';
+            detail = entry.reason_summary || `${entry.execution_mode} 模式`;
+            circleStatus = 'completed';
+            break;
+          case 'plan_created':
+            title = entry.replanned
+              ? `重新规划执行计划（v${entry.version} · ${entry.step_count} 步）`
+              : `制定执行计划（v${entry.version} · ${entry.step_count} 步）`;
+            detail = entry.goal;
+            circleStatus = 'completed';
+            break;
+          case 'plan_step':
+            title = entry.title;
+            detail = stepStatusText(entry.status);
+            circleStatus = entry.status === 'running' ? 'running' : entry.status === 'completed' ? 'completed' : entry.status === 'failed' ? 'failed' : 'pending';
+            break;
+          case 'round':
+            title = entry.action_summary || `执行轮次 ${entry.round_no}`;
+            detail = stepStatusText(entry.status);
+            circleStatus = entry.status === 'running' ? 'running' : entry.status === 'completed' ? 'completed' : 'pending';
+            break;
+          case 'tool': {
+            const status = call?.status ?? entry.status;
+            title = entry.tool_name;
+            detail = call ? (call.input_summary || call.output_summary || '') : (entry.input_summary || entry.output_summary || '');
+            duration = call?.duration_ms;
+            circleStatus = status === 'failed' ? 'failed' : status === 'completed' || status === 'succeeded' ? 'completed' : status === 'running' ? 'running' : 'pending';
+            break;
+          }
+          case 'citation': {
+            const value = entry.citation.document_title || entry.citation.title || entry.citation.url;
+            title = typeof value === 'string' && value ? value : `引用文档 ${index + 1}`;
+            circleStatus = 'completed';
+            break;
+          }
+          case 'answer':
+            title = '生成最终回答';
+            detail = '回答生成完成';
+            circleStatus = 'completed';
+            break;
+        }
+
+        const completed = circleStatus === 'completed';
+        const failed = circleStatus === 'failed';
         return (
-          <Stack key={`${step.title}-${index}`} direction="row" spacing={1.5} sx={{ position: 'relative', pb: index === steps.length - 1 ? 0 : 2 }}>
-            {index < steps.length - 1 && <Box sx={{ position: 'absolute', left: 10, top: 22, bottom: 0, borderLeft: '1px solid', borderColor: 'divider' }} />}
-            <Box sx={{ zIndex: 1, width: 22, height: 22, borderRadius: '50%', display: 'grid', placeItems: 'center', bgcolor: completed ? 'success.main' : 'background.paper', border: '1px solid', borderColor: completed ? 'success.main' : 'primary.main', color: '#fff' }}>
-              {completed ? <CheckCircleOutlined sx={{ fontSize: 15 }} /> : <Typography variant="caption" color="primary.main">{index + 1}</Typography>}
+          <Stack key={key} direction="row" spacing={1.5} sx={{ position: 'relative', pb: isLast ? 0 : 2 }}>
+            {!isLast && <Box sx={{ position: 'absolute', left: 10, top: 22, bottom: 0, borderLeft: '1px solid', borderColor: 'divider' }} />}
+            <Box sx={{ zIndex: 1, width: 22, height: 22, borderRadius: '50%', display: 'grid', placeItems: 'center', bgcolor: completed ? 'success.main' : failed ? 'error.main' : circleStatus === 'running' ? 'primary.main' : 'background.paper', border: '1px solid', borderColor: completed ? 'success.main' : failed ? 'error.main' : 'primary.main', color: '#fff' }}>
+              {completed || failed ? <CheckCircleOutlined sx={{ fontSize: 15 }} /> : <Typography variant="caption" color="primary.main">{index + 1}</Typography>}
             </Box>
             <Box sx={{ minWidth: 0, flex: 1 }}>
               <Stack direction="row" alignItems="center" spacing={1}>
-                <Typography fontWeight={650}>{step.title}</Typography>
+                <Typography fontWeight={650} sx={{ color: failed ? 'error.main' : undefined }}>{title}</Typography>
                 {call && <Chip size="small" variant="outlined" label={toolStatusLabel(call.status)} />}
-                {step.duration != null && <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>{formatDuration(step.duration)}</Typography>}
+                {duration != null && <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>{formatDuration(duration)}</Typography>}
               </Stack>
-              {step.detail && <Typography variant="body2" color="text.secondary" sx={{ mt: 0.4, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{call ? (call.input_summary ? inputSummary(step.detail) : outputSummary(step.detail)) : step.detail}</Typography>}
+              {detail && <Typography variant="body2" color="text.secondary" sx={{ mt: 0.4, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{call ? (call.input_summary ? inputSummary(detail) : outputSummary(detail)) : detail}</Typography>}
               {call && (
                 <Accordion disableGutters variant="outlined" sx={{ mt: 1, bgcolor: '#fafbfe', '&:before': { display: 'none' } }}>
                   <AccordionSummary expandIcon={<ExpandMoreOutlined />} sx={{ minHeight: 40, '& .MuiAccordionSummary-content': { my: 1 } }}>
