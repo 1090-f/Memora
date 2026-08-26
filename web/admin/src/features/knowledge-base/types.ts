@@ -26,9 +26,7 @@ export interface KnowledgeBaseDetail {
   qa_enabled: boolean;
   agent_enabled: boolean;
   network_enabled: boolean;
-  default_chat_model_id: string | null;
-  default_embedding_model_id: string | null;
-  default_reranker_model_id: string | null;
+  embedding_model_id: string;
   duplicate_policy: 'skip' | 'create_new';
   created_at: string;
   updated_at: string;
@@ -66,9 +64,7 @@ export interface KnowledgeBaseInput {
   qa_enabled?: boolean;
   agent_enabled?: boolean;
   network_enabled?: boolean;
-  default_chat_model_id?: string;
-  default_embedding_model_id?: string;
-  default_reranker_model_id?: string;
+  embedding_model_id: string;
 }
 
 export interface KnowledgeBaseUpdateInput {
@@ -79,9 +75,6 @@ export interface KnowledgeBaseUpdateInput {
   qa_enabled?: boolean;
   agent_enabled?: boolean;
   network_enabled?: boolean;
-  default_chat_model_id?: string;
-  default_embedding_model_id?: string;
-  default_reranker_model_id?: string;
   duplicate_policy?: 'skip' | 'create_new';
 }
 

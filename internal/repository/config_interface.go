@@ -38,4 +38,6 @@ type ModelConfigRepository interface {
 	FindEnabledByID(ctx context.Context, userID, modelID string) (*entity.ModelConfig, error)
 	// FindDefaultChat 查询指定用户的默认 Chat 模型配置。
 	FindDefaultChat(ctx context.Context, userID string) (*entity.ModelConfig, error)
+	// FindByIDForType 查询指定用户的已启用模型配置，并校验模型类型。
+	FindByIDForType(ctx context.Context, userID, modelID, modelType string) (*entity.ModelConfig, error)
 }

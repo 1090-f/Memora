@@ -2,11 +2,13 @@ package database
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"time"
 
 	"github.com/1090-f/Memora/pkg/logger"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 )
 
@@ -66,6 +68,16 @@ func (l *GormLogger) Trace(ctx context.Context, begin time.Time, fc func() (stri
 	fields := []zap.Field{
 		zap.Duration("elapsed", elapsed),
 		zap.Int64("rows", rows),
+	}
+
+	// 查询未命中是 First/Take 的正常业务结果，只降低日志级别；
+	// 不修改 err，Repository 仍可按 gorm.ErrRecordNotFound 处理。
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		if l.level >= gormlogger.Info {
+			fields = append(fields, zap.String("sql", sql))
+			logger.Debug("[GORM] 查询未命中", fields...)
+		}
+		return
 	}
 
 	if err != nil {

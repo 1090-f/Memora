@@ -31,9 +31,7 @@ type Controller struct {
 	agentService    contracts.AgentRunService        // Agent 核心执行服务（包含 Run/Cancel/Retry）
 	runRepo         repository.AgentRunRepository    // 运行记录的持久化查询
 	toolCallRepo    repository.ToolCallRepository    // 工具调用的持久化查询
-	messageRepo     repository.MessageRepository     // 用户消息持久化仓库
 	agentConfigRepo repository.AgentConfigRepository // Agent 配置查询仓库
-	contextBuilder  contracts.ContextBuilder         // 上下文构建器（组装 AgentContext）
 	eventSub        contracts.EventSubscriber        // Agent 事件订阅器（用于 SSE 流式推送）
 	agentEventRepo  repository.AgentEventRepository  // Agent 事件持久化仓库（用于断线重连时的历史回放）
 }
@@ -43,9 +41,7 @@ func NewController(
 	agentService contracts.AgentRunService,
 	runRepo repository.AgentRunRepository,
 	toolCallRepo repository.ToolCallRepository,
-	messageRepo repository.MessageRepository,
 	agentConfigRepo repository.AgentConfigRepository,
-	contextBuilder contracts.ContextBuilder,
 	eventSub contracts.EventSubscriber,
 	agentEventRepo repository.AgentEventRepository,
 ) *Controller {
@@ -53,16 +49,14 @@ func NewController(
 		agentService:    agentService,
 		runRepo:         runRepo,
 		toolCallRepo:    toolCallRepo,
-		messageRepo:     messageRepo,
 		agentConfigRepo: agentConfigRepo,
-		contextBuilder:  contextBuilder,
 		eventSub:        eventSub,
 		agentEventRepo:  agentEventRepo,
 	}
 }
 
 // CreateRun 处理 POST /api/v1/agent/runs，创建智能问答任务并排队执行。
-// 流程：构建上下文 → 创建排队运行 → 后台异步执行 → 立即返回 run_id。
+// 流程：校验会话与模型 → 原子创建消息和排队运行 → 立即返回 run_id。
 func (ctrl *Controller) CreateRun(c *gin.Context) {
 	user, ok := middleware.GetUser(c)
 	if !ok {
@@ -76,38 +70,7 @@ func (ctrl *Controller) CreateRun(c *gin.Context) {
 		return
 	}
 
-	// 生成运行 ID，用于后续构建上下文和执行
-	runUUID, err := uuid.NewV7()
-	if err != nil {
-		response.Failure(c, apperrors.ErrInternal)
-		return
-	}
-	runID := contracts.ID(runUUID.String())
-
-	// 1. 构建 Agent 执行上下文（含 AgentConfig、会话历史、记忆、工具白名单等）
-	logger.Info("Agent 请求开始构建上下文",
-		zap.String("conversation_id", req.ConversationID),
-		zap.String("knowledge_base_id", req.KnowledgeBaseID),
-	)
-	agentCtx, err := ctrl.contextBuilder.Build(c.Request.Context(), contracts.AgentContextRequest{
-		UserID:          contracts.ID(user.ID),
-		KnowledgeBaseID: contracts.ID(req.KnowledgeBaseID),
-		ConversationID:  contracts.ID(req.ConversationID),
-		RunID:           runID,
-		Query:           req.Query,
-	})
-	if err != nil {
-		response.Failure(c, mapAgentError(err))
-		return
-	}
-	// 上下文构建用于提前校验会话、知识库和 Agent 配置；Worker 会在领取后重新构建最新上下文。
-	logger.Info("Agent 请求上下文构建完成",
-		zap.String("conversation_id", req.ConversationID),
-		zap.Int("history_message_count", len(agentCtx.Conversation.Messages)),
-	)
-	_ = agentCtx
-
-	// 2. 查询 Agent 配置，获取运行记录所需的外键 ID。
+	// 查询 Agent 配置，获取运行记录所需的行为配置外键。
 	userID, err := uuid.Parse(string(user.ID))
 	if err != nil {
 		response.Failure(c, apperrors.ErrInvalidArgument)
@@ -134,47 +97,20 @@ func (ctrl *Controller) CreateRun(c *gin.Context) {
 		return
 	}
 
-	// 3. 持久化用户消息，作为 agent_runs.user_message_id 的关联记录。
-	message := &entity.Message{
-		ID:              runUUID.String(),
-		ConversationID:  conversationID.String(),
-		UserID:          userID.String(),
-		KnowledgeBaseID: knowledgeBaseID.String(),
-		Role:            "user",
-		Content:         req.Query,
-		Status:          "completed",
-		CreatedAt:       time.Now().UTC(),
-	}
-	if err := ctrl.messageRepo.Create(c.Request.Context(), message); err != nil {
-		response.Failure(c, apperrors.ErrInternal)
+	run, err := ctrl.runRepo.CreateQueuedForConversation(c.Request.Context(), userID, knowledgeBaseID, conversationID, agentConfigID, req.Query)
+	if err != nil {
+		if errors.Is(err, repository.ErrConversationNotFound) {
+			response.Failure(c, apperrors.ErrNotFound)
+		} else if errors.Is(err, repository.ErrModelConfigNotFound) {
+			response.Failure(c, apperrors.New(contracts.ErrInvalidState, err))
+		} else {
+			response.Failure(c, apperrors.ErrInternal)
+		}
 		return
 	}
 
-	// 4. 创建 queued 状态的 Agent 运行记录，供 Worker 原子领取。
-	run := &entity.AgentRun{
-		ID:              runUUID,
-		UserID:          userID,
-		KnowledgeBaseID: knowledgeBaseID,
-		ConversationID:  conversationID,
-		UserMessageID:   runUUID,
-		AgentConfigID:   agentConfigID,
-		Query:           req.Query,
-		Status:          "queued",
-	}
-	if err := ctrl.runRepo.CreateQueued(c.Request.Context(), run); err != nil {
-		response.Failure(c, apperrors.ErrInternal)
-		return
-	}
-
-	// 5. 上下文已构建并完成校验，运行记录进入队列后由 Worker 重新构建上下文执行。
-	// Worker 重新加载上下文可以避免 HTTP 请求结束后复用已取消的请求上下文。
-
-	// 6. 运行记录已进入 queued 队列，由 Agent Worker 负责领取和执行。
-	// HTTP 请求不等待 Agent 完成，run_id 和初始状态立即返回给客户端。
-
-	// 7. 立即返回排队成功响应
 	response.Success(c, http.StatusAccepted, respdto.CreateAgentRunResponse{
-		RunID:          string(runID),
+		RunID:          run.ID.String(),
 		ConversationID: req.ConversationID,
 		Status:         "queued",
 	})
@@ -544,6 +480,7 @@ func toRunResponse(run *entity.AgentRun) *respdto.AgentRunResponse {
 		KnowledgeBaseID: run.KnowledgeBaseID.String(),
 		ConversationID:  run.ConversationID.String(),
 		AgentConfigID:   run.AgentConfigID.String(),
+		ChatModelID:     run.ChatModelID.String(),
 		Query:           run.Query,
 		RouterReason:    run.RouterReasonSummary,
 		Status:          run.Status,

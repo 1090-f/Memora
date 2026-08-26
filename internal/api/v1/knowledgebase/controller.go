@@ -1,6 +1,7 @@
 package knowledgebase
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -98,7 +99,9 @@ func (ctrl *Controller) Update(c *gin.Context) {
 		return
 	}
 	var req request.UpdateKnowledgeBaseRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		response.Failure(c, apperrors.ErrInvalidArgument)
 		return
 	}

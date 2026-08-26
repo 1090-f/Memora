@@ -4,12 +4,15 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // agentRunRepository 是 AgentRunRepository 接口的 GORM 实现。
@@ -26,6 +29,81 @@ func NewAgentRunRepository(db *gorm.DB) AgentRunRepository {
 // 状态由数据库默认值 'queued' 保证，应用层无需显式设置。
 func (r *agentRunRepository) CreateQueued(ctx context.Context, run *entity.AgentRun) error {
 	return r.db.WithContext(ctx).Create(run).Error
+}
+
+// CreateQueuedForConversation 在同一事务中确定 Chat 模型身份引用并创建消息和运行记录。
+func (r *agentRunRepository) CreateQueuedForConversation(ctx context.Context, userID, knowledgeBaseID, conversationID, agentConfigID uuid.UUID, query string) (*entity.AgentRun, error) {
+	var created *entity.AgentRun
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var conversation entity.Conversation
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND user_id = ? AND knowledge_base_id = ? AND deleted_at IS NULL", conversationID, userID, knowledgeBaseID).
+			First(&conversation).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrConversationNotFound
+			}
+			return fmt.Errorf("锁定 Conversation 失败: %w", err)
+		}
+		if conversation.ChatModelID == "" {
+			return ErrModelConfigNotFound
+		}
+
+		var modelConfig entity.AIModelConfig
+		if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).
+			Where("id = ? AND user_id = ? AND model_type = 'chat' AND enabled = true AND deleted_at IS NULL", conversation.ChatModelID, userID).
+			First(&modelConfig).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrModelConfigNotFound
+			}
+			return fmt.Errorf("重新校验 Conversation Chat 模型失败: %w", err)
+		}
+		if strings.TrimSpace(modelConfig.Name) == "" || strings.TrimSpace(modelConfig.Provider) == "" || strings.TrimSpace(modelConfig.BaseURL) == "" {
+			return ErrModelConfigNotFound
+		}
+		chatModelID, err := uuid.Parse(modelConfig.ID)
+		if err != nil {
+			return fmt.Errorf("Conversation Chat 模型 ID 无效: %w", err)
+		}
+
+		runID, err := uuid.NewV7()
+		if err != nil {
+			return fmt.Errorf("生成 Run ID 失败: %w", err)
+		}
+		message := &entity.Message{
+			ID:              runID.String(),
+			ConversationID:  conversationID.String(),
+			UserID:          userID.String(),
+			KnowledgeBaseID: knowledgeBaseID.String(),
+			Role:            "user",
+			Content:         query,
+			Status:          "completed",
+			CreatedAt:       time.Now().UTC(),
+		}
+		if err := tx.Create(message).Error; err != nil {
+			return fmt.Errorf("创建用户消息失败: %w", err)
+		}
+
+		run := &entity.AgentRun{
+			ID:              runID,
+			UserID:          userID,
+			KnowledgeBaseID: knowledgeBaseID,
+			ConversationID:  conversationID,
+			UserMessageID:   runID,
+			AgentConfigID:   agentConfigID,
+			ChatModelID:     chatModelID,
+			Query:           query,
+			Status:          "queued",
+		}
+		if err := tx.Create(run).Error; err != nil {
+			return fmt.Errorf("创建排队 Run 失败: %w", err)
+		}
+		created = run
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return created, nil
 }
 
 // FindByID 根据运行 ID 和用户 ID 查找运行记录（强制所有者过滤）。
@@ -250,6 +328,7 @@ func (r *agentRunRepository) CreateRetry(ctx context.Context, originalRunID, use
 			ConversationID:  original.ConversationID,
 			UserMessageID:   original.UserMessageID,
 			AgentConfigID:   original.AgentConfigID,
+			ChatModelID:     original.ChatModelID,
 			RetryOfRunID:    &original.ID,
 			Query:           original.Query,
 			Status:          "queued",

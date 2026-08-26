@@ -231,7 +231,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	memoryRetriever := service.NewMemoryRetriever(memoryRepo, embeddingSvc)
 
 	conversationRepo := repository.NewConversationRepository(a.db)
-	conversationService := service.NewConversationService(conversationRepo)
+	conversationService := service.NewConversationService(conversationRepo, kbs, aiModelConfigs)
 
 	// 初始化工具注册表和执行器（Phase 3.5）
 	// 注册内置只读工具：知识检索 + 文档阅读
@@ -333,9 +333,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		agentCoreService,
 		agentRunRepo,
 		toolCallRepo,
-		messages,
 		agentConfigs,
-		contextBuilder,
 		eventSub,
 		agentEventRepo,
 	)

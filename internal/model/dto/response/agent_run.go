@@ -14,6 +14,7 @@ type AgentRunResponse struct {
 	KnowledgeBaseID string     `json:"knowledge_base_id"`          // KnowledgeBaseID 所属知识库 ID
 	ConversationID  string     `json:"conversation_id"`            // ConversationID 关联会话 ID
 	AgentConfigID   string     `json:"agent_config_id"`            // AgentConfigID 使用的 Agent 配置 ID
+	ChatModelID     string     `json:"chat_model_id"`              // ChatModelID 本次运行固化的模型身份引用
 	RetryOfRunID    *string    `json:"retry_of_run_id,omitempty"`  // RetryOfRunID 重试的原始运行 ID
 	Query           string     `json:"query"`                      // Query 用户查询原文
 	ExecutionMode   *string    `json:"execution_mode,omitempty"`   // ExecutionMode Router 选择的执行模式

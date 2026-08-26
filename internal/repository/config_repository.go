@@ -8,6 +8,7 @@ import (
 
 	"github.com/1090-f/Memora/internal/model/entity"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var (
@@ -21,6 +22,8 @@ var (
 	ErrAgentConfigConflict = errors.New("Agent 配置已存在")
 	// ErrModelConfigNotFound 表示未找到指定模型配置。
 	ErrModelConfigNotFound = errors.New("模型配置不存在")
+	// ErrModelConfigReferenced 表示模型配置仍被不可变索引绑定引用。
+	ErrModelConfigReferenced = errors.New("模型配置仍被知识库引用")
 )
 
 // searchConfigRepository 是 SearchConfigRepository 接口的 GORM 实现。
@@ -202,6 +205,22 @@ func (r *modelConfigRepository) FindDefaultChat(ctx context.Context, userID stri
 	}
 	if err != nil {
 		return nil, fmt.Errorf("查询默认模型配置失败: %w", err)
+	}
+	return &cfg, nil
+}
+
+// FindByIDForType 查询指定用户的已启用模型配置，并校验模型类型。
+func (r *modelConfigRepository) FindByIDForType(ctx context.Context, userID, modelID, modelType string) (*entity.ModelConfig, error) {
+	var cfg entity.ModelConfig
+	err := dbFromContext(ctx, r.db).WithContext(ctx).
+		Clauses(clause.Locking{Strength: "SHARE"}).
+		Where("id = ? AND user_id = ? AND model_type = ? AND enabled = true AND deleted_at IS NULL", modelID, userID, modelType).
+		First(&cfg).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrModelConfigNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询指定类型模型配置失败: %w", err)
 	}
 	return &cfg, nil
 }

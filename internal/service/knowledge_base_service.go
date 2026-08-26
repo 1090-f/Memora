@@ -65,66 +65,43 @@ func NewKnowledgeBaseService(
 }
 
 // Create 创建知识库，并在同一短事务中原子创建默认目录、搜索配置和 Agent 配置。
-// 默认 Agent 配置需要的 Chat 模型按以下优先级获取：
-//  1. 请求中的 default_chat_model_id（校验归属与类型）；
-//  2. 当前用户 is_default=true 的 Chat 模型；
-//  3. 都没有则拒绝创建，不落库任何关联表。
+// Embedding 模型是知识库不可变的索引配置；创建知识库不依赖 Chat 模型。
 func (s *knowledgeBaseService) Create(ctx context.Context, userID string, req *request.CreateKnowledgeBaseRequest) (*dto.KnowledgeBaseResponse, error) {
-	if req == nil || strings.TrimSpace(req.Name) == "" {
+	if req == nil || strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.EmbeddingModelID) == "" {
 		return nil, apperrors.ErrInvalidArgument
 	}
 	if req.DefaultLanguage == "" {
 		req.DefaultLanguage = defaultLanguage
 	}
 
-	chatModelID, err := s.resolveChatModel(ctx, userID, req.DefaultChatModelID)
-	if err != nil {
-		return nil, err
-	}
-	if req.DefaultEmbeddingModelID != nil && *req.DefaultEmbeddingModelID != "" {
-		if _, err := s.modelConfigs.FindEnabledByID(ctx, userID, *req.DefaultEmbeddingModelID); err != nil {
-			if errors.Is(err, repository.ErrModelConfigNotFound) {
-				return nil, apperrors.New(contracts.ErrInvalidArgument, err)
-			}
-			return nil, apperrors.New(contracts.ErrInternal, err)
-		}
-	}
-	if req.DefaultRerankerModelID != nil && *req.DefaultRerankerModelID != "" {
-		if _, err := s.modelConfigs.FindEnabledByID(ctx, userID, *req.DefaultRerankerModelID); err != nil {
-			if errors.Is(err, repository.ErrModelConfigNotFound) {
-				return nil, apperrors.New(contracts.ErrInvalidArgument, err)
-			}
-			return nil, apperrors.New(contracts.ErrInternal, err)
-		}
-	}
-
 	var created *entity.KnowledgeBase
 	// 用短事务原子写 4 张表（知识库 + 默认目录 + 搜索配置 + Agent 配置）：
 	// 任一步失败整体回滚，避免产生“孤儿”知识库或缺失默认配置的知识库；
 	// 事务内不做外部 I/O，持锁时间极短。
-	err = s.tx.WithTx(ctx, func(txCtx context.Context) error {
+	err := s.tx.WithTx(ctx, func(txCtx context.Context) error {
+		embeddingModel, err := s.modelConfigs.FindByIDForType(txCtx, userID, req.EmbeddingModelID, "embedding")
+		if err != nil {
+			if errors.Is(err, repository.ErrModelConfigNotFound) {
+				return apperrors.New(contracts.ErrInvalidArgument, err)
+			}
+			return apperrors.New(contracts.ErrInternal, err)
+		}
+		if strings.TrimSpace(embeddingModel.Name) == "" || strings.TrimSpace(embeddingModel.Provider) == "" ||
+			strings.TrimSpace(embeddingModel.BaseURL) == "" || embeddingModel.VectorDimension == nil || *embeddingModel.VectorDimension <= 0 {
+			return apperrors.New(contracts.ErrInvalidArgument, errors.New("Embedding 模型配置不完整"))
+		}
+
 		kb := &entity.KnowledgeBase{
-			UserID:          userID,
-			Name:            strings.TrimSpace(req.Name),
-			Description:     req.Description,
-			Icon:            req.Icon,
-			DefaultLanguage: req.DefaultLanguage,
-			QAEnabled:       boolValue(req.QAEnabled, true),
-			AgentEnabled:    boolValue(req.AgentEnabled, true),
-			NetworkEnabled:  boolValue(req.NetworkEnabled, false),
-			DuplicatePolicy: "skip",
-		}
-		if req.DefaultChatModelID != nil {
-			id := *req.DefaultChatModelID
-			kb.DefaultChatModelID = &id
-		}
-		if req.DefaultEmbeddingModelID != nil {
-			id := *req.DefaultEmbeddingModelID
-			kb.DefaultEmbeddingModelID = &id
-		}
-		if req.DefaultRerankerModelID != nil {
-			id := *req.DefaultRerankerModelID
-			kb.DefaultRerankerModelID = &id
+			UserID:           userID,
+			Name:             strings.TrimSpace(req.Name),
+			Description:      req.Description,
+			Icon:             req.Icon,
+			DefaultLanguage:  req.DefaultLanguage,
+			QAEnabled:        boolValue(req.QAEnabled, true),
+			AgentEnabled:     boolValue(req.AgentEnabled, true),
+			NetworkEnabled:   boolValue(req.NetworkEnabled, false),
+			EmbeddingModelID: req.EmbeddingModelID,
+			DuplicatePolicy:  "skip",
 		}
 		if err := s.kbs.Create(txCtx, kb); err != nil {
 			return err
@@ -142,7 +119,7 @@ func (s *knowledgeBaseService) Create(ctx context.Context, userID string, req *r
 			return err
 		}
 
-		agentConfig := defaultAgentConfigEntity(userID, kb.ID, chatModelID, boolValue(req.NetworkEnabled, false))
+		agentConfig := defaultAgentConfigEntity(userID, kb.ID, boolValue(req.NetworkEnabled, false))
 		if err := s.agentConfigs.Create(txCtx, agentConfig); err != nil {
 			return err
 		}
@@ -163,34 +140,6 @@ func (s *knowledgeBaseService) Create(ctx context.Context, userID string, req *r
 
 	logger.Info("知识库已创建", zap.String("user_id", userID), zap.String("kb_id", created.ID))
 	return knowledgeBaseResponse(created), nil
-}
-
-// resolveChatModel 按优先级确定默认 Agent 配置的 Chat 模型。
-func (s *knowledgeBaseService) resolveChatModel(ctx context.Context, userID string, requested *string) (string, error) {
-	if requested != nil && *requested != "" {
-		model, err := s.modelConfigs.FindChatByID(ctx, userID, *requested)
-		if errors.Is(err, repository.ErrModelConfigNotFound) {
-			return "", apperrors.New(contracts.ErrInvalidArgument, err)
-		}
-		if err != nil {
-			return "", apperrors.New(contracts.ErrInternal, err)
-		}
-		return model.ID, nil
-	}
-	model, err := s.modelConfigs.FindDefaultChat(ctx, userID)
-	if errors.Is(err, repository.ErrModelConfigNotFound) {
-		return "", &apperrors.AppError{
-			Code: contracts.ErrInvalidArgument,
-			Details: map[string]string{
-				"reason": "当前用户未配置默认 Chat 模型，无法为知识库创建默认 Agent 配置。请先配置一个启用的 Chat 模型并设为默认。",
-			},
-			Cause: errors.New("no default chat model configured"),
-		}
-	}
-	if err != nil {
-		return "", apperrors.New(contracts.ErrInternal, err)
-	}
-	return model.ID, nil
 }
 
 // List 分页查询用户知识库列表。
@@ -253,9 +202,7 @@ func (s *knowledgeBaseService) GetDashboard(ctx context.Context, userID, kbID st
 func (s *knowledgeBaseService) Update(ctx context.Context, userID, kbID string, req *request.UpdateKnowledgeBaseRequest) (*dto.KnowledgeBaseResponse, error) {
 	if req == nil || (req.Name == nil && req.Description == nil && req.Icon == nil &&
 		req.DefaultLanguage == nil && req.QAEnabled == nil && req.AgentEnabled == nil &&
-		req.NetworkEnabled == nil && req.DefaultChatModelID == nil &&
-		req.DefaultEmbeddingModelID == nil && req.DefaultRerankerModelID == nil &&
-		req.DuplicatePolicy == nil) {
+		req.NetworkEnabled == nil && req.DuplicatePolicy == nil) {
 		return nil, apperrors.ErrInvalidArgument
 	}
 	if req.Name != nil && strings.TrimSpace(*req.Name) == "" {
@@ -290,45 +237,6 @@ func (s *knowledgeBaseService) Update(ctx context.Context, userID, kbID string, 
 	}
 	if req.DuplicatePolicy != nil {
 		updates["duplicate_policy"] = *req.DuplicatePolicy
-	}
-	// 默认模型字段：显式传值即更新；传空串表示清除（写 NULL），
-	// 字段未传（nil）时不修改，保证部分更新语义。
-	if req.DefaultChatModelID != nil {
-		if *req.DefaultChatModelID != "" {
-			if _, err := s.modelConfigs.FindChatByID(ctx, userID, *req.DefaultChatModelID); err != nil {
-				if errors.Is(err, repository.ErrModelConfigNotFound) {
-					return nil, apperrors.New(contracts.ErrInvalidArgument, err)
-				}
-				return nil, apperrors.New(contracts.ErrInternal, err)
-			}
-			updates["default_chat_model_id"] = *req.DefaultChatModelID
-			// 问答/Agent 运行时读取 agent_configs.chat_model_id（创建知识库时固化），
-			// 必须同步，否则修改 KB 默认 Chat 模型不会影响实际问答。
-			if err := s.agentConfigs.UpdateChatModel(ctx, userID, kbID, *req.DefaultChatModelID); err != nil && !errors.Is(err, repository.ErrAgentConfigNotFound) {
-				return nil, apperrors.New(contracts.ErrInternal, err)
-			}
-		} else {
-			updates["default_chat_model_id"] = nil
-		}
-	}
-	for field, value := range map[string]*string{
-		"default_embedding_model_id": req.DefaultEmbeddingModelID,
-		"default_reranker_model_id":  req.DefaultRerankerModelID,
-	} {
-		if value == nil {
-			continue
-		}
-		if *value != "" {
-			if _, err := s.modelConfigs.FindEnabledByID(ctx, userID, *value); err != nil {
-				if errors.Is(err, repository.ErrModelConfigNotFound) {
-					return nil, apperrors.New(contracts.ErrInvalidArgument, err)
-				}
-				return nil, apperrors.New(contracts.ErrInternal, err)
-			}
-			updates[field] = *value
-		} else {
-			updates[field] = nil
-		}
 	}
 	updated, err := s.kbs.Update(ctx, userID, kbID, updates)
 	if errors.Is(err, repository.ErrKnowledgeBaseNotFound) {
@@ -444,11 +352,15 @@ func (s *knowledgeBaseService) UpdateSearchConfig(ctx context.Context, userID, k
 		}
 		cfg.AmbiguousScore = *req.AmbiguousScore
 	}
-	if req.RerankerModelID != nil && *req.RerankerModelID != "" {
-		if _, err := s.modelConfigs.FindEnabledByID(ctx, userID, *req.RerankerModelID); err != nil {
-			return nil, apperrors.New(contracts.ErrInvalidArgument, err)
+	if req.RerankerModelID != nil {
+		if *req.RerankerModelID == "" {
+			cfg.RerankerModelID = nil
+		} else {
+			if _, err := s.modelConfigs.FindByIDForType(ctx, userID, *req.RerankerModelID, "reranker"); err != nil {
+				return nil, apperrors.New(contracts.ErrInvalidArgument, err)
+			}
+			cfg.RerankerModelID = req.RerankerModelID
 		}
-		cfg.RerankerModelID = req.RerankerModelID
 	}
 	updated, err := s.searchConfigs.Update(ctx, cfg)
 	if err != nil {
@@ -478,11 +390,10 @@ func defaultSearchConfigEntity(kbID string) *entity.SearchConfig {
 }
 
 // defaultAgentConfigEntity 从 contracts 默认配置构造 Agent 配置实体，网络开关跟随知识库创建请求。
-func defaultAgentConfigEntity(userID, kbID, chatModelID string, networkEnabled bool) *entity.AgentConfig {
+func defaultAgentConfigEntity(userID, kbID string, networkEnabled bool) *entity.AgentConfig {
 	config := contracts.DefaultAgentConfig()
 	agentConfig := &entity.AgentConfig{
 		UserID: userID, KnowledgeBaseID: kbID, Name: "Default Agent",
-		ChatModelID:    chatModelID,
 		MaxReactRounds: config.MaxReactRounds,
 		MaxPlanSteps:   config.MaxPlanSteps,
 		MaxReplans:     config.MaxReplans,
@@ -509,10 +420,8 @@ func knowledgeBaseResponse(kb *entity.KnowledgeBase) *dto.KnowledgeBaseResponse 
 		ID: kb.ID, Name: kb.Name, Description: kb.Description, Icon: kb.Icon,
 		DefaultLanguage: kb.DefaultLanguage, QAEnabled: kb.QAEnabled,
 		AgentEnabled: kb.AgentEnabled, NetworkEnabled: kb.NetworkEnabled,
-		DefaultChatModelID: kb.DefaultChatModelID, DefaultEmbeddingModelID: kb.DefaultEmbeddingModelID,
-		DefaultRerankerModelID: kb.DefaultRerankerModelID,
-		DuplicatePolicy:        kb.DuplicatePolicy,
-		CreatedAt:              kb.CreatedAt, UpdatedAt: kb.UpdatedAt,
+		EmbeddingModelID: kb.EmbeddingModelID, DuplicatePolicy: kb.DuplicatePolicy,
+		CreatedAt: kb.CreatedAt, UpdatedAt: kb.UpdatedAt,
 	}
 }
 
