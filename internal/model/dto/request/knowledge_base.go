@@ -39,4 +39,6 @@ type UpdateKnowledgeBaseRequest struct {
 	NetworkEnabled *bool `json:"network_enabled"`
 	// DuplicatePolicy 文档导入重复处理策略（skip/create_new）。
 	DuplicatePolicy *string `json:"duplicate_policy" binding:"omitempty,oneof=skip create_new"`
+	// ChunkStrategy 知识库级分块策略；inherit 清除覆盖并继承环境配置。
+	ChunkStrategy *string `json:"chunk_strategy" binding:"omitempty,oneof=structured paragraph recursive_fallback auto inherit"`
 }

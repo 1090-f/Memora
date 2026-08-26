@@ -1503,7 +1503,8 @@ func documentResponse(doc *entity.Document) *dto.DocumentResponse {
 		ProcessingStatus: doc.ProcessingStatus, IndexMode: documentIndexMode(doc), FailureStep: doc.FailureStep, FailureReason: doc.FailureReason,
 		ParseWarnings:  doc.ParseWarnings,
 		ContentVersion: doc.ContentVersion, ChunkVersion: doc.ChunkVersion,
-		ActiveIndexVersion: doc.ActiveIndexVersion, CreatedAt: doc.CreatedAt, UpdatedAt: doc.UpdatedAt,
+		ActiveIndexVersion: doc.ActiveIndexVersion, ChunkStrategy: doc.ChunkStrategy,
+		CreatedAt: doc.CreatedAt, UpdatedAt: doc.UpdatedAt,
 	}
 }
 

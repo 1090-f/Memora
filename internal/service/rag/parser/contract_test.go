@@ -154,6 +154,17 @@ func TestParseConfigHashDeterministic(t *testing.T) {
 	if different == first {
 		t.Error("变更解析配置后哈希应变化")
 	}
+	identity := DefaultParseRuntimeIdentity()
+	identity.ParserVersions = map[string]string{
+		ParserNameGoText: GoParserVersion, ParserNameGoMarkdown: "2.0", ParserNameDocling: DoclingParserVersion,
+	}
+	versionChanged, err := ParseConfigHashWithIdentity(options, identity)
+	if err != nil {
+		t.Fatalf("计算 Parser 版本变更哈希失败: %v", err)
+	}
+	if versionChanged == first {
+		t.Error("Parser/Adapter 版本变化必须改变 parse_config_hash")
+	}
 }
 
 // TestParsedDocumentRoundTrip 验证 ParsedDocument 完整序列化往返一致。

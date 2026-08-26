@@ -40,20 +40,27 @@ func (t *tableStrategy) toUnits(block parser.Block, table parser.Table, opts Chu
 		}}, nil
 	}
 
-	// 大表按行拆分：表头（+caption）作为每个子单元的前缀。
+	// 大表按行拆分：标题路径与 caption 始终保留；表头在首块保留，
+	// RepeatTableHead=true 时在后续子块重复。
 	headerBlock := buildHeaders(table.Headers)
-	headerPrefix := buildTablePrefix(block.HeadingPath, table.Caption) + "\n" + headerBlock
+	basePrefix := buildTablePrefix(block.HeadingPath, table.Caption)
 
 	units := make([]*unit, 0, 1+len(table.Rows)/8)
 	batch := make([]string, 0, 8)
 	rowRangeStart := 0
+	chunkPrefix := func(first bool) string {
+		if headerBlock != "" && (first || opts.RepeatTableHead) {
+			return joinNonEmptyLines(basePrefix, headerBlock)
+		}
+		return basePrefix
+	}
 	flush := func(rowRangeEnd int) {
 		if len(batch) == 0 {
 			return
 		}
 		// 行范围（1 起始）：第 a-b 行。
 		rangeText := fmt.Sprintf("（第 %d-%d 行）", rowRangeStart+1, rowRangeEnd)
-		text := headerPrefix + "\n" + rangeText + "\n" + strings.Join(batch, "\n")
+		text := joinNonEmptyLines(chunkPrefix(len(units) == 0), rangeText, strings.Join(batch, "\n"))
 		units = append(units, &unit{
 			text:        text,
 			blockIDs:    []string{block.ID},
@@ -68,11 +75,12 @@ func (t *tableStrategy) toUnits(block parser.Block, table parser.Table, opts Chu
 	// 预测式预算校验：headerPrefix + 行范围 + 当前批次 + 新行 的总 token 数。
 	prospective := func(rowText string, rowRangeEnd int) (int, error) {
 		rangeText := fmt.Sprintf("（第 %d-%d 行）", rowRangeStart+1, rowRangeEnd)
-		text := headerPrefix + "\n" + rangeText + "\n"
+		parts := []string{chunkPrefix(len(units) == 0), rangeText}
 		if len(batch) > 0 {
-			text += strings.Join(batch, "\n") + "\n"
+			parts = append(parts, strings.Join(batch, "\n"))
 		}
-		text += rowText
+		parts = append(parts, rowText)
+		text := joinNonEmptyLines(parts...)
 		return t.tokenizer.Count(text)
 	}
 
@@ -82,16 +90,48 @@ func (t *tableStrategy) toUnits(block parser.Block, table parser.Table, opts Chu
 		if err != nil {
 			return nil, err
 		}
-		if rowTokens > opts.MaxTokens {
+		prefix := joinNonEmptyLines(
+			chunkPrefix(len(units) == 0),
+			fmt.Sprintf("（第 %d-%d 行）", i+1, i+1),
+		)
+		prefixForBudget := prefix
+		if prefixForBudget != "" {
+			prefixForBudget += "\n"
+		}
+		prefixTokens, err := t.tokenizer.Count(prefixForBudget)
+		if err != nil {
+			return nil, err
+		}
+		if rowTokens+prefixTokens > opts.MaxTokens {
 			// 单行超限：单元格文本内部安全拆分。
 			flush(i)
-			pieces, err := t.tokenizer.Split(rowText, opts.MaxTokens, 0)
+			prefix = joinNonEmptyLines(
+				chunkPrefix(len(units) == 0),
+				fmt.Sprintf("（第 %d-%d 行）", i+1, i+1),
+			)
+			prefixForBudget = prefix
+			if prefixForBudget != "" {
+				prefixForBudget += "\n"
+			}
+			prefixTokens, err = t.tokenizer.Count(prefixForBudget)
+			if err != nil {
+				return nil, err
+			}
+			budget := opts.MaxTokens - prefixTokens
+			if budget < 1 {
+				return nil, fmt.Errorf("表格 %s 的标题/caption/表头前缀已超过 MaxTokens", table.ID)
+			}
+			pieces, err := t.tokenizer.Split(rowText, budget, 0)
 			if err != nil {
 				return nil, err
 			}
 			for _, piece := range pieces {
+				piecePrefix := joinNonEmptyLines(
+					chunkPrefix(len(units) == 0),
+					fmt.Sprintf("（第 %d-%d 行）", i+1, i+1),
+				)
 				units = append(units, &unit{
-					text:        headerPrefix + "\n" + piece,
+					text:        joinNonEmptyLines(piecePrefix, piece),
 					blockIDs:    []string{block.ID},
 					contentType: parser.BlockTypeTable,
 					source:      block.Source,
@@ -171,4 +211,15 @@ func buildHeaders(headers [][]string) string {
 // buildRow 构建单行文本。
 func buildRow(row []string) string {
 	return "| " + strings.Join(row, " | ") + " |"
+}
+
+// joinNonEmptyLines 以换行连接非空文本，避免空 caption/header 产生多余空行。
+func joinNonEmptyLines(parts ...string) string {
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if value := strings.TrimSpace(part); value != "" {
+			filtered = append(filtered, value)
+		}
+	}
+	return strings.Join(filtered, "\n")
 }

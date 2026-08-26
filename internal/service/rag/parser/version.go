@@ -7,10 +7,38 @@ import (
 	"fmt"
 )
 
-// ParseConfigHash 计算解析配置的确定性哈希（进入 parse_config_hash）。
-// 相同配置必须产生相同哈希；配置变化必须产生不同哈希。
+// ParseRuntimeIdentity 描述所有可能参与解析的实现版本。
+// Parser 依赖升级必须修改对应版本，确保旧 Parsed Artifact 不会被错误复用。
+type ParseRuntimeIdentity struct {
+	SchemaVersion                string            `json:"schema_version"`
+	AdapterVersion               string            `json:"adapter_version"`
+	DocumentParserServiceVersion string            `json:"document_parser_service_version"`
+	ParserVersions               map[string]string `json:"parser_versions"`
+}
+
+func DefaultParseRuntimeIdentity() ParseRuntimeIdentity {
+	return ParseRuntimeIdentity{
+		SchemaVersion: SchemaVersion, AdapterVersion: AdapterVersion,
+		DocumentParserServiceVersion: DocumentParserServiceVersion,
+		ParserVersions: map[string]string{
+			ParserNameGoText: GoParserVersion, ParserNameGoMarkdown: GoParserVersion,
+			ParserNameDocling: DoclingParserVersion,
+		},
+	}
+}
+
+// ParseConfigHash 计算解析配置与默认 Parser/Adapter 版本的确定性哈希。
 func ParseConfigHash(options ParseOptions) (string, error) {
-	canonical, err := json.Marshal(options)
+	return ParseConfigHashWithIdentity(options, DefaultParseRuntimeIdentity())
+}
+
+// ParseConfigHashWithIdentity 供测试和显式运行时版本配置使用。
+func ParseConfigHashWithIdentity(options ParseOptions, identity ParseRuntimeIdentity) (string, error) {
+	payload := struct {
+		Options ParseOptions         `json:"options"`
+		Runtime ParseRuntimeIdentity `json:"runtime"`
+	}{Options: options, Runtime: identity}
+	canonical, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("序列化解析配置失败: %w", err)
 	}

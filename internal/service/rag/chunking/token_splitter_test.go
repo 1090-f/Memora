@@ -41,9 +41,9 @@ func TestSplitKeepsWholeText(t *testing.T) {
 	}
 	for _, piece := range pieces {
 		tokens, _ := tk.Count(piece)
-		// overlap 允许超出 overlapTokens。
-		if tokens > 200+20 {
-			t.Errorf("分片 %d tokens 超过上限 220: %q", tokens, piece[:min(40, len(piece))])
+		// overlap 已包含在 maxTokens 预算内，最终分片必须严格不超限。
+		if tokens > 200 {
+			t.Errorf("分片 %d tokens 超过上限 200: %q", tokens, piece[:min(40, len(piece))])
 		}
 	}
 	// 拼接内容覆盖原文本（重叠可多不少）。

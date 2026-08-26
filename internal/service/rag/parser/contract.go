@@ -15,6 +15,12 @@ const (
 	ArtifactSchemaVersion = "1.0"
 	// AdapterVersion 是 Docling → ParsedDocument 转换语义版本。
 	AdapterVersion = "1.0"
+	// GoParserVersion 是内置 TXT/Markdown Parser 的转换语义版本。
+	GoParserVersion = "1.0"
+	// DocumentParserServiceVersion 是 Python document-parser 服务协议实现版本。
+	DocumentParserServiceVersion = "0.1.0"
+	// DoclingParserVersion 必须与 services/document-parser/uv.lock 的锁定版本同步。
+	DoclingParserVersion = "2.118.1"
 )
 
 // Parser 名称常量。

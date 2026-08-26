@@ -1,6 +1,7 @@
 package importtask
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	apperrors "github.com/1090-f/Memora/internal/apperror"
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/middleware"
+	"github.com/1090-f/Memora/internal/model/dto/request"
 	"github.com/1090-f/Memora/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -151,11 +153,17 @@ func (ctrl *Controller) Reindex(c *gin.Context) {
 		response.Failure(c, err)
 		return
 	}
-	if err := ctrl.process.Reindex(
+	var req request.ReindexDocumentRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+	if err := ctrl.process.ReindexWithStrategy(
 		c.Request.Context(),
 		contracts.ID(user.ID),
 		status.KnowledgeBaseID,
 		contracts.ID(c.Param("document_id")),
+		req.ChunkStrategy,
 	); err != nil {
 		response.Failure(c, err)
 		return

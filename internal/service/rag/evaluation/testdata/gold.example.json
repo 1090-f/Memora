@@ -1,0 +1,24 @@
+{
+  "schema_version": "retrieval-gold-v1",
+  "name": "请替换为真实业务金标集名称",
+  "cases": [
+    {
+      "id": "example-answerable-001",
+      "question": "请替换为能够由目标文档回答的问题",
+      "relevant_sources": [
+        {
+          "document_id": "请替换为真实 document_id",
+          "start_byte": 0,
+          "end_byte": 0
+        }
+      ],
+      "expected_answerable": true
+    },
+    {
+      "id": "example-unanswerable-001",
+      "question": "请替换为知识库中确实无法回答的问题",
+      "relevant_sources": [],
+      "expected_answerable": false
+    }
+  ]
+}

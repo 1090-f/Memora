@@ -98,10 +98,40 @@ func TestTableSingleRowOverLimitSplitsSafely(t *testing.T) {
 	if len(chunks) < 1 {
 		t.Fatal("应有 Chunk")
 	}
-	// 超限行拆分后每个 Chunk 不超限（允许 overlap）。
+	// 超限行拆分后前缀也计入预算，每个 Chunk 严格不超限。
 	for _, chunk := range chunks {
-		if chunk.TokenCount > 100+100 {
-			t.Errorf("Chunk %d tokens 超限", chunk.TokenCount)
+		if chunk.TokenCount > 100 {
+			t.Errorf("Chunk %d tokens 超限: %q", chunk.TokenCount, chunk.Content)
+		}
+		if !strings.Contains(chunk.Content, "第 1-1 行") {
+			t.Errorf("超长单行子块缺少行范围: %q", chunk.Content)
+		}
+	}
+}
+
+func TestTableRepeatHeaderCanBeDisabled(t *testing.T) {
+	rows := make([][]string, 80)
+	for i := range rows {
+		rows[i] = []string{"地区", "数值数据"}
+	}
+	doc, opts := tableDoc(rows, 40)
+	opts.RepeatTableHead = false
+	chunks, err := newChunker().Chunk(context.Background(), doc, opts)
+	if err != nil {
+		t.Fatalf("Chunk 失败: %v", err)
+	}
+	if len(chunks) < 2 {
+		t.Fatalf("大表应拆成多个 Chunk，实际 %d", len(chunks))
+	}
+	if !strings.Contains(chunks[0].Content, "| 地区 | 销售额 |") {
+		t.Error("首块必须保留原始表头")
+	}
+	for i, chunk := range chunks[1:] {
+		if strings.Contains(chunk.Content, "| 地区 | 销售额 |") {
+			t.Errorf("RepeatTableHead=false 时后续块 %d 不应重复表头: %q", i+1, chunk.Content)
+		}
+		if !strings.Contains(chunk.Content, "表 1 销售数据") {
+			t.Errorf("后续块仍应保留 caption: %q", chunk.Content)
 		}
 	}
 }

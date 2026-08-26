@@ -24,6 +24,7 @@ type DocumentResponse struct {
 	ContentVersion     int       `json:"content_version"`                // ContentVersion 内容版本号
 	ChunkVersion       int       `json:"chunk_version"`                  // ChunkVersion 分块版本号
 	ActiveIndexVersion *int      `json:"active_index_version,omitempty"` // ActiveIndexVersion 当前生效的索引版本，可选
+	ChunkStrategy      *string   `json:"chunk_strategy,omitempty"`       // ChunkStrategy 文档级分块策略覆盖
 	CreatedAt          time.Time `json:"created_at"`                     // CreatedAt 创建时间
 	UpdatedAt          time.Time `json:"updated_at"`                     // UpdatedAt 更新时间
 }

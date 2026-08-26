@@ -31,6 +31,7 @@ import (
 type documentProcessService struct {
 	tasks            repository.ImportTaskRepository
 	docs             repository.DocumentRepository
+	kbs              repository.KnowledgeBaseRepository
 	chunks           repository.DocumentChunkRepository
 	vectors          repository.VectorRepository
 	processor        DocumentProcessor
@@ -44,6 +45,7 @@ type documentProcessService struct {
 func NewDocumentProcessService(
 	tasks repository.ImportTaskRepository,
 	docs repository.DocumentRepository,
+	kbs repository.KnowledgeBaseRepository,
 	chunks repository.DocumentChunkRepository,
 	vectors repository.VectorRepository,
 	processor DocumentProcessor,
@@ -51,7 +53,7 @@ func NewDocumentProcessService(
 	store ObjectStore,
 	previewScheduler previewservice.Scheduler,
 ) DocumentProcessService {
-	return &documentProcessService{tasks: tasks, docs: docs, chunks: chunks, vectors: vectors, processor: processor, embeddings: embeddings, store: store, previewScheduler: previewScheduler}
+	return &documentProcessService{tasks: tasks, docs: docs, kbs: kbs, chunks: chunks, vectors: vectors, processor: processor, embeddings: embeddings, store: store, previewScheduler: previewScheduler}
 }
 
 // CreateImportTask 创建导入任务。
@@ -297,6 +299,11 @@ func (s *documentProcessService) removeUploadedObjects(ctx context.Context, keys
 
 // Reindex 为现有文档创建指向原文来源的新导入任务；Worker 构建新版本后原子切换活动索引。
 func (s *documentProcessService) Reindex(ctx context.Context, userID, kbID, documentID contracts.ID) error {
+	return s.ReindexWithStrategy(ctx, userID, kbID, documentID, nil)
+}
+
+// ReindexWithStrategy 可原子地更新文档级策略选择，并为该文档创建新索引任务。
+func (s *documentProcessService) ReindexWithStrategy(ctx context.Context, userID, kbID, documentID contracts.ID, chunkStrategy *string) error {
 	doc, err := s.docs.FindByIDInKB(ctx, string(userID), string(kbID), string(documentID))
 	if errors.Is(err, repository.ErrDocumentNotFound) {
 		return apperrors.ErrNotFound
@@ -306,6 +313,19 @@ func (s *documentProcessService) Reindex(ctx context.Context, userID, kbID, docu
 	}
 	if (doc.MinIOObjectKey == nil || *doc.MinIOObjectKey == "") && (doc.SourceURL == nil || *doc.SourceURL == "") && doc.SourceType != string(contracts.DocumentSourceManual) {
 		return apperrors.New(contracts.ErrInvalidState, fmt.Errorf("文档没有可重建的原始来源"))
+	}
+	if chunkStrategy != nil {
+		value := strings.TrimSpace(*chunkStrategy)
+		var persisted any = value
+		if value == "" || value == "inherit" {
+			persisted = nil
+			doc.ChunkStrategy = nil
+		} else {
+			doc.ChunkStrategy = &value
+		}
+		if err := s.docs.UpdateProcessing(ctx, doc.ID, map[string]any{"chunk_strategy": persisted}); err != nil {
+			return apperrors.New(contracts.ErrInternal, fmt.Errorf("更新文档分块策略失败: %w", err))
+		}
 	}
 	task := &entity.ImportTask{
 		UserID: doc.UserID, KnowledgeBaseID: doc.KnowledgeBaseID, TargetDirectoryID: doc.DirectoryID,
@@ -474,7 +494,7 @@ func (s *documentProcessService) ProcessImportTask(ctx context.Context, taskID c
 		if err := s.processDocument(ctx, task, doc); err != nil {
 			// 加工失败：文档标记 failed，旧索引不受影响。
 			// 任务状态由 Runner 的 Fail 路径统一回写（Source.Fail → FailTask），避免双重标记。
-			s.markDocumentFailed(ctx, doc.ID, err)
+			s.markDocumentFailed(ctx, doc.ID, task.ID, err)
 			return err
 		}
 	} else {
@@ -492,18 +512,12 @@ func (s *documentProcessService) ProcessImportTask(ctx context.Context, taskID c
 // processDocument 调用 Eino 文档加工 Graph，并在加工过程中更新文档处理状态。
 // 注意：active_index_version 只在新版本全部成功落库后才更新，构建期间旧版本继续可用。
 func (s *documentProcessService) processDocument(ctx context.Context, task *entity.ImportTask, doc *entity.Document) error {
-	indexVersion := 1
-	if doc.ActiveIndexVersion != nil {
-		indexVersion = *doc.ActiveIndexVersion + 1
+	// 在数据库行锁内领取候选版本。owner 使用稳定的任务 ID：同任务重试复用版本，
+	// 并发任务不能清理当前候选；过期任务被接管时会分配更高版本。
+	indexVersion, err := s.docs.BeginIndexBuild(ctx, doc.ID, task.ID, time.Now().UTC().Add(-repository.ImportTaskLease()))
+	if err != nil {
+		return fmt.Errorf("领取文档加工版本失败: %w", err)
 	}
-	// 每次加工递增 index_version：新版本全部落库成功前不切换 active_index_version，
-	// 构建期间旧版本索引继续对外可用。
-	// 加工开始：仅更新状态，不切换 active_index_version。
-	_ = s.docs.UpdateProcessing(ctx, doc.ID, map[string]any{
-		"processing_status": string(contracts.ProcessingParsing),
-		"failure_step":      nil,
-		"failure_reason":    nil,
-	})
 	_ = s.tasks.SetRunningStep(ctx, task.ID, "parsing")
 
 	// 清理同索引版本的残留 Chunk 与向量（重试/部分失败后的幂等保障）。
@@ -553,6 +567,7 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 			},
 		},
 	}
+	input.ChunkStrategyOverride = s.resolveChunkStrategyOverride(ctx, doc, task)
 	// 手工文档：正文存于 documents.content，直接交给流水线（不访问 MinIO）。
 	if task.SourceType == string(contracts.DocumentSourceManual) {
 		content := ""
@@ -571,10 +586,14 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 	// 纯图片文档允许 0 Chunk 成功导入（无文字图片无可索引内容，资产与原文件保留）；
 	// 有正文却分不出 Chunk 的情况由流水线 structure_chunk 节点拒绝。
 	// 加工成功：切换 active_index_version，并记录 Embedding 模型与分段配置哈希。
+	effectiveChunkConfigHash := out.ChunkConfigHash
+	if effectiveChunkConfigHash == "" && s.processor != nil {
+		// 兼容尚未返回文档级哈希的自定义 Processor 实现。
+		effectiveChunkConfigHash = s.processor.ChunkConfigHash()
+	}
 	updates := map[string]any{
-		"processing_status":    string(contracts.ProcessingSucceeded),
-		"active_index_version": indexVersion,
-		"chunk_config_hash":    s.chunkConfigHash(doc),
+		"processing_status": string(contracts.ProcessingSucceeded),
+		"chunk_config_hash": stringPtrOrNil(effectiveChunkConfigHash),
 	}
 	if out.FinalURL != "" {
 		updates["source_url"] = out.FinalURL
@@ -594,6 +613,15 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 	} else {
 		updates["parse_warnings"] = nil
 	}
+	if out.ChunkDiffReport != nil {
+		diffJSON, marshalErr := json.Marshal(out.ChunkDiffReport)
+		if marshalErr != nil {
+			return fmt.Errorf("序列化分块差异报告失败: %w", marshalErr)
+		}
+		updates["chunk_diff_report"] = string(diffJSON)
+	} else {
+		updates["chunk_diff_report"] = nil
+	}
 	if task.SourceType == string(contracts.DocumentSourceURL) {
 		if err := s.tasks.UpdateURLResult(ctx, task.ID, out.FinalURL, out.SourceHash); err != nil {
 			return fmt.Errorf("保存 URL 导入结果失败: %w", err)
@@ -607,36 +635,49 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 		// 新活动版本未生成向量时清空旧模型，避免把关键词索引误报为混合索引。
 		updates["embedding_model_id"] = nil
 	}
-	if err := s.docs.UpdateProcessing(ctx, doc.ID, updates); err != nil {
+	if publisher, ok := s.docs.(repository.IndexBuildCompletionRepository); ok {
+		if err := publisher.PublishIndexBuildAndCompleteTask(ctx, doc.ID, task.ID, indexVersion, updates); err != nil {
+			return fmt.Errorf("发布活动索引并完成任务失败: %w", err)
+		}
+		return nil
+	}
+	// 兼容测试替身和外部自定义仓储；生产 repository 使用上面的事务路径。
+	if err := s.docs.PublishIndexBuild(ctx, doc.ID, task.ID, indexVersion, updates); err != nil {
 		return fmt.Errorf("切换活动索引版本失败: %w", err)
 	}
 	if err := s.tasks.SetRunningStep(ctx, task.ID, "succeeded"); err != nil {
-		return fmt.Errorf("更新导入任务完成步骤失败: %w", err)
+		// active 已经由 fencing 条件安全发布；步骤字段只是过程可观测信息，
+		// 最终任务状态仍由 CompleteSucceeded 统一写入，不能因此把已发布文档误标失败。
+		logger.Warn("更新导入任务完成步骤失败", zap.String("task_id", task.ID), zap.Error(err))
 	}
 	return nil
 }
 
-// chunkConfigHash 返回当前分段配置哈希（与 pipeline 使用的保持一致）。
-func (s *documentProcessService) chunkConfigHash(_ *entity.Document) *string {
-	if s.processor == nil {
-		return nil
+// resolveChunkStrategyOverride 按“文档 > 知识库 > 环境”解析人工覆盖。
+// 环境级策略由 Pipeline 配置承担，因此无覆盖时返回空字符串。
+func (s *documentProcessService) resolveChunkStrategyOverride(ctx context.Context, doc *entity.Document, task *entity.ImportTask) string {
+	if doc != nil && doc.ChunkStrategy != nil {
+		return strings.TrimSpace(*doc.ChunkStrategy)
 	}
-	hash := s.processor.ChunkConfigHash()
-	if hash == "" {
-		return nil
+	if s.kbs == nil || task == nil {
+		return ""
 	}
-	return &hash
+	kb, err := s.kbs.FindByID(ctx, task.UserID, task.KnowledgeBaseID)
+	if err != nil {
+		logger.Warn("读取知识库分块策略失败，回退环境配置", zap.String("knowledge_base_id", task.KnowledgeBaseID), zap.Error(err))
+		return ""
+	}
+	if kb.ChunkStrategy == nil {
+		return ""
+	}
+	return strings.TrimSpace(*kb.ChunkStrategy)
 }
 
 // markDocumentFailed 标记文档处理失败，保留失败步骤与原因。
 // 任务状态由 Runner 的 Fail 路径统一回写。
-func (s *documentProcessService) markDocumentFailed(ctx context.Context, docID string, cause error) {
+func (s *documentProcessService) markDocumentFailed(ctx context.Context, docID, owner string, cause error) {
 	reason := cause.Error()
-	if err := s.docs.UpdateProcessing(ctx, docID, map[string]any{
-		"processing_status": string(contracts.ProcessingFailed),
-		"failure_step":      "document_pipeline",
-		"failure_reason":    reason,
-	}); err != nil {
+	if err := s.docs.FailIndexBuild(ctx, docID, owner, "document_pipeline", reason); err != nil {
 		logger.Error("标记文档处理失败失败", zap.String("document_id", docID), zap.Error(err))
 	}
 }
@@ -721,6 +762,14 @@ func valueOrEmpty(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+// stringPtrOrNil 将空字符串转换为 nil，便于写入可空配置字段。
+func stringPtrOrNil(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 // valueOrZero 将整数指针安全解引用，nil 时返回 0。
