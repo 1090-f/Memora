@@ -122,12 +122,91 @@ func (r *agentConfigRepository) FindByKnowledgeBase(ctx context.Context, userID,
 	return &cfg, nil
 }
 
+// UpdateChatModel 更新知识库 Agent 配置的对话模型 ID。
+// 问答与 Agent 运行时从 agent_configs.chat_model_id 读取模型，
+// 知识库默认 Chat 模型变更时必须同步，否则实际问答仍用旧模型。
+func (r *agentConfigRepository) UpdateChatModel(ctx context.Context, userID, kbID, chatModelID string) error {
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.AgentConfig{}).
+		Where("user_id = ? AND knowledge_base_id = ?", userID, kbID).
+		Update("chat_model_id", chatModelID)
+	if result.Error != nil {
+		return fmt.Errorf("更新 Agent 配置对话模型失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrAgentConfigNotFound
+	}
+	return nil
+}
+
+// UpdateNetworkEnabled 更新知识库 Agent 配置的联网开关。
+// 问答与 Agent 运行时从 agent_configs.network_enabled 读取开关，
+// 知识库联网开关变更时必须同步，否则实际运行仍按旧开关拦截工具。
+func (r *agentConfigRepository) UpdateNetworkEnabled(ctx context.Context, userID, kbID string, enabled bool) error {
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.AgentConfig{}).
+		Where("user_id = ? AND knowledge_base_id = ?", userID, kbID).
+		Update("network_enabled", enabled)
+	if result.Error != nil {
+		return fmt.Errorf("更新 Agent 配置联网开关失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrAgentConfigNotFound
+	}
+	return nil
+}
+
 // modelConfigRepository 是 ModelConfigRepository 接口的 GORM 实现。
 type modelConfigRepository struct{ db *gorm.DB }
 
 // NewModelConfigRepository 创建一个新的模型配置仓储实例。
 func NewModelConfigRepository(db *gorm.DB) ModelConfigRepository {
 	return &modelConfigRepository{db: db}
+}
+
+// FindChatByID 查询指定用户的 Chat 模型配置。
+func (r *modelConfigRepository) FindChatByID(ctx context.Context, userID, modelID string) (*entity.ModelConfig, error) {
+	var cfg entity.ModelConfig
+	// 同时校验归属(user_id)、模型类型、启用状态，并排除软删除行，防止越权访问停用配置。
+	err := dbFromContext(ctx, r.db).WithContext(ctx).
+		Where("id = ? AND user_id = ? AND model_type = 'chat' AND enabled = true AND deleted_at IS NULL", modelID, userID).
+		First(&cfg).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrModelConfigNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询模型配置失败: %w", err)
+	}
+	return &cfg, nil
+}
+
+// FindEnabledByID 查询指定用户的任意已启用模型配置。
+func (r *modelConfigRepository) FindEnabledByID(ctx context.Context, userID, modelID string) (*entity.ModelConfig, error) {
+	var cfg entity.ModelConfig
+	err := dbFromContext(ctx, r.db).WithContext(ctx).
+		Where("id = ? AND user_id = ? AND enabled = true AND deleted_at IS NULL", modelID, userID).
+		First(&cfg).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrModelConfigNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询模型配置失败: %w", err)
+	}
+	return &cfg, nil
+}
+
+// FindDefaultChat 查询指定用户的默认 Chat 模型配置。
+func (r *modelConfigRepository) FindDefaultChat(ctx context.Context, userID string) (*entity.ModelConfig, error) {
+	var cfg entity.ModelConfig
+	// 取该用户最近更新的默认 Chat 模型，避免多行默认配置时结果不确定。
+	err := dbFromContext(ctx, r.db).WithContext(ctx).
+		Where("user_id = ? AND model_type = 'chat' AND is_default = true AND enabled = true AND deleted_at IS NULL", userID).
+		Order("updated_at DESC").First(&cfg).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrModelConfigNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询默认模型配置失败: %w", err)
+	}
+	return &cfg, nil
 }
 
 // FindByIDForType 查询指定用户的已启用模型配置，并校验模型类型。

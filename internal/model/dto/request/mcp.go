@@ -23,6 +23,7 @@ type MCPServerConfig struct {
 	Env              EnvVars           `json:"env,omitempty"`
 	CWD              *string           `json:"cwd,omitempty"`
 	Description      *string           `json:"description,omitempty"`
+	NetworkRequired  *bool             `json:"network_required,omitempty"`
 	ConnectTimeoutMs *int              `json:"connect_timeout_ms,omitempty"`
 	CallTimeoutMs    *int              `json:"call_timeout_ms,omitempty"`
 	MaxResponseBytes *int              `json:"max_response_bytes,omitempty"`

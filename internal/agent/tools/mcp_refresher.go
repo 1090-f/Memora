@@ -19,12 +19,13 @@ type MCPToolProvider interface {
 
 // MCPToolMetadata 封装单个 MCP 工具的完整元数据，供注册表构造工具实例。
 type MCPToolMetadata struct {
-	ServerID      string                      // MCP Server ID
-	ServerTarget  internalmcp.MCPServerTarget // Server 连接目标（URL、headers 等）
-	ToolMetadata  internalmcp.MCPServerTool   // 工具元数据（name、description、schema）
-	ToolID        string                      // MCP 工具在 mcp_tools 表中的 ID
-	Enabled       bool                        // 是否启用
-	CallTimeoutMs int                         // 调用超时（毫秒）
+	ServerID        string                      // MCP Server ID
+	ServerTarget    internalmcp.MCPServerTarget // Server 连接目标（URL、headers 等）
+	ToolMetadata    internalmcp.MCPServerTool   // 工具元数据（name、description、schema）
+	ToolID          string                      // MCP 工具在 mcp_tools 表中的 ID
+	Enabled         bool                        // 是否启用
+	CallTimeoutMs   int                         // 调用超时（毫秒）
+	NetworkRequired bool                        // 是否需要联网（受知识库"联网"开关约束）
 }
 
 // MCPToolRefresher 负责在 Agent 启动前将用户已启用的 MCP 工具动态加载到注册表。
@@ -78,6 +79,7 @@ func (r *MCPToolRefresher) RefreshForUser(ctx context.Context, userID string) er
 			meta.ServerID,
 			meta.ToolID,
 			meta.Enabled,
+			meta.NetworkRequired,
 			timeout,
 		)
 

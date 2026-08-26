@@ -76,6 +76,9 @@ func (s *Service) Run(ctx context.Context, request contracts.AgentRunRequest) (c
 		s.mu.Unlock()
 	}()
 
+	// 发布运行开始事件（路由决策是链路的一部分，因此 started 必须在 router 之前）
+	_ = s.eventPublisher.PublishRunStarted(ctx, request.RunID)
+
 	// 1. Router 决策（此时 cancel 函数已注册，Cancel() 可以生效）
 	decision, err := s.router.Route(runCtx, request.Context)
 	if err != nil {
@@ -163,9 +166,6 @@ func (s *Service) runPlanExecute(ctx context.Context, request contracts.AgentRun
 			Err:           context.Canceled,
 		}
 	}
-
-	// 发布运行开始事件
-	_ = s.eventPublisher.PublishRunStarted(ctx, request.RunID, contracts.ExecutionPlanExecute)
 
 	result, err := s.planGraph.Run(ctx, request)
 	if err != nil {

@@ -258,6 +258,12 @@ func (s *importService) importHTTPServer(ctx context.Context, userID string, nam
 		enabled = *config.Enabled
 	}
 
+	// 远程 HTTP Server 默认需要联网（受知识库"联网"开关约束），可被显式覆盖。
+	networkRequired := true
+	if config.NetworkRequired != nil {
+		networkRequired = *config.NetworkRequired
+	}
+
 	return &entity.MCPServer{
 		BaseEntity:        entity.BaseEntity{ID: uuid.New().String()},
 		UserID:            userID,
@@ -270,6 +276,7 @@ func (s *importService) importHTTPServer(ctx context.Context, userID string, nam
 		ConnectTimeoutMs:  connectTimeoutMs,
 		CallTimeoutMs:     callTimeoutMs,
 		MaxResponseBytes:  maxResponseBytes,
+		NetworkRequired:   networkRequired,
 		Enabled:           enabled,
 		ConnectionStatus:  "unknown",
 	}, nil
@@ -324,6 +331,12 @@ func (s *importService) importStdioServer(ctx context.Context, userID string, na
 		enabled = *config.Enabled
 	}
 
+	// 本地 stdio 进程默认无需联网（不受知识库"联网"开关约束），可被显式覆盖。
+	networkRequired := false
+	if config.NetworkRequired != nil {
+		networkRequired = *config.NetworkRequired
+	}
+
 	return &entity.MCPServer{
 		BaseEntity:       entity.BaseEntity{ID: uuid.New().String()},
 		UserID:           userID,
@@ -338,6 +351,7 @@ func (s *importService) importStdioServer(ctx context.Context, userID string, na
 		ConnectTimeoutMs: connectTimeoutMs,
 		CallTimeoutMs:    callTimeoutMs,
 		MaxResponseBytes: maxResponseBytes,
+		NetworkRequired:  networkRequired,
 		Enabled:          enabled,
 		ConnectionStatus: "unknown",
 	}, nil
@@ -630,12 +644,13 @@ func (s *importService) ListEnabledToolsForRegistry(ctx context.Context, userID 
 
 		// 添加到结果集
 		result = append(result, tools.MCPToolMetadata{
-			ServerID:      server.ID,
-			ServerTarget:  target,
-			ToolMetadata:  toolMetadata,
-			ToolID:        tool.ID,
-			Enabled:       tool.Enabled,
-			CallTimeoutMs: server.CallTimeoutMs,
+			ServerID:        server.ID,
+			ServerTarget:    target,
+			ToolMetadata:    toolMetadata,
+			ToolID:          tool.ID,
+			Enabled:         tool.Enabled,
+			CallTimeoutMs:   server.CallTimeoutMs,
+			NetworkRequired: server.NetworkRequired,
 		})
 	}
 

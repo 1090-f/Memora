@@ -48,6 +48,7 @@ type MCPServerSummary struct {
 	ConnectTimeoutMs int                `json:"connect_timeout_ms"`
 	CallTimeoutMs    int                `json:"call_timeout_ms"`
 	MaxResponseBytes int                `json:"max_response_bytes"`
+	NetworkRequired  bool               `json:"network_required"`
 	Enabled          bool               `json:"enabled"`
 	ConnectionStatus string             `json:"connection_status"`
 	LastTestedAt     *time.Time         `json:"last_tested_at,omitempty"`
@@ -142,6 +143,7 @@ func ConvertToServerSummary(server *entity.MCPServer, tools []MCPToolSummary, wa
 		ConnectTimeoutMs: server.ConnectTimeoutMs,
 		CallTimeoutMs:    server.CallTimeoutMs,
 		MaxResponseBytes: server.MaxResponseBytes,
+		NetworkRequired:  server.NetworkRequired,
 		Enabled:          server.Enabled,
 		ConnectionStatus: server.ConnectionStatus,
 		LastTestedAt:     server.LastTestedAt,

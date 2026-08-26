@@ -90,7 +90,9 @@ func (g *PlanExecuteGraph) Run(ctx context.Context, request contracts.AgentRunRe
 		return contracts.AgentRunResult{}, fmt.Errorf("prepare plan: %w", err)
 	}
 	// 发布计划创建事件
-	_ = g.eventPublisher.PublishPlanCreated(ctx, request.RunID, plan)
+	inputSummary := fmt.Sprintf("用户 query: %s\n可用工具: %v\n计划步骤数限制: %d",
+		request.Context.Query, request.Context.AllowedTools, plan.MaxSteps)
+	_ = g.eventPublisher.PublishPlanCreated(ctx, request.RunID, plan, inputSummary)
 	toolCallBudget := contracts.NewToolCallBudget(request.Config.MaxToolCalls)
 
 	// 持久化计划到数据库
@@ -142,7 +144,7 @@ func (g *PlanExecuteGraph) Run(ctx context.Context, request contracts.AgentRunRe
 		if err := g.executor.PreparePlan(plan, request); err != nil {
 			return contracts.AgentRunResult{}, fmt.Errorf("prepare replanned plan: %w", err)
 		}
-		_ = g.eventPublisher.PublishPlanReplanned(ctx, request.RunID, plan)
+		_ = g.eventPublisher.PublishPlanReplanned(ctx, request.RunID, plan, "")
 
 		// 持久化新版本的计划
 		if g.planRepo != nil {
@@ -825,12 +827,16 @@ func (g *PlanExecuteGraph) executeParallelLayer(ctx context.Context, layer []*co
 		if err := g.checkDependencies(step, toolCtx); err != nil {
 			step.Status = contracts.PlanStepStatusSkipped
 			step.Error = err.Error()
-			_ = g.eventPublisher.PublishStepCompleted(ctx, toolCtx.AgentRunID, step.StepNumber, step.Title, false)
+			_ = g.eventPublisher.PublishStepCompleted(ctx, toolCtx.AgentRunID, step.StepNumber, step.Title, false, "", 0, contracts.TokenUsage{})
 			return nil, contracts.TokenUsage{} // 依赖失败，跳过此步骤
 		}
-		_ = g.eventPublisher.PublishStepStarted(ctx, toolCtx.AgentRunID, step.StepNumber, step.Title)
+		inputSummary := fmt.Sprintf("依赖步骤: %v\n工具: %s\n参数: %v", step.DependsOn, step.ToolName, step.Arguments)
+		startTime := time.Now()
+		_ = g.eventPublisher.PublishStepStarted(ctx, toolCtx.AgentRunID, step.StepNumber, step.Title, inputSummary)
 		usage, err := g.executor.ExecuteStep(ctx, step, toolCtx)
-		_ = g.eventPublisher.PublishStepCompleted(ctx, toolCtx.AgentRunID, step.StepNumber, step.Title, err == nil)
+		durationMs := time.Since(startTime).Milliseconds()
+		outputSummary := extractStepOutputText(step.Output)
+		_ = g.eventPublisher.PublishStepCompleted(ctx, toolCtx.AgentRunID, step.StepNumber, step.Title, err == nil, outputSummary, durationMs, usage)
 		return err, usage
 	}
 
@@ -852,13 +858,17 @@ func (g *PlanExecuteGraph) executeParallelLayer(ctx context.Context, layer []*co
 				step.Status = contracts.PlanStepStatusSkipped
 				step.Error = err.Error()
 				results[idx] = stepResult{err: nil, usage: contracts.TokenUsage{}}
-				_ = g.eventPublisher.PublishStepCompleted(ctx, toolCtx.AgentRunID, step.StepNumber, step.Title, false)
+				_ = g.eventPublisher.PublishStepCompleted(ctx, toolCtx.AgentRunID, step.StepNumber, step.Title, false, "", 0, contracts.TokenUsage{})
 				return
 			}
-			_ = g.eventPublisher.PublishStepStarted(ctx, toolCtx.AgentRunID, step.StepNumber, step.Title)
+			inputSummary := fmt.Sprintf("依赖步骤: %v\n工具: %s\n参数: %v", step.DependsOn, step.ToolName, step.Arguments)
+			startTime := time.Now()
+			_ = g.eventPublisher.PublishStepStarted(ctx, toolCtx.AgentRunID, step.StepNumber, step.Title, inputSummary)
 			usage, err := g.executor.ExecuteStep(ctx, step, toolCtx)
+			durationMs := time.Since(startTime).Milliseconds()
+			outputSummary := extractStepOutputText(step.Output)
 			results[idx] = stepResult{err: err, usage: usage}
-			_ = g.eventPublisher.PublishStepCompleted(ctx, toolCtx.AgentRunID, step.StepNumber, step.Title, err == nil)
+			_ = g.eventPublisher.PublishStepCompleted(ctx, toolCtx.AgentRunID, step.StepNumber, step.Title, err == nil, outputSummary, durationMs, usage)
 		}(i)
 	}
 

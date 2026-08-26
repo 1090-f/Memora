@@ -16,6 +16,7 @@ export interface McpServer {
   connect_timeout_ms: number;
   call_timeout_ms: number;
   max_response_bytes: number;
+  network_required: boolean;
   enabled: boolean;
   connection_status: ConnectionStatus;
   last_tested_at?: string;
@@ -62,6 +63,7 @@ export interface McpServerConfig {
   env?: Record<string, string>;
   cwd?: string;
   description?: string;
+  network_required?: boolean;
   connect_timeout_ms?: number;
   call_timeout_ms?: number;
   max_response_bytes?: number;

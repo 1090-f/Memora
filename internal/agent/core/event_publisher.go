@@ -13,15 +13,17 @@ import (
 // EventPublisher 是 Core 内部使用的生命周期事件发布抽象。
 type EventPublisher interface {
 	Publish(ctx context.Context, event contracts.AgentEvent) error
-	PublishRunStarted(ctx context.Context, runID contracts.ID, mode contracts.ExecutionMode) error
+	// PublishRunStarted 发布运行开始事件。
+	// 注意：执行模式由路由器决定，开始事件发布时模式尚未确定，因此不携带模式参数。
+	PublishRunStarted(ctx context.Context, runID contracts.ID) error
 	PublishRunCompleted(ctx context.Context, runID contracts.ID, result contracts.AgentRunResult) error
 	PublishRunFailed(ctx context.Context, runID contracts.ID, mode contracts.ExecutionMode, err error) error
 	PublishRunCancelled(ctx context.Context, runID contracts.ID) error
 	PublishRouterSelected(ctx context.Context, runID contracts.ID, decision contracts.RouterDecision) error
 	// PublishReactRoundStarted 发布 ReAct 轮次开始事件。
-	PublishReactRoundStarted(ctx context.Context, runID contracts.ID, round int) error
+	PublishReactRoundStarted(ctx context.Context, runID contracts.ID, round int, inputSummary string) error
 	// PublishReactRoundCompleted 发布 ReAct 轮次完成事件。
-	PublishReactRoundCompleted(ctx context.Context, runID contracts.ID, round int, toolCallCount int) error
+	PublishReactRoundCompleted(ctx context.Context, runID contracts.ID, round int, toolCallCount int, modelDecision string, durationMs int64, tokenUsage contracts.TokenUsage) error
 	// PublishToolCallStarted 发布工具调用开始事件。
 	PublishToolCallStarted(ctx context.Context, runID contracts.ID, toolName string, callID contracts.ID) error
 	// PublishToolCallCompleted 发布工具调用完成事件。
@@ -29,20 +31,20 @@ type EventPublisher interface {
 	// PublishAnswerDelta 发布流式回答增量事件。
 	PublishAnswerDelta(ctx context.Context, runID contracts.ID, delta string) error
 	// PublishPlanCreated 发布计划创建事件。
-	PublishPlanCreated(ctx context.Context, runID contracts.ID, plan *contracts.Plan) error
+	PublishPlanCreated(ctx context.Context, runID contracts.ID, plan *contracts.Plan, inputSummary string) error
 	// PublishPlanReplanned 发布计划重新规划事件。
-	PublishPlanReplanned(ctx context.Context, runID contracts.ID, plan *contracts.Plan) error
+	PublishPlanReplanned(ctx context.Context, runID contracts.ID, plan *contracts.Plan, inputSummary string) error
 	// PublishStepStarted 发布计划步骤开始事件。
-	PublishStepStarted(ctx context.Context, runID contracts.ID, stepNo int, title string) error
+	PublishStepStarted(ctx context.Context, runID contracts.ID, stepNo int, title string, inputSummary string) error
 	// PublishStepCompleted 发布计划步骤完成事件。
-	PublishStepCompleted(ctx context.Context, runID contracts.ID, stepNo int, title string, success bool) error
+	PublishStepCompleted(ctx context.Context, runID contracts.ID, stepNo int, title string, success bool, outputSummary string, durationMs int64, tokenUsage contracts.TokenUsage) error
 }
 
 // NoopEventPublisher 用于未接入事件存储时保持执行链路可运行。
 type NoopEventPublisher struct{}
 
 func (NoopEventPublisher) Publish(context.Context, contracts.AgentEvent) error { return nil }
-func (NoopEventPublisher) PublishRunStarted(context.Context, contracts.ID, contracts.ExecutionMode) error {
+func (NoopEventPublisher) PublishRunStarted(context.Context, contracts.ID) error {
 	return nil
 }
 func (NoopEventPublisher) PublishRunCompleted(context.Context, contracts.ID, contracts.AgentRunResult) error {
@@ -55,10 +57,10 @@ func (NoopEventPublisher) PublishRunCancelled(context.Context, contracts.ID) err
 func (NoopEventPublisher) PublishRouterSelected(context.Context, contracts.ID, contracts.RouterDecision) error {
 	return nil
 }
-func (NoopEventPublisher) PublishReactRoundStarted(context.Context, contracts.ID, int) error {
+func (NoopEventPublisher) PublishReactRoundStarted(context.Context, contracts.ID, int, string) error {
 	return nil
 }
-func (NoopEventPublisher) PublishReactRoundCompleted(context.Context, contracts.ID, int, int) error {
+func (NoopEventPublisher) PublishReactRoundCompleted(context.Context, contracts.ID, int, int, string, int64, contracts.TokenUsage) error {
 	return nil
 }
 func (NoopEventPublisher) PublishToolCallStarted(context.Context, contracts.ID, string, contracts.ID) error {
@@ -68,16 +70,16 @@ func (NoopEventPublisher) PublishToolCallCompleted(context.Context, contracts.ID
 	return nil
 }
 func (NoopEventPublisher) PublishAnswerDelta(context.Context, contracts.ID, string) error { return nil }
-func (NoopEventPublisher) PublishPlanCreated(context.Context, contracts.ID, *contracts.Plan) error {
+func (NoopEventPublisher) PublishPlanCreated(context.Context, contracts.ID, *contracts.Plan, string) error {
 	return nil
 }
-func (NoopEventPublisher) PublishPlanReplanned(context.Context, contracts.ID, *contracts.Plan) error {
+func (NoopEventPublisher) PublishPlanReplanned(context.Context, contracts.ID, *contracts.Plan, string) error {
 	return nil
 }
-func (NoopEventPublisher) PublishStepStarted(context.Context, contracts.ID, int, string) error {
+func (NoopEventPublisher) PublishStepStarted(context.Context, contracts.ID, int, string, string) error {
 	return nil
 }
-func (NoopEventPublisher) PublishStepCompleted(context.Context, contracts.ID, int, string, bool) error {
+func (NoopEventPublisher) PublishStepCompleted(context.Context, contracts.ID, int, string, bool, string, int64, contracts.TokenUsage) error {
 	return nil
 }
 
@@ -119,8 +121,8 @@ func (p *SequencedEventPublisher) publish(ctx context.Context, runID contracts.I
 	return p.Publish(ctx, contracts.AgentEvent{RunID: runID, EventType: typ, Data: payload})
 }
 
-func (p *SequencedEventPublisher) PublishRunStarted(ctx context.Context, id contracts.ID, mode contracts.ExecutionMode) error {
-	return p.publish(ctx, id, contracts.EventRunStarted, map[string]any{"execution_mode": mode})
+func (p *SequencedEventPublisher) PublishRunStarted(ctx context.Context, id contracts.ID) error {
+	return p.publish(ctx, id, contracts.EventRunStarted, map[string]any{"execution_mode": ""})
 }
 func (p *SequencedEventPublisher) PublishRunCompleted(ctx context.Context, id contracts.ID, result contracts.AgentRunResult) error {
 	return p.publish(ctx, id, contracts.EventRunCompleted, map[string]any{"final_result": result.FinalResult})
@@ -135,21 +137,32 @@ func (p *SequencedEventPublisher) PublishRunCancelled(ctx context.Context, id co
 	return p.publish(ctx, id, contracts.EventRunCancelled, nil)
 }
 func (p *SequencedEventPublisher) PublishRouterSelected(ctx context.Context, id contracts.ID, decision contracts.RouterDecision) error {
-	return p.publish(ctx, id, contracts.EventRouterCompleted, decision)
-}
-
-func (p *SequencedEventPublisher) PublishReactRoundStarted(ctx context.Context, id contracts.ID, round int) error {
-	return p.publish(ctx, id, contracts.EventReactRoundStarted, map[string]any{
-		"round_no": round,
-		"round":    round,
+	return p.publish(ctx, id, contracts.EventRouterCompleted, map[string]any{
+		"execution_mode": decision.ExecutionMode,
+		"reason_summary": decision.ReasonSummary,
+		"confidence":     decision.Confidence,
+		"fallback_used":  decision.FallbackUsed,
+		"input_summary":  "", // 由调用方填充
 	})
 }
 
-func (p *SequencedEventPublisher) PublishReactRoundCompleted(ctx context.Context, id contracts.ID, round int, toolCallCount int) error {
+func (p *SequencedEventPublisher) PublishReactRoundStarted(ctx context.Context, id contracts.ID, round int, inputSummary string) error {
+	return p.publish(ctx, id, contracts.EventReactRoundStarted, map[string]any{
+		"round_no":      round,
+		"round":         round,
+		"input_summary": inputSummary,
+	})
+}
+
+func (p *SequencedEventPublisher) PublishReactRoundCompleted(ctx context.Context, id contracts.ID, round int, toolCallCount int, modelDecision string, durationMs int64, tokenUsage contracts.TokenUsage) error {
 	return p.publish(ctx, id, contracts.EventReactRoundCompleted, map[string]any{
 		"round_no":        round,
 		"round":           round,
 		"tool_call_count": toolCallCount,
+		"model_decision":  modelDecision,
+		"output_summary":  modelDecision,
+		"duration_ms":     durationMs,
+		"token_usage":     tokenUsage,
 	})
 }
 
@@ -185,49 +198,61 @@ func (p *SequencedEventPublisher) PublishAnswerDelta(ctx context.Context, id con
 	return p.publish(ctx, id, contracts.EventAnswerDelta, map[string]any{"delta": delta})
 }
 
-func (p *SequencedEventPublisher) PublishPlanCreated(ctx context.Context, id contracts.ID, plan *contracts.Plan) error {
+func (p *SequencedEventPublisher) PublishPlanCreated(ctx context.Context, id contracts.ID, plan *contracts.Plan, inputSummary string) error {
 	steps := make([]map[string]any, len(plan.Steps))
 	for i, step := range plan.Steps {
 		steps[i] = map[string]any{
-			"step_no": i + 1,
-			"title":   step.Title,
-			"status":  step.Status,
+			"step_no":          i + 1,
+			"title":            step.Title,
+			"description":      step.Description,
+			"recommended_tool": step.ToolName,
+			"depends_on":       step.DependsOn,
+			"status":           step.Status,
 		}
 	}
 	return p.publish(ctx, id, contracts.EventPlanCreated, map[string]any{
-		"version": plan.ReplanCount + 1,
-		"goal":    plan.Goal,
-		"steps":   steps,
+		"version":       plan.ReplanCount + 1,
+		"goal":          plan.Goal,
+		"input_summary": inputSummary,
+		"steps":         steps,
 	})
 }
 
-func (p *SequencedEventPublisher) PublishPlanReplanned(ctx context.Context, id contracts.ID, plan *contracts.Plan) error {
+func (p *SequencedEventPublisher) PublishPlanReplanned(ctx context.Context, id contracts.ID, plan *contracts.Plan, inputSummary string) error {
 	steps := make([]map[string]any, len(plan.Steps))
 	for i, step := range plan.Steps {
 		steps[i] = map[string]any{
-			"step_no": i + 1,
-			"title":   step.Title,
-			"status":  step.Status,
+			"step_no":          i + 1,
+			"title":            step.Title,
+			"description":      step.Description,
+			"recommended_tool": step.ToolName,
+			"depends_on":       step.DependsOn,
+			"status":           step.Status,
 		}
 	}
 	return p.publish(ctx, id, contracts.EventPlanReplanned, map[string]any{
-		"version": plan.ReplanCount + 1,
-		"goal":    plan.Goal,
-		"steps":   steps,
+		"version":       plan.ReplanCount + 1,
+		"goal":          plan.Goal,
+		"input_summary": inputSummary,
+		"steps":         steps,
 	})
 }
 
-func (p *SequencedEventPublisher) PublishStepStarted(ctx context.Context, id contracts.ID, stepNo int, title string) error {
+func (p *SequencedEventPublisher) PublishStepStarted(ctx context.Context, id contracts.ID, stepNo int, title string, inputSummary string) error {
 	return p.publish(ctx, id, contracts.EventPlanStepStarted, map[string]any{
-		"step_no": stepNo,
-		"title":   title,
+		"step_no":       stepNo,
+		"title":         title,
+		"input_summary": inputSummary,
 	})
 }
 
-func (p *SequencedEventPublisher) PublishStepCompleted(ctx context.Context, id contracts.ID, stepNo int, title string, success bool) error {
+func (p *SequencedEventPublisher) PublishStepCompleted(ctx context.Context, id contracts.ID, stepNo int, title string, success bool, outputSummary string, durationMs int64, tokenUsage contracts.TokenUsage) error {
 	return p.publish(ctx, id, contracts.EventPlanStepCompleted, map[string]any{
-		"step_no": stepNo,
-		"title":   title,
-		"success": success,
+		"step_no":        stepNo,
+		"title":          title,
+		"success":        success,
+		"output_summary": outputSummary,
+		"duration_ms":    durationMs,
+		"token_usage":    tokenUsage,
 	})
 }

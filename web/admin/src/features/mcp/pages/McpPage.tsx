@@ -41,6 +41,7 @@ function ServerCard({ server, onDelete, onTest, onDiscover, onToggleServer, onTo
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
               <Typography variant="h6">{server.name}</Typography>
               <Chip size="small" label={server.transport === 'stdio' ? 'stdio' : 'Streamable HTTP'} />
+              <Chip size="small" label={server.network_required ? '需联网' : '本地运行'} color={server.network_required ? 'info' : 'default'} variant="outlined" />
               <Chip size="small" color={server.connection_status === 'available' ? 'success' : server.connection_status === 'unavailable' ? 'error' : 'default'} label={statusLabel[server.connection_status]} />
             </Stack>
             <Typography color="text.secondary" sx={{ overflowWrap: 'anywhere' }}>
@@ -116,8 +117,8 @@ function ImportDialog({ open, onClose, onImported }: { open: boolean; onClose: (
   return <Dialog open={open} onClose={handleClose} fullWidth maxWidth="md">
     <DialogTitle>导入 MCP Server</DialogTitle>
     <DialogContent>
-      <Typography color="text.secondary" mb={2}>支持 streamable_http 和 stdio 配置。敏感 Header、环境变量只会在服务端加密保存。</Typography>
-      <TextField fullWidth multiline minRows={12} label="MCP 配置 JSON" value={json} onChange={(event) => setJson(event.target.value)} error={!!jsonError} helperText={jsonError || '格式：{ "mcpServers": { "名称": { ... } } }'} inputProps={{ spellCheck: false }} />
+      <Typography color="text.secondary" mb={2}>支持 streamable_http 和 stdio 配置。敏感 Header、环境变量只会在服务端加密保存。stdio 本地服务默认不联网；如需联网请设置 {"\"network_required\": true"}，远程 HTTP 服务默认需要联网。</Typography>
+      <TextField fullWidth multiline minRows={12} label="MCP 配置 JSON" value={json} onChange={(event) => setJson(event.target.value)} error={!!jsonError} helperText={jsonError || '格式：{ "mcpServers": { "名称": { "command": "npx", "args": ["-y", "包名"], "network_required": true } } }'} inputProps={{ spellCheck: false }} />
       {mutation.error && <Alert severity="error" sx={{ mt: 2 }}>{(mutation.error as Error).message}</Alert>}
       {failedServers.length > 0 && (
         <Stack spacing={1} mt={2}>

@@ -119,7 +119,7 @@ func (s *knowledgeBaseService) Create(ctx context.Context, userID string, req *r
 			return err
 		}
 
-		agentConfig := defaultAgentConfigEntity(userID, kb.ID)
+		agentConfig := defaultAgentConfigEntity(userID, kb.ID, boolValue(req.NetworkEnabled, false))
 		if err := s.agentConfigs.Create(txCtx, agentConfig); err != nil {
 			return err
 		}
@@ -229,6 +229,11 @@ func (s *knowledgeBaseService) Update(ctx context.Context, userID, kbID string, 
 	}
 	if req.NetworkEnabled != nil {
 		updates["network_enabled"] = *req.NetworkEnabled
+		// 问答/Agent 运行时读取 agent_configs.network_enabled（创建知识库时固化），
+		// 必须同步，否则开关变更不会影响实际工具调用拦截。
+		if err := s.agentConfigs.UpdateNetworkEnabled(ctx, userID, kbID, *req.NetworkEnabled); err != nil && !errors.Is(err, repository.ErrAgentConfigNotFound) {
+			return nil, apperrors.New(contracts.ErrInternal, err)
+		}
 	}
 	if req.DuplicatePolicy != nil {
 		updates["duplicate_policy"] = *req.DuplicatePolicy
@@ -391,10 +396,9 @@ func defaultSearchConfigEntity(kbID string) *entity.SearchConfig {
 	}
 }
 
-// defaultAgentConfigEntity 从 contracts 默认配置构造 Agent 配置实体，网络功能默认关闭。
-func defaultAgentConfigEntity(userID, kbID string) *entity.AgentConfig {
+// defaultAgentConfigEntity 从 contracts 默认配置构造 Agent 配置实体，网络开关跟随知识库创建请求。
+func defaultAgentConfigEntity(userID, kbID string, networkEnabled bool) *entity.AgentConfig {
 	config := contracts.DefaultAgentConfig()
-	networkEnabled := false
 	agentConfig := &entity.AgentConfig{
 		UserID: userID, KnowledgeBaseID: kbID, Name: "Default Agent",
 		MaxReactRounds: config.MaxReactRounds,
