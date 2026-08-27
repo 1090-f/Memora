@@ -32,7 +32,7 @@ func TestSequencedEventPublisherUsesCanonicalReactAndToolFields(t *testing.T) {
 	ctx := context.Background()
 	runID := contracts.ID("run-1")
 
-	if err := publisher.PublishReactRoundStarted(ctx, runID, 2); err != nil {
+	if err := publisher.PublishReactRoundStarted(ctx, runID, 2, "test input"); err != nil {
 		t.Fatalf("publish round: %v", err)
 	}
 	if err := publisher.PublishToolCallStarted(ctx, runID, "knowledge_search", contracts.ID("call-1")); err != nil {
