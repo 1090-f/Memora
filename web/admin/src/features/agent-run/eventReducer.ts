@@ -149,13 +149,30 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
         fallback_used: typeof payload.fallback_used === 'boolean' ? payload.fallback_used : undefined,
       });
     case 'agent.stage.updated':
-      return withEntry(next, {
-        kind: 'status',
-        sequence: event.sequence,
-        title: stringValue(payload.summary, stringValue(payload.stage, '运行阶段')),
-        status: stringValue(payload.status, 'running'),
-        error_message: stringValue(payload.error_message),
-      });
+      {
+        const stage = stringValue(payload.stage, stringValue(event.stage, 'unknown'));
+        const rawStatus = stringValue(payload.status, stringValue(event.status, 'running'));
+        const status = (['pending', 'running', 'succeeded', 'failed', 'skipped'].includes(rawStatus) ? rawStatus : 'running') as 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped';
+        const stageEntry: AgentTimelineEntry = {
+          kind: 'stage',
+          sequence: event.sequence,
+          stage,
+          status,
+          summary: stringValue(payload.summary) || undefined,
+          started_at: stringValue(payload.started_at) || undefined,
+          ended_at: stringValue(payload.ended_at) || undefined,
+          duration_ms: typeof payload.duration_ms === 'number' ? payload.duration_ms : undefined,
+          error_code: stringValue(payload.error_code) || undefined,
+          error_message: stringValue(payload.error_message) || undefined,
+          metadata: typeof payload.metadata === 'object' && payload.metadata !== null && !Array.isArray(payload.metadata) ? payload.metadata as Record<string, unknown> : undefined,
+        };
+        const updated = updateLastEntry(
+          next.timeline,
+          (entry) => entry.kind === 'stage' && entry.stage === stage && entry.status === 'running',
+          (entry) => ({ ...stageEntry, sequence: entry.sequence }),
+        );
+        return updated === next.timeline ? withEntry(next, stageEntry) : { ...next, timeline: updated };
+      }
     case 'agent.plan.created': {
       // 初始化计划展示面板，包含版本号、目标、步骤列表等完整信息。
       const planSteps = Array.isArray(payload.steps)

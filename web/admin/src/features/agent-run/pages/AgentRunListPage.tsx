@@ -139,8 +139,14 @@ function inputSummary(value?: string) {
 }
 
 function stepStatusText(status: string) {
-  return status === 'completed' || status === 'succeeded' ? '已完成' : status === 'failed' ? '失败' : status === 'running' ? '进行中' : '等待中';
+  return status === 'completed' || status === 'succeeded' ? '已完成' : status === 'skipped' ? '已跳过' : status === 'failed' ? '失败' : status === 'running' ? '进行中' : '等待中';
 }
+
+const stageLabels: Record<string, string> = {
+  route: '执行路径选择', query_rewrite: '查询改写', keyword_retrieve: '关键词检索', vector_retrieve: '向量检索',
+  fusion: '结果融合', rerank: '结果重排', knowledge_check: '知识充分性判断', context_build: '上下文构造',
+  model_generate: '模型生成', tool_call: '工具调用', answer: '回答完成',
+};
 
 function RunTimeline({ run, toolCalls, liveState }: { run: AgentRun; toolCalls: AgentToolCall[]; liveState: AgentRunViewState }) {
   const entries = timelineEntries(liveState);
@@ -191,6 +197,12 @@ function RunTimeline({ run, toolCalls, liveState }: { run: AgentRun; toolCalls: 
               title = entry.title;
               circleStatus = entry.status === 'running' ? 'running' : 'pending';
             }
+            break;
+          case 'stage':
+            title = stageLabels[entry.stage] ?? entry.stage;
+            detail = [entry.summary, entry.error_code, entry.error_message].filter(Boolean).join(' · ');
+            duration = entry.duration_ms;
+            circleStatus = entry.status === 'failed' ? 'failed' : entry.status === 'succeeded' || entry.status === 'skipped' ? 'completed' : entry.status === 'running' ? 'running' : 'pending';
             break;
           case 'router':
             title = '分析问题并确定执行模式';

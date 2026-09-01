@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/1090-f/Memora/internal/service/rag/canonical"
 	"github.com/1090-f/Memora/internal/service/rag/chunking"
@@ -147,6 +148,35 @@ func TestPipelineParsesTextPersistsChunksAndArtifact(t *testing.T) {
 	}
 	if _, ok := store.objects["derived/u1/d1/content-1/parse-"+hashOfParseOptions()+"/parsed-document.json.zst"]; !ok {
 		t.Error("ParsedDocument 未保存")
+	}
+}
+
+func TestPipelineReportsRealDocumentStageBoundaries(t *testing.T) {
+	store := newFakeStore()
+	content := "# 标题\n\n用于阶段观测的正文。"
+	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.md", strings.NewReader(content), int64(len(content)), "text/markdown")
+	p, err := NewDocumentPipeline(testPipelineConfig(store, `{}`))
+	if err != nil {
+		t.Fatalf("构造 pipeline 失败: %v", err)
+	}
+	observations := make(map[contracts.DocumentStage][]contracts.StageObservation)
+	ctx := contracts.WithDocumentStageReporter(context.Background(), func(_ context.Context, stage contracts.DocumentStage, observation contracts.StageObservation) {
+		observations[stage] = append(observations[stage], observation)
+	})
+	if _, err := p.Run(ctx, processInput(store, "a.md")); err != nil {
+		t.Fatalf("运行 pipeline 失败: %v", err)
+	}
+	for _, stage := range []contracts.DocumentStage{contracts.DocumentStageParse, contracts.DocumentStageNormalize, contracts.DocumentStageChunk} {
+		items := observations[stage]
+		if len(items) != 2 || items[0].Status != contracts.StageRunning || items[1].Status != contracts.StageSucceeded {
+			t.Fatalf("阶段 %s 的生命周期不完整: %#v", stage, items)
+		}
+		if items[1].StartedAt == nil || items[1].EndedAt == nil || items[1].DurationMS == nil {
+			t.Fatalf("阶段 %s 缺少时间字段: %#v", stage, items[1])
+		}
+	}
+	if items := observations[contracts.DocumentStageEmbed]; len(items) != 1 || items[0].Status != contracts.StageSkipped {
+		t.Fatalf("未配置向量时应明确跳过 embed: %#v", items)
 	}
 }
 

@@ -169,6 +169,14 @@ func (m *Manager) heartbeatLoop(ctx context.Context) {
 		if err := m.redis.Set(ctx, "worker:heartbeat:"+m.name, time.Now().UTC().Unix(), 30*time.Second).Err(); err != nil && ctx.Err() == nil {
 			logger.Warn("更新 Worker 心跳失败", zap.String("worker", m.name), zap.Error(err))
 		}
+		if snapshot, err := m.tasks.HealthSnapshot(ctx); err == nil {
+			metrics.QueueDepth("document_process", "pending", snapshot.Pending)
+			metrics.QueueDepth("document_process", "running", snapshot.Running)
+			metrics.QueueDepth("document_process", "failed", snapshot.Failed)
+			metrics.QueueHealth("document_process", snapshot.OldestPendingAgeSeconds, snapshot.Retried)
+		} else if ctx.Err() == nil {
+			logger.Warn("读取文档任务健康指标失败", zap.Error(err))
+		}
 		select {
 		case <-ctx.Done():
 			return

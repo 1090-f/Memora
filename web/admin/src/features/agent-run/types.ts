@@ -100,6 +100,7 @@ export interface CreateAgentRunResponse {
 // 渲染端按数组顺序严格还原真实执行顺序（工具与步骤/轮次穿插展示）。
 export type AgentTimelineEntry =
   | { kind: 'status'; sequence: number; title: string; status: string; error_message?: string }
+  | { kind: 'stage'; sequence: number; stage: string; status: 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped'; summary?: string; started_at?: string; ended_at?: string; duration_ms?: number; error_code?: string; error_message?: string; metadata?: Record<string, unknown> }
   | { kind: 'router'; sequence: number; execution_mode: 'react' | 'plan_execute'; reason_summary: string; input_summary?: string; confidence?: number; fallback_used?: boolean }
   | { kind: 'plan_created'; sequence: number; version: number; goal: string; step_count: number; replanned?: boolean; input_summary?: string; steps_detail?: Array<{ step_no: number; title: string; description?: string; recommended_tool?: string; depends_on?: string[]; status: string }> }
   | { kind: 'plan_step'; sequence: number; version: number; step_no: number; title: string; status: string; error_message?: string; input_summary?: string; output_summary?: string; duration_ms?: number; token_usage?: { input_tokens: number; output_tokens: number; total_tokens: number } }

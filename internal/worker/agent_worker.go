@@ -54,6 +54,7 @@ type AgentWorker struct {
 	events          contracts.EventPublisher
 	config          AgentWorkerConfig // Worker 配置
 	mu              sync.Mutex        // 保护 running 状态的互斥锁
+	stageStarts     sync.Map          // run/stage -> time.Time，补齐阶段真实开始/结束时间
 	running         bool              // 是否正在运行
 }
 
@@ -418,7 +419,28 @@ func (w *AgentWorker) publishStage(ctx context.Context, runID contracts.ID, stag
 	if len(metadata) > 0 {
 		safeMetadata = metadata[0]
 	}
-	payload, err := json.Marshal(contracts.StageObservation{Stage: string(stage), Status: status, DurationMS: &durationMS, Summary: summary, Metadata: safeMetadata})
+	now := time.Now().UTC()
+	stageKey := string(runID) + "/" + string(stage)
+	var startedAt, endedAt *time.Time
+	var observedDuration *int64
+	if status == contracts.StageRunning {
+		w.stageStarts.Store(stageKey, now)
+		startedAt = &now
+	} else {
+		started := now
+		if value, ok := w.stageStarts.LoadAndDelete(stageKey); ok {
+			if stored, valid := value.(time.Time); valid {
+				started = stored
+			}
+		} else if durationMS > 0 {
+			started = now.Add(-time.Duration(durationMS) * time.Millisecond)
+		}
+		if durationMS <= 0 {
+			durationMS = now.Sub(started).Milliseconds()
+		}
+		startedAt, endedAt, observedDuration = &started, &now, &durationMS
+	}
+	payload, err := json.Marshal(contracts.StageObservation{Stage: string(stage), Status: status, StartedAt: startedAt, EndedAt: endedAt, DurationMS: observedDuration, Summary: summary, Metadata: safeMetadata})
 	if err != nil {
 		return
 	}

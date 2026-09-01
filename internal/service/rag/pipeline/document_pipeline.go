@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/internal/service/rag/asset"
@@ -152,6 +153,26 @@ type pipelineState struct {
 	// indexDocs 供向量索引节点使用（persist_chunks 后填充）。
 	indexDocs     []*schema.Document
 	loadedContent string
+	stageStarted  map[contracts.DocumentStage]time.Time
+}
+
+func startDocumentStage(ctx context.Context, state *pipelineState, stage contracts.DocumentStage, summary string) {
+	if state.stageStarted == nil {
+		state.stageStarted = make(map[contracts.DocumentStage]time.Time)
+	}
+	started := time.Now().UTC()
+	state.stageStarted[stage] = started
+	contracts.ReportDocumentStage(ctx, stage, contracts.StageObservation{Stage: string(stage), Status: contracts.StageRunning, StartedAt: &started, Summary: summary})
+}
+
+func finishDocumentStage(ctx context.Context, state *pipelineState, stage contracts.DocumentStage, status contracts.StageStatus, summary string, metadata map[string]any) {
+	ended := time.Now().UTC()
+	started, ok := state.stageStarted[stage]
+	if !ok {
+		started = ended
+	}
+	duration := ended.Sub(started).Milliseconds()
+	contracts.ReportDocumentStage(ctx, stage, contracts.StageObservation{Stage: string(stage), Status: status, StartedAt: &started, EndedAt: &ended, DurationMS: &duration, Summary: summary, Metadata: metadata})
 }
 
 // DocumentPipeline 是已编译的文档加工编排。
@@ -207,7 +228,8 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 	// load_source：URL 来源在 Worker 内通过安全 Eino Loader 抓取；文件来源保持 MinIO 流；
 	// 手工文档（manual）直接使用正文 Content，不访问 MinIO。
 	loadSourceLambda := compose.InvokableLambda(func(ctx context.Context, input ProcessInput) (*pipelineState, error) {
-		state := &pipelineState{input: input}
+		state := &pipelineState{input: input, stageStarted: make(map[contracts.DocumentStage]time.Time)}
+		startDocumentStage(ctx, state, contracts.DocumentStageParse, "正在加载并解析文档")
 		if input.Content != "" {
 			state.loadedContent = input.Content
 			if state.input.FileName == "" {
@@ -376,6 +398,7 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		if _, err := artifactStore.Save(ctx, state.artifactPrefix, state.doc, parseConfigHash); err != nil {
 			return nil, fmt.Errorf("保存 Parsed Artifact 失败: %w", err)
 		}
+		finishDocumentStage(ctx, state, contracts.DocumentStageParse, contracts.StageSucceeded, "文档解析完成", map[string]any{"warning_count": len(state.doc.Warnings)})
 		return state, nil
 	})
 	if err := g.AddLambdaNode("persist_artifact", persistArtifactLambda); err != nil {
@@ -384,6 +407,7 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 
 	// document_normalize：分块前规范化。
 	normalizeLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
+		startDocumentStage(ctx, state, contracts.DocumentStageNormalize, "正在规范化文档结构")
 		if err := docNormalizer.Normalize(ctx, state.doc); err != nil {
 			return nil, fmt.Errorf("文档规范化失败: %w", err)
 		}
@@ -470,6 +494,7 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 			return nil, fmt.Errorf("生成 DocumentProfile 失败: %w", err)
 		}
 		state.canonical.Profile = profile
+		finishDocumentStage(ctx, state, contracts.DocumentStageNormalize, contracts.StageSucceeded, "文档规范化完成", map[string]any{"canonical_cache_hit": state.canonicalCacheHit})
 		return state, nil
 	})
 	if err := g.AddLambdaNode("document_profile", profileLambda); err != nil {
@@ -478,6 +503,7 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 
 	// chunk_strategy_route：固定策略或基于 Profile 的确定性 auto 路由。
 	routeLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
+		startDocumentStage(ctx, state, contracts.DocumentStageChunk, "正在生成检索分块")
 		decision, err := chunkRouter.RouteWithOverride(
 			state.canonical.Profile, cfg.ChunkStrategy, state.input.ChunkStrategyOverride,
 		)
@@ -580,6 +606,7 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 	persistChunksLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
 		// 纯图片文档无 Chunk：跳过落库，indexDocs 保持为空。
 		if len(state.chunks) == 0 {
+			finishDocumentStage(ctx, state, contracts.DocumentStageChunk, contracts.StageSucceeded, "文档无需生成文本分块", map[string]any{"chunk_count": 0})
 			return state, nil
 		}
 		entities := make([]*entity.DocumentChunk, 0, len(state.chunks))
@@ -605,6 +632,7 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		if inserted == 0 {
 			return nil, fmt.Errorf("未插入任何 Chunk")
 		}
+		finishDocumentStage(ctx, state, contracts.DocumentStageChunk, contracts.StageSucceeded, "文档分块完成", map[string]any{"chunk_count": inserted})
 		return state, nil
 	})
 	if err := g.AddLambdaNode("persist_chunks", persistChunksLambda); err != nil {
@@ -642,8 +670,10 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 				embedder, modelID = cfg.Embedder, cfg.EmbeddingModelID
 			}
 			if embedder == nil || len(state.indexDocs) == 0 {
+				finishDocumentStage(ctx, state, contracts.DocumentStageEmbed, contracts.StageSkipped, "未配置向量模型或没有可向量化分块", map[string]any{"chunk_count": len(state.indexDocs)})
 				return processOutput(state, len(state.indexDocs)), nil
 			}
+			startDocumentStage(ctx, state, contracts.DocumentStageEmbed, "正在生成并保存文档向量")
 			for _, doc := range state.indexDocs {
 				einoadapter.SetMetaString(doc, einoadapter.MetaEmbeddingModelID, modelID)
 			}
@@ -651,6 +681,7 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 			if err != nil {
 				return ProcessOutput{}, fmt.Errorf("向量索引失败: %w", err)
 			}
+			finishDocumentStage(ctx, state, contracts.DocumentStageEmbed, contracts.StageSucceeded, "文档向量化完成", map[string]any{"vector_count": len(ids), "embedding_model_id": modelID})
 			return processOutput(state, len(ids)), nil
 		})
 		if err := g.AddLambdaNode("embed_and_index", embedAndIndex); err != nil {
@@ -664,6 +695,7 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		}
 	} else {
 		finalize := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (ProcessOutput, error) {
+			finishDocumentStage(ctx, state, contracts.DocumentStageEmbed, contracts.StageSkipped, "向量索引未启用", map[string]any{"chunk_count": len(state.chunks)})
 			return processOutput(state, len(state.chunks)), nil
 		})
 		if err := g.AddLambdaNode("finalize", finalize); err != nil {

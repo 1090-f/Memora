@@ -7,6 +7,7 @@ import (
 
 type correlationContextKey string
 type agentStageReporterContextKey struct{}
+type documentStageReporterContextKey struct{}
 
 const (
 	traceIDContextKey   correlationContextKey = "memora.trace_id"
@@ -48,6 +49,25 @@ func ReportAgentStage(ctx context.Context, stage AgentStage, status StageStatus,
 	}
 	if reporter, ok := ctx.Value(agentStageReporterContextKey{}).(AgentStageReporter); ok {
 		reporter(ctx, stage, status, durationMS, summary, metadata)
+	}
+}
+
+// DocumentStageReporter 将文档 Graph 的真实阶段边界交给业务层持久化。
+type DocumentStageReporter func(context.Context, DocumentStage, StageObservation)
+
+func WithDocumentStageReporter(ctx context.Context, reporter DocumentStageReporter) context.Context {
+	if reporter == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, documentStageReporterContextKey{}, reporter)
+}
+
+func ReportDocumentStage(ctx context.Context, stage DocumentStage, observation StageObservation) {
+	if ctx == nil {
+		return
+	}
+	if reporter, ok := ctx.Value(documentStageReporterContextKey{}).(DocumentStageReporter); ok {
+		reporter(ctx, stage, observation)
 	}
 }
 

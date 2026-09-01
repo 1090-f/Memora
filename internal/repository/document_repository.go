@@ -417,6 +417,22 @@ func (r *importTaskRepository) FindLatestByDocument(ctx context.Context, userID,
 	return &task, nil
 }
 
+func (r *importTaskRepository) HealthSnapshot(ctx context.Context) (ImportTaskHealthSnapshot, error) {
+	var snapshot ImportTaskHealthSnapshot
+	err := dbFromContext(ctx, r.db).WithContext(ctx).Raw(`
+		SELECT
+			COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+			COUNT(*) FILTER (WHERE status = 'running') AS running,
+			COUNT(*) FILTER (WHERE status = 'failed') AS failed,
+			COUNT(*) FILTER (WHERE attempt > 1) AS retried,
+			COALESCE(EXTRACT(EPOCH FROM (now() - MIN(created_at) FILTER (WHERE status = 'pending')))::bigint, 0) AS oldest_pending_age_seconds
+		FROM import_tasks`).Scan(&snapshot).Error
+	if err != nil {
+		return ImportTaskHealthSnapshot{}, fmt.Errorf("查询导入任务健康摘要失败: %w", err)
+	}
+	return snapshot, nil
+}
+
 // UpdateObjectInfo 更新任务的 MinIO 对象信息与源哈希。
 func (r *importTaskRepository) UpdateObjectInfo(ctx context.Context, userID, taskID string, bucket, objectKey string, sourceHash *string) error {
 	return r.updateObjectInfo(ctx, userID, taskID, bucket, objectKey, sourceHash, true)
