@@ -167,6 +167,7 @@ func (s *documentService) List(ctx context.Context, userID, kbID string, page, p
 		result.Items = append(result.Items, &dto.DocumentListItem{
 			ID: doc.ID, Title: doc.Title, DirectoryID: doc.DirectoryID,
 			SourceType: doc.SourceType, ProcessingStatus: doc.ProcessingStatus, IndexMode: documentIndexMode(doc),
+			FailureStep: doc.FailureStep, FailureReason: doc.FailureReason,
 			FileSize: doc.FileSize, CreatedAt: doc.CreatedAt, UpdatedAt: doc.UpdatedAt,
 		})
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 const (
@@ -197,7 +199,10 @@ func (c *mcpClient) open(ctx context.Context, target MCPServerTarget) (*client.C
 	var err error
 	switch target.Transport {
 	case TransportStreamableHTTP:
-		tr, trErr := transport.NewStreamableHTTP(target.URL, transport.WithHTTPHeaders(target.Headers))
+		tr, trErr := transport.NewStreamableHTTP(target.URL,
+			transport.WithHTTPHeaders(target.Headers),
+			transport.WithHTTPBasicClient(&http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)}),
+		)
 		if trErr != nil {
 			return nil, fmt.Errorf("create HTTP MCP transport: %w", trErr)
 		}

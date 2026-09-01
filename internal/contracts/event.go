@@ -47,12 +47,20 @@ const (
 	EventPlanReplanned EventType = "agent.plan.replanned"
 	// EventReviewCompleted 表示审查已完成。
 	EventReviewCompleted EventType = "agent.review.completed"
+	// EventStageUpdated 是标准问答阶段的状态快照。
+	EventStageUpdated EventType = "agent.stage.updated"
+	// EventCitationCreated 表示最终引用已安全归一化。
+	EventCitationCreated EventType = "citation.created"
 )
 
 // AgentEvent 表示在 Agent 执行运行期间发出的事件。
 type AgentEvent struct {
-	EventID   ID              `json:"event_id"`   // 事件唯一 ID
-	RunID     ID              `json:"run_id"`     // 所属运行 ID
+	EventID   ID              `json:"event_id"` // 事件唯一 ID
+	RunID     ID              `json:"run_id"`   // 所属运行 ID
+	TraceID   string          `json:"trace_id,omitempty"`
+	RequestID string          `json:"request_id,omitempty"`
+	Stage     AgentStage      `json:"stage,omitempty"`
+	Status    StageStatus     `json:"status,omitempty"`
 	EventType EventType       `json:"event_type"` // 事件类型
 	Sequence  int64           `json:"sequence"`   // 事件序号，用于顺序消费
 	Timestamp time.Time       `json:"timestamp"`  // 事件发生时间

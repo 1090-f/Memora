@@ -19,10 +19,11 @@ const stringValue = (value: unknown, fallback = '') => typeof value === 'string'
 const numberValue = (value: unknown, fallback = 0) => typeof value === 'number' ? value : fallback;
 
 const isTokenUsage = (v: unknown): v is { input_tokens: number; output_tokens: number; total_tokens: number } => {
-  return typeof v === 'object' && v !== null &&
-    typeof (v as any).input_tokens === 'number' &&
-    typeof (v as any).output_tokens === 'number' &&
-    typeof (v as any).total_tokens === 'number';
+  if (typeof v !== 'object' || v === null) return false;
+  const value = v as Record<string, unknown>;
+  return typeof value.input_tokens === 'number' &&
+    typeof value.output_tokens === 'number' &&
+    typeof value.total_tokens === 'number';
 };
 
 // 追加一条执行链路记录。
@@ -147,7 +148,15 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
         confidence: typeof payload.confidence === 'number' ? payload.confidence : undefined,
         fallback_used: typeof payload.fallback_used === 'boolean' ? payload.fallback_used : undefined,
       });
-    case 'agent.plan.created':
+    case 'agent.stage.updated':
+      return withEntry(next, {
+        kind: 'status',
+        sequence: event.sequence,
+        title: stringValue(payload.summary, stringValue(payload.stage, '运行阶段')),
+        status: stringValue(payload.status, 'running'),
+        error_message: stringValue(payload.error_message),
+      });
+    case 'agent.plan.created': {
       // 初始化计划展示面板，包含版本号、目标、步骤列表等完整信息。
       const planSteps = Array.isArray(payload.steps)
         ? payload.steps.map((step: Record<string, unknown>) => ({
@@ -176,7 +185,8 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
         input_summary: stringValue(payload.input_summary),
         steps_detail: planSteps,
       });
-    case 'agent.plan.replanned':
+    }
+    case 'agent.plan.replanned': {
       // 计划重新规划后更新计划面板，版本号递增、步骤列表刷新。
       if (!state.plan) return next;
       const replannedSteps = Array.isArray(payload.steps)
@@ -206,6 +216,7 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
         input_summary: stringValue(payload.input_summary),
         steps_detail: replannedSteps,
       });
+    }
     case 'agent.step.started':
     case 'agent.step.completed':
     case 'agent.plan.step.started':

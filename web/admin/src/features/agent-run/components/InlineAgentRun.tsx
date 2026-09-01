@@ -5,8 +5,9 @@ import DescriptionOutlined from '@mui/icons-material/DescriptionOutlined';
 import ErrorOutlineRounded from '@mui/icons-material/ErrorOutlineRounded';
 import ExpandMoreRounded from '@mui/icons-material/ExpandMoreRounded';
 import SyncRounded from '@mui/icons-material/SyncRounded';
-import { Box, Chip, Collapse, IconButton, Stack, Typography } from '@mui/material';
+import { Box, Button, Chip, Collapse, IconButton, Stack, Typography } from '@mui/material';
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { getAgentRunToolCalls } from '../api';
 import { timelineEntries } from '../timeline';
 import type { AgentRunViewState, AgentToolCall } from '../types';
@@ -160,6 +161,17 @@ export function InlineAgentRun({ state, runId }: { state: AgentRunViewState; run
             {state.error?.message || state.router?.reason_summary || (running ? '正在分析问题并调用所需工具' : `共 ${detailCount} 项执行记录`)}
           </Typography>
         </Box>
+        {runId && (
+          <Button
+            component={Link}
+            to={`/runs/${runId}`}
+            size="small"
+            onClick={(event) => event.stopPropagation()}
+            sx={{ whiteSpace: 'nowrap' }}
+          >
+            完整详情
+          </Button>
+        )}
         <IconButton size="small" aria-label={expanded ? '收起运行详情' : '展开运行详情'} sx={{ color: '#7c8799' }}>
           <ExpandMoreRounded sx={{ fontSize: 20, transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }} />
         </IconButton>
@@ -232,7 +244,7 @@ export function InlineAgentRun({ state, runId }: { state: AgentRunViewState; run
                               {entry.steps_detail && entry.steps_detail.length > 0 && (
                                 <Stack spacing={0.3}>
                                   <Typography sx={{ color: '#6d788a', fontSize: 11, fontWeight: 650 }}>步骤详情</Typography>
-                                  {entry.steps_detail.map((step: any, si: number) => (
+                                  {entry.steps_detail.map((step, si) => (
                                     <Stack key={si} spacing={0.2} sx={{ pl: 1 }}>
                                       <Typography sx={{ color: '#4e5a6f', fontSize: 11.5, fontWeight: 550 }}>
                                         步骤 {step.step_no}: {step.title}

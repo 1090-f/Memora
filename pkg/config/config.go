@@ -29,6 +29,16 @@ type Config struct {
 	Agent            AgentConfig            `mapstructure:"agent"`
 	AgentWorker      AgentWorkerConfig      `mapstructure:"agent_worker"`
 	AgentEvents      AgentEventsConfig      `mapstructure:"agent_events"`
+	Observability    ObservabilityConfig    `mapstructure:"observability"`
+}
+
+// ObservabilityConfig 控制安全观测数据的采样与保留；敏感正文默认永不采集。
+type ObservabilityConfig struct {
+	Enabled                 bool    `mapstructure:"enabled"`
+	CaptureSensitiveContent bool    `mapstructure:"capture_sensitive_content"`
+	TraceSampleRatio        float64 `mapstructure:"trace_sample_ratio"`
+	RetentionDays           int     `mapstructure:"retention_days"`
+	OTLPEndpoint            string  `mapstructure:"otlp_endpoint"`
 }
 
 // AppConfig 定义应用程序基础配置，包括名称、版本、运行模式和超时设置
@@ -260,6 +270,12 @@ type AgentEventsConfig struct {
 // Validate 校验所有配置项，收集所有错误后返回合并的错误信息
 func (c Config) Validate() error {
 	var errs []error
+	if c.Observability.TraceSampleRatio < 0 || c.Observability.TraceSampleRatio > 1 {
+		errs = append(errs, errors.New("observability.trace_sample_ratio 必须在 0 到 1 之间"))
+	}
+	if c.Observability.RetentionDays < 1 {
+		errs = append(errs, errors.New("observability.retention_days 必须大于 0"))
+	}
 	if c.App.Address == "" {
 		errs = append(errs, errors.New("缺少环境变量 MEMORA_HTTP_ADDRESS"))
 	}

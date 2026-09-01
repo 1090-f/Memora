@@ -25,6 +25,7 @@ export type AgentEventType =
   | 'agent.tool.completed'
   | 'agent.tool.call.failed'
   | 'agent.answer.delta'
+  | 'agent.stage.updated'
   | 'citation.created'
   | 'usage.updated'
   | 'memory.updated';
@@ -41,6 +42,11 @@ export interface AgentRunListItem {
   id: string;
   conversation_id: string;
   query: string;
+  trace_id?: string | null;
+  request_id?: string | null;
+  execution_trace?: unknown;
+  router_confidence?: number | null;
+  router_fallback_used?: boolean;
   execution_mode?: 'react' | 'plan_execute';
   status: Exclude<AgentRunStatus, 'idle'>;
   total_tokens: number;
@@ -58,6 +64,11 @@ export interface AgentRun {
   chat_model_id?: string;
   retry_of_run_id?: string;
   query: string;
+  trace_id?: string | null;
+  request_id?: string | null;
+  execution_trace?: unknown;
+  router_confidence?: number | null;
+  router_fallback_used?: boolean;
   execution_mode?: 'react' | 'plan_execute' | null;
   knowledge_status?: 'sufficient' | 'insufficient' | 'ambiguous' | null;
   status: Exclude<AgentRunStatus, 'idle'>;

@@ -31,12 +31,17 @@ function formatTime(value?: string) {
   return new Date(value).toLocaleString('zh-CN', { hour12: false });
 }
 
+function formatDuration(value: number) {
+  return value >= 1000 ? `${(value / 1000).toFixed(1)} s` : `${value} ms`;
+}
+
 const stages = [
-  { key: 'parsing', label: '解析文件' },
-  { key: 'cleaning', label: '清洗正文' },
-  { key: 'chunking', label: '内容分块' },
-  { key: 'embedding', label: '生成向量' },
-  { key: 'keyword_indexing', label: '建立索引' },
+  { key: 'upload', label: '上传' },
+  { key: 'parse', label: '解析' },
+  { key: 'normalize', label: '规范化' },
+  { key: 'chunk', label: '分块' },
+  { key: 'embed', label: '向量化' },
+  { key: 'index', label: '索引' },
 ] as const;
 
 function stageIndex(status: string, failureStep?: string) {
@@ -46,7 +51,9 @@ function stageIndex(status: string, failureStep?: string) {
     const matched = stages.findIndex((stage) => normalized.includes(stage.key.split('_')[0]));
     return matched >= 0 ? matched : 0;
   }
-  const matched = stages.findIndex((stage) => stage.key === status);
+
+  const normalizedStatus = ({ pending: 'upload', parsing: 'parse', cleaning: 'normalize', chunking: 'chunk', embedding: 'embed', keyword_indexing: 'index' } as Record<string, string>)[status] || status;
+  const matched = stages.findIndex((stage) => stage.key === normalizedStatus);
   return matched >= 0 ? matched : 0;
 }
 
@@ -157,9 +164,10 @@ export function DocumentProcessingPanel({ document, processing }: {
         <Typography sx={{ mb: 1.5, color: '#35415a', fontSize: 13.5, fontWeight: 700 }}>处理流程</Typography>
         <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: `repeat(${stages.length}, minmax(0, 1fr))` }, gap: { xs: 1, sm: 0 } }}>
           {stages.map((stage, index) => {
-            const failed = effectiveStatus === 'failed' && index === currentStage;
-            const complete = effectiveStatus === 'succeeded' || index < currentStage;
-            const active = !failed && !complete && index === currentStage;
+            const observed = processing?.stages?.find((item) => item.stage === stage.key);
+            const failed = observed ? observed.status === 'failed' : effectiveStatus === 'failed' && index === currentStage;
+            const complete = observed ? observed.status === 'succeeded' || observed.status === 'skipped' : effectiveStatus === 'succeeded' || index < currentStage;
+            const active = observed ? observed.status === 'running' : !failed && !complete && index === currentStage;
             const color = failed ? '#d84d4d' : complete ? '#2d9b55' : active ? '#4f62e9' : '#a5adba';
             return (
               <Box key={stage.key} sx={{ position: 'relative', display: 'flex', alignItems: 'center', flexDirection: { xs: 'row', sm: 'column' }, gap: 0.8, textAlign: { sm: 'center' }, '&::after': index < stages.length - 1 ? { content: '""', position: 'absolute', display: { xs: 'none', sm: 'block' }, top: 12, left: 'calc(50% + 17px)', width: 'calc(100% - 34px)', height: 2, bgcolor: complete ? '#a8d9b7' : '#e1e5eb' } : undefined }}>
@@ -167,11 +175,28 @@ export function DocumentProcessingPanel({ document, processing }: {
                   {failed ? <ErrorOutlineRounded fontSize="small" /> : complete ? <CheckCircleRounded fontSize="small" /> : <RadioButtonUncheckedRounded fontSize="small" />}
                 </Box>
                 <Typography sx={{ color: active || failed || complete ? '#34405a' : '#929cad', fontSize: 12.5, fontWeight: active || failed ? 700 : 550 }}>{stage.label}</Typography>
+                {observed?.duration_ms != null && <Typography sx={{ color: '#8a94a6', fontSize: 10.5 }}>{formatDuration(observed.duration_ms)}</Typography>}
               </Box>
             );
           })}
         </Box>
       </Box>
+
+      {effectiveStatus === 'failed' && (
+        <Alert severity="error">
+          <Typography fontWeight={700}>{processing?.failure_code || 'PROCESSING_FAILED'}：{processing?.failure_reason || document.failure_reason || '处理失败'}</Typography>
+          <Typography variant="body2">{processing?.recovery_advice || '请重试处理；若仍失败，请复制任务 ID 进行诊断。'}</Typography>
+          {processing?.task_id && <Typography variant="caption">任务 ID：{processing.task_id}</Typography>}
+        </Alert>
+      )}
+
+      {processing?.stalled && effectiveStatus !== 'failed' && (
+        <Alert severity="warning">
+          <Typography fontWeight={700}>{processing.failure_code || 'TASK_STALLED'}：任务长时间没有推进</Typography>
+          <Typography variant="body2">{processing.recovery_advice}</Typography>
+          {processing.task_id && <Typography variant="caption">任务 ID：{processing.task_id}</Typography>}
+        </Alert>
+      )}
 
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'minmax(0, 1fr) minmax(0, 1fr)' }, gap: { xs: 2.5, md: 5 } }}>
         <Box>

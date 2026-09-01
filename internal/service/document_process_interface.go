@@ -16,9 +16,9 @@ type DocumentProcessService interface {
 	// Retry 显式重试失败的任务。
 	Retry(ctx context.Context, userID, taskID contracts.ID) error
 	// Reindex 触发文档重新索引，生成新的 index_version。
-	Reindex(ctx context.Context, userID, knowledgeBaseID, documentID contracts.ID) error
+	Reindex(ctx context.Context, userID, knowledgeBaseID, documentID contracts.ID) (contracts.ID, error)
 	// ReindexWithStrategy 设置文档级策略覆盖后重新索引；nil 保持现有配置，inherit 由调用层转换为空串。
-	ReindexWithStrategy(ctx context.Context, userID, knowledgeBaseID, documentID contracts.ID, chunkStrategy *string) error
+	ReindexWithStrategy(ctx context.Context, userID, knowledgeBaseID, documentID contracts.ID, chunkStrategy *string) (contracts.ID, error)
 	// GetProcessingStatus 查询文档处理状态（按文档 ID 与用户，无需知识库 ID）。
 	GetProcessingStatus(ctx context.Context, userID, documentID contracts.ID) (DocumentProcessingStatus, error)
 	// ListIndexVersions 查询文档索引版本聚合视图。
@@ -102,6 +102,13 @@ type DocumentProcessingStatus struct {
 	FailureReason   string
 	IndexVersion    int
 	ActiveVersion   int
+	TaskID          contracts.ID
+	TraceID         string
+	RequestID       string
+	FailureCode     contracts.ErrorCode
+	RecoveryAdvice  string
+	Stalled         bool
+	Stages          []contracts.StageObservation
 }
 
 // ImportTaskView 描述导入任务的对外视图。
@@ -117,6 +124,9 @@ type ImportTaskView struct {
 	Status        contracts.ImportTaskStatus
 	CurrentStep   *string
 	FailureReason *string
+	ErrorCode     *string
+	TraceID       *string
+	RequestID     *string
 	DocumentID    *contracts.ID
 	CreatedAt     time.Time
 	CompletedAt   *time.Time

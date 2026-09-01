@@ -62,3 +62,50 @@ func TestSequencedEventPublisherUsesCanonicalReactAndToolFields(t *testing.T) {
 		t.Fatalf("unexpected tool completed payload: %#v", completed)
 	}
 }
+
+func TestSequencedEventPublisherAddsStageAndCorrelation(t *testing.T) {
+	capture := &capturedEventPublisher{}
+	publisher := NewSequencedEventPublisher(capture)
+	ctx := contracts.WithCorrelation(context.Background(), "0123456789abcdef0123456789abcdef", "request-1")
+	if err := publisher.PublishToolCallStarted(ctx, contracts.ID("run-1"), "knowledge_search", contracts.ID("call-1")); err != nil {
+		t.Fatalf("publish tool start: %v", err)
+	}
+	if len(capture.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(capture.events))
+	}
+	event := capture.events[0]
+	if event.Stage != contracts.AgentStageToolCall || event.Status != contracts.StageRunning {
+		t.Fatalf("unexpected stage/status: %s/%s", event.Stage, event.Status)
+	}
+	if event.TraceID != "0123456789abcdef0123456789abcdef" || event.RequestID != "request-1" {
+		t.Fatalf("unexpected correlation: %q/%q", event.TraceID, event.RequestID)
+	}
+}
+
+func TestRunCompletedEventDoesNotDuplicateAnswer(t *testing.T) {
+	capture := &capturedEventPublisher{}
+	publisher := NewSequencedEventPublisher(capture)
+	if err := publisher.PublishRunCompleted(context.Background(), contracts.ID("run-1"), contracts.AgentRunResult{FinalResult: "sensitive full answer"}); err != nil {
+		t.Fatalf("publish completion: %v", err)
+	}
+	payload := eventPayload(t, capture.events[len(capture.events)-1])
+	if _, exists := payload["final_result"]; exists {
+		t.Fatal("completion event must not persist the full answer")
+	}
+}
+
+func TestRunCompletedEventOmitsCitationSnippetByDefault(t *testing.T) {
+	capture := &capturedEventPublisher{}
+	publisher := NewSequencedEventPublisher(capture)
+	result := contracts.AgentRunResult{Citations: []contracts.Citation{{QuotedText: "sensitive source text"}}}
+	if err := publisher.PublishRunCompleted(context.Background(), contracts.ID("run-1"), result); err != nil {
+		t.Fatalf("publish completion: %v", err)
+	}
+	if capture.events[0].Stage != contracts.AgentStageModelGenerate || capture.events[0].Status != contracts.StageSucceeded {
+		t.Fatalf("missing model generation completion stage: %#v", capture.events[0])
+	}
+	payload := eventPayload(t, capture.events[1])
+	if _, exists := payload["snippet"]; exists {
+		t.Fatal("citation event must omit source text unless sensitive capture is enabled")
+	}
+}

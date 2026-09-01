@@ -157,6 +157,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("url_import.max_response_bytes", 10485760)
 	v.SetDefault("url_import.max_redirects", 5)
 	v.SetDefault("ai.encryption_key", "")
+	v.SetDefault("observability.enabled", true)
+	v.SetDefault("observability.capture_sensitive_content", false)
+	v.SetDefault("observability.trace_sample_ratio", 1.0)
+	v.SetDefault("observability.retention_days", 30)
+	v.SetDefault("observability.otlp_endpoint", "")
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.filename", "")
 	v.SetDefault("log.max_size", 100)
@@ -241,6 +246,11 @@ func bindEnvironment(v *viper.Viper) {
 		"url_import.max_response_bytes":                "MEMORA_URL_IMPORT_MAX_RESPONSE_BYTES",
 		"url_import.max_redirects":                     "MEMORA_URL_IMPORT_MAX_REDIRECTS",
 		"ai.encryption_key":                            "MEMORA_AI_ENCRYPTION_KEY",
+		"observability.enabled":                        "MEMORA_OBSERVABILITY_ENABLED",
+		"observability.capture_sensitive_content":      "MEMORA_OBSERVABILITY_CAPTURE_SENSITIVE_CONTENT",
+		"observability.trace_sample_ratio":             "MEMORA_OBSERVABILITY_TRACE_SAMPLE_RATIO",
+		"observability.retention_days":                 "MEMORA_OBSERVABILITY_RETENTION_DAYS",
+		"observability.otlp_endpoint":                  "MEMORA_OBSERVABILITY_OTLP_ENDPOINT",
 		"log.level":                                    "MEMORA_LOG_LEVEL", "log.filename": "MEMORA_LOG_FILENAME",
 		"log.max_size": "MEMORA_LOG_MAX_SIZE", "log.max_backups": "MEMORA_LOG_MAX_BACKUPS",
 		"log.max_age": "MEMORA_LOG_MAX_AGE", "log.compress": "MEMORA_LOG_COMPRESS",

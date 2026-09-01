@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // PythonOcrClient 调用常驻 Python document-parser 的 /v1/ocr 识别单张图片文字。
@@ -28,7 +30,7 @@ func NewPythonOcrClient(baseURL string, timeout time.Duration) *PythonOcrClient 
 	return &PythonOcrClient{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		timeout: timeout,
-		client:  &http.Client{Timeout: timeout},
+		client:  &http.Client{Timeout: timeout, Transport: otelhttp.NewTransport(http.DefaultTransport)},
 	}
 }
 

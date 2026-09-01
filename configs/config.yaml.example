@@ -172,6 +172,14 @@ url_import:
 ai:
   encryption_key: "change-me-ai-encryption-key"
 
+# 只采集阶段、耗时、错误码和脱敏摘要；正文、Prompt 与凭据默认不采集。
+observability:
+  enabled: true
+  capture_sensitive_content: false
+  trace_sample_ratio: 1.0
+  retention_days: 30
+  otlp_endpoint: "" # 例如 http://localhost:4318/v1/traces；留空时不外发
+
 # Agent 配置
 agent:
   max_tool_calls: 10         # 单次运行最大工具调用次数
