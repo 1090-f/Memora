@@ -3,6 +3,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/google/uuid"
@@ -15,7 +16,7 @@ type AgentRunRepository interface {
 	CreateQueued(ctx context.Context, run *entity.AgentRun) error
 
 	// CreateQueuedForConversation 锁定会话、重新校验当前 Chat 模型，并原子创建用户消息和 queued Run。
-	CreateQueuedForConversation(ctx context.Context, userID, knowledgeBaseID, conversationID, agentConfigID uuid.UUID, query string) (*entity.AgentRun, error)
+	CreateQueuedForConversation(ctx context.Context, userID, knowledgeBaseID, conversationID, agentConfigID uuid.UUID, query, traceID, requestID string) (*entity.AgentRun, error)
 
 	// FindByID 根据运行 ID 和用户 ID 查找运行记录（强制所有者过滤）。
 	FindByID(ctx context.Context, userID, runID uuid.UUID) (*entity.AgentRun, error)
@@ -24,7 +25,7 @@ type AgentRunRepository interface {
 	FindByIDAdmin(ctx context.Context, runID uuid.UUID) (*entity.AgentRun, error)
 
 	// ListByOwner 按用户、知识库、会话、状态和模式分页查询运行记录，按创建时间降序排列。
-	ListByOwner(ctx context.Context, userID, kbID, conversationID uuid.UUID, status, executionMode string, page, pageSize int) ([]entity.AgentRun, int64, error)
+	ListByOwner(ctx context.Context, userID, kbID, conversationID uuid.UUID, status, executionMode string, createdFrom, createdTo *time.Time, page, pageSize int) ([]entity.AgentRun, int64, error)
 
 	// ListQueued 获取所有 queued 状态的运行记录（用于 Worker 批量领取）。
 	ListQueued(ctx context.Context, limit int) ([]entity.AgentRun, error)

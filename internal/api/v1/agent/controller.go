@@ -24,6 +24,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 // Controller 处理 Agent 运行相关的 HTTP 请求。
@@ -97,7 +98,7 @@ func (ctrl *Controller) CreateRun(c *gin.Context) {
 		return
 	}
 
-	run, err := ctrl.runRepo.CreateQueuedForConversation(c.Request.Context(), userID, knowledgeBaseID, conversationID, agentConfigID, req.Query)
+	run, err := ctrl.runRepo.CreateQueuedForConversation(c.Request.Context(), userID, knowledgeBaseID, conversationID, agentConfigID, req.Query, middleware.GetTraceID(c), middleware.GetRequestID(c))
 	if err != nil {
 		if errors.Is(err, repository.ErrConversationNotFound) {
 			response.Failure(c, apperrors.ErrNotFound)
@@ -137,7 +138,7 @@ func (ctrl *Controller) GetRun(c *gin.Context) {
 
 	run, err := ctrl.runRepo.FindByID(c.Request.Context(), userID, runID)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			response.Failure(c, apperrors.ErrNotFound)
 			return
 		}
@@ -171,7 +172,7 @@ func (ctrl *Controller) ListToolCalls(c *gin.Context) {
 
 	// 先校验运行存在且属于当前用户，再查询工具调用记录。
 	if _, err := ctrl.runRepo.FindByID(c.Request.Context(), userID, runID); err != nil {
-		if errors.Is(err, ErrNotFound) {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			response.Failure(c, apperrors.ErrNotFound)
 			return
 		}
@@ -209,6 +210,16 @@ func (ctrl *Controller) ListRuns(c *gin.Context) {
 	conversationID := c.Query("conversation_id")
 	status := c.Query("status")
 	executionMode := c.Query("execution_mode")
+	createdFrom, err := parseOptionalTime(c.Query("created_from"))
+	if err != nil {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+	createdTo, err := parseOptionalTime(c.Query("created_to"))
+	if err != nil {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
@@ -238,7 +249,7 @@ func (ctrl *Controller) ListRuns(c *gin.Context) {
 		}
 	}
 
-	runs, total, err := ctrl.runRepo.ListByOwner(c.Request.Context(), userID, kbUUID, conversationUUID, status, executionMode, page, pageSize)
+	runs, total, err := ctrl.runRepo.ListByOwner(c.Request.Context(), userID, kbUUID, conversationUUID, status, executionMode, createdFrom, createdTo, page, pageSize)
 	if err != nil {
 		response.Failure(c, apperrors.ErrInternal)
 		return
@@ -255,6 +266,17 @@ func (ctrl *Controller) ListRuns(c *gin.Context) {
 		PageSize: pageSize,
 		Total:    total,
 	})
+}
+
+func parseOptionalTime(value string) (*time.Time, error) {
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
 }
 
 // CancelRun 处理 POST /api/v1/agent/runs/:id/cancel，取消指定的运行。
@@ -301,10 +323,27 @@ func (ctrl *Controller) SubscribeEvents(c *gin.Context) {
 		response.Failure(c, apperrors.ErrUnauthorized)
 		return
 	}
-	_ = user // 当前先校验用户认证，后续可扩展按用户过滤事件
-
 	// 1. 解析运行 ID 和起始序列号
-	runID := contracts.ID(c.Param("id"))
+	parsedRunID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+	userID, err := uuid.Parse(string(user.ID))
+	if err != nil {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+	// SSE 会回放持久化事件，必须在写响应头前验证 Run 归属，避免跨用户读取。
+	if _, err := ctrl.runRepo.FindByID(c.Request.Context(), userID, parsedRunID); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.Failure(c, apperrors.ErrNotFound)
+			return
+		}
+		response.Failure(c, apperrors.ErrInternal)
+		return
+	}
+	runID := contracts.ID(parsedRunID.String())
 	afterSeq, _ := strconv.ParseInt(c.DefaultQuery("after_sequence", "0"), 10, 64)
 
 	// 2. 设置 SSE 响应头
@@ -348,6 +387,18 @@ func (ctrl *Controller) SubscribeEvents(c *gin.Context) {
 					Sequence:  dbEv.Sequence,
 					Timestamp: dbEv.Timestamp,
 					Data:      rawData,
+				}
+				if dbEv.TraceID != nil {
+					event.TraceID = *dbEv.TraceID
+				}
+				if dbEv.RequestID != nil {
+					event.RequestID = *dbEv.RequestID
+				}
+				if dbEv.Stage != nil {
+					event.Stage = contracts.AgentStage(*dbEv.Stage)
+				}
+				if dbEv.Status != nil {
+					event.Status = contracts.StageStatus(*dbEv.Status)
 				}
 				eventData, _ := json.Marshal(event)
 				fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event.EventType, eventData)
@@ -426,9 +477,6 @@ func (ctrl *Controller) SubscribeEvents(c *gin.Context) {
 
 // 以下为内部辅助函数
 
-// ErrNotFound 是用于判断 GORM 记录未找到的哨兵错误。
-var ErrNotFound = errors.New("record not found")
-
 // buildConfigFromContext 从 AgentContext 构建 AgentConfig。
 // 将 AgentContext 中的配置参数映射为运行配置，超出 AgentContext 的字段使用默认值。
 func buildConfigFromContext(ctx contracts.AgentContext) contracts.AgentConfig {
@@ -475,23 +523,28 @@ func mapAgentError(err error) error {
 // toRunResponse 将 AgentRun 实体转换为 API 响应 DTO。
 func toRunResponse(run *entity.AgentRun) *respdto.AgentRunResponse {
 	resp := &respdto.AgentRunResponse{
-		ID:              run.ID.String(),
-		UserID:          run.UserID.String(),
-		KnowledgeBaseID: run.KnowledgeBaseID.String(),
-		ConversationID:  run.ConversationID.String(),
-		AgentConfigID:   run.AgentConfigID.String(),
-		ChatModelID:     run.ChatModelID.String(),
-		Query:           run.Query,
-		RouterReason:    run.RouterReasonSummary,
-		Status:          run.Status,
-		MemoryUsedCount: run.MemoryUsedCount,
-		InputTokens:     run.InputTokens,
-		OutputTokens:    run.OutputTokens,
-		TotalTokens:     run.TotalTokens,
-		DurationMs:      run.DurationMs,
-		StartedAt:       run.StartedAt,
-		EndedAt:         run.EndedAt,
-		CreatedAt:       run.CreatedAt,
+		ID:                 run.ID.String(),
+		UserID:             run.UserID.String(),
+		KnowledgeBaseID:    run.KnowledgeBaseID.String(),
+		ConversationID:     run.ConversationID.String(),
+		AgentConfigID:      run.AgentConfigID.String(),
+		ChatModelID:        run.ChatModelID.String(),
+		Query:              run.Query,
+		TraceID:            run.TraceID,
+		RequestID:          run.RequestID,
+		ExecutionTrace:     json.RawMessage(run.ExecutionTrace),
+		RouterConfidence:   run.RouterConfidence,
+		RouterFallbackUsed: run.RouterFallbackUsed,
+		RouterReason:       run.RouterReasonSummary,
+		Status:             run.Status,
+		MemoryUsedCount:    run.MemoryUsedCount,
+		InputTokens:        run.InputTokens,
+		OutputTokens:       run.OutputTokens,
+		TotalTokens:        run.TotalTokens,
+		DurationMs:         run.DurationMs,
+		StartedAt:          run.StartedAt,
+		EndedAt:            run.EndedAt,
+		CreatedAt:          run.CreatedAt,
 	}
 
 	if run.RetryOfRunID != nil {

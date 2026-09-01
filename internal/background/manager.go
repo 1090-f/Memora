@@ -16,7 +16,12 @@ import (
 	previewservice "github.com/1090-f/Memora/internal/service/preview"
 	"github.com/1090-f/Memora/pkg/config"
 	"github.com/1090-f/Memora/pkg/logger"
+	"github.com/1090-f/Memora/pkg/metrics"
+	appobservability "github.com/1090-f/Memora/pkg/observability"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.uber.org/zap"
 )
 
@@ -33,6 +38,8 @@ type Manager struct {
 	previewEnabled   bool
 	outboxCfg        config.OutboxConfig
 	cleanup          config.IndexCleanupConfig
+	retention        repository.ObservabilityRetentionRepository
+	observability    config.ObservabilityConfig
 	name             string
 }
 
@@ -43,21 +50,24 @@ func NewManager(
 	outbox repository.TaskOutboxRepository,
 	processor service.DocumentProcessService,
 	previewProcessor previewservice.Processor,
+	retention repository.ObservabilityRetentionRepository,
 	consumer config.DocumentConsumerConfig,
 	previewCfg config.PreviewConfig,
 	outboxCfg config.OutboxConfig,
 	cleanupCfg config.IndexCleanupConfig,
+	observabilityCfg config.ObservabilityConfig,
 ) *Manager {
 	return &Manager{
 		redis: redisClient, tasks: tasks, previews: previews, outbox: outbox,
 		processor: processor, previewProcessor: previewProcessor,
 		consumer: consumer, previewConsumer: previewCfg.Consumer, previewEnabled: previewCfg.Enabled,
-		outboxCfg: outboxCfg, cleanup: cleanupCfg, name: consumerName(),
+		outboxCfg: outboxCfg, cleanup: cleanupCfg, retention: retention, observability: observabilityCfg, name: consumerName(),
 	}
 }
 
 func (m *Manager) Run(ctx context.Context) error {
-	if !m.consumer.Enabled && !m.previewEnabled {
+	retentionEnabled := m.observability.Enabled && m.observability.RetentionDays > 0 && m.retention != nil
+	if !m.consumer.Enabled && !m.previewEnabled && !m.cleanup.Enabled && !retentionEnabled {
 		<-ctx.Done()
 		return nil
 	}
@@ -87,7 +97,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	}
 
 	var wg sync.WaitGroup
-	workerCount := 1
+	workerCount := 2 // outbox publisher + independent heartbeat
 	if m.consumer.Enabled {
 		workerCount += 1 + m.consumer.Concurrency
 	}
@@ -97,10 +107,17 @@ func (m *Manager) Run(ctx context.Context) error {
 	if m.cleanup.Enabled {
 		workerCount++
 	}
+	if retentionEnabled {
+		workerCount++
+	}
 	wg.Add(workerCount)
 	go func() { defer wg.Done(); m.publishLoop(ctx) }()
+	go func() { defer wg.Done(); m.heartbeatLoop(ctx) }()
 	if m.cleanup.Enabled {
 		go func() { defer wg.Done(); m.cleanupLoop(ctx) }()
+	}
+	if retentionEnabled {
+		go func() { defer wg.Done(); m.retentionLoop(ctx) }()
 	}
 	if m.consumer.Enabled {
 		go func() { defer wg.Done(); m.reclaimLoop(ctx) }()
@@ -144,6 +161,51 @@ func (m *Manager) publishLoop(ctx context.Context) {
 	}
 }
 
+func (m *Manager) heartbeatLoop(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		metrics.WorkerHeartbeat()
+		if err := m.redis.Set(ctx, "worker:heartbeat:"+m.name, time.Now().UTC().Unix(), 30*time.Second).Err(); err != nil && ctx.Err() == nil {
+			logger.Warn("更新 Worker 心跳失败", zap.String("worker", m.name), zap.Error(err))
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *Manager) retentionLoop(ctx context.Context) {
+	run := func() {
+		cutoff := time.Now().UTC().AddDate(0, 0, -m.observability.RetentionDays)
+		cleanupCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+		deleted, err := m.retention.DeleteBefore(cleanupCtx, cutoff)
+		if err != nil {
+			if ctx.Err() == nil {
+				logger.Error("清理过期可观测事件失败", zap.Error(err))
+			}
+			return
+		}
+		if deleted > 0 {
+			logger.Info("过期可观测事件清理完成", zap.Int64("deleted", deleted), zap.Int("retention_days", m.observability.RetentionDays))
+		}
+	}
+	run()
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
+}
+
 // cleanupLoop 周期性清理旧索引版本与已删除文档的 Chunk/向量。
 func (m *Manager) cleanupLoop(ctx context.Context) {
 	interval := m.cleanup.Interval
@@ -183,6 +245,17 @@ func (m *Manager) publishBatch(ctx context.Context) {
 			logger.Error("读取 Outbox 失败", zap.Error(err))
 		}
 		return
+	}
+	metrics.QueueDepth("document", "outbox_unpublished_batch", int64(len(events)))
+	if m.consumer.Enabled {
+		if pending, pendingErr := m.redis.XPending(ctx, m.consumer.Stream, m.consumer.Group).Result(); pendingErr == nil {
+			metrics.QueueDepth("document_process", "redis_pending", pending.Count)
+		}
+	}
+	if m.previewEnabled {
+		if pending, pendingErr := m.redis.XPending(ctx, m.previewConsumer.Stream, m.previewConsumer.Group).Result(); pendingErr == nil {
+			metrics.QueueDepth("document_preview", "redis_pending", pending.Count)
+		}
 	}
 	for _, event := range events {
 		if ctx.Err() != nil {
@@ -238,8 +311,12 @@ func (m *Manager) previewConsumeLoop(ctx context.Context, consumerName string) {
 }
 
 func (m *Manager) handlePreviewMessage(parent context.Context, message redis.XMessage) {
+	startedAt := time.Now()
+	result := "succeeded"
+	defer func() { metrics.WorkerFinished("document_preview", result, time.Since(startedAt)) }()
 	previewID, ok := message.Values["preview_id"].(string)
 	if !ok || previewID == "" {
+		result = "invalid"
 		logger.Error("Redis Stream 预览消息缺少 preview_id", zap.String("message_id", message.ID))
 		_ = m.redis.XAck(parent, m.previewConsumer.Stream, m.previewConsumer.Group, message.ID).Err()
 		return
@@ -250,6 +327,7 @@ func (m *Manager) handlePreviewMessage(parent context.Context, message redis.XMe
 	}
 	item, err := m.previews.ClaimPendingByID(parent, previewID)
 	if err != nil {
+		result = "failed"
 		logger.Error("认领预览任务失败", zap.String("preview_id", previewID), zap.Error(err))
 		return
 	}
@@ -257,10 +335,12 @@ func (m *Manager) handlePreviewMessage(parent context.Context, message redis.XMe
 		_ = m.redis.XAck(parent, m.previewConsumer.Stream, m.previewConsumer.Group, message.ID).Err()
 		return
 	}
+	metrics.StageFinished("document_preview", "queue_wait", "succeeded", time.Since(item.CreatedAt))
 	ctx, cancel := context.WithTimeout(parent, m.previewConsumer.ProcessingTimeout)
 	err = m.previewProcessor.Process(ctx, previewID)
 	cancel()
 	if err != nil {
+		result = "failed"
 		code := string(previewservice.ErrorCode(err))
 		if item.Attempt < m.previewConsumer.MaxAttempts {
 			if requeueErr := m.previews.Requeue(parent, previewID, code, err.Error()); requeueErr != nil {
@@ -323,14 +403,19 @@ func (m *Manager) consumeLoop(ctx context.Context, consumerName string) {
 }
 
 func (m *Manager) handleMessage(parent context.Context, message redis.XMessage) {
+	startedAt := time.Now()
+	result := "succeeded"
+	defer func() { metrics.WorkerFinished("document_process", result, time.Since(startedAt)) }()
 	taskID, ok := message.Values["task_id"].(string)
 	if !ok || taskID == "" {
+		result = "invalid"
 		logger.Error("Redis Stream 文档消息缺少 task_id", zap.String("message_id", message.ID))
 		_ = m.redis.XAck(parent, m.consumer.Stream, m.consumer.Group, message.ID).Err()
 		return
 	}
 	task, err := m.tasks.ClaimPendingByID(parent, taskID)
 	if err != nil {
+		result = "failed"
 		logger.Error("认领 Redis Stream 文档任务失败", zap.String("task_id", taskID), zap.Error(err))
 		return
 	}
@@ -338,10 +423,32 @@ func (m *Manager) handleMessage(parent context.Context, message redis.XMessage) 
 		_ = m.redis.XAck(parent, m.consumer.Stream, m.consumer.Group, message.ID).Err()
 		return
 	}
+	metrics.StageFinished("document_process", "queue_wait", "succeeded", time.Since(task.CreatedAt))
 	ctx, cancel := context.WithTimeout(parent, m.consumer.ProcessingTimeout)
+	traceID, requestID := "", ""
+	if task.TraceID != nil {
+		traceID = *task.TraceID
+	}
+	if task.RequestID != nil {
+		requestID = *task.RequestID
+	}
+	ctx = contracts.WithCorrelation(ctx, traceID, requestID)
+	ctx = appobservability.ContextWithTraceID(ctx, traceID)
+	ctx, span := otel.Tracer("github.com/1090-f/Memora/background").Start(ctx, "document.process")
+	documentID := ""
+	if task.DocumentID != nil {
+		documentID = *task.DocumentID
+	}
+	span.SetAttributes(attribute.String("memora.task_id", taskID), attribute.String("memora.document_id", documentID))
 	err = m.processor.ProcessImportTask(ctx, contracts.ID(taskID))
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "document processing failed")
+	}
+	span.End()
 	cancel()
 	if err != nil {
+		result = "failed"
 		if task.Attempt < m.consumer.MaxAttempts {
 			if requeueErr := m.tasks.RequeueTask(parent, taskID, err.Error()); requeueErr != nil {
 				logger.Error("重新排队文档任务失败", zap.String("task_id", taskID), zap.Error(requeueErr))

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // PythonParserConfig 定义 Python document-parser 客户端配置。
@@ -38,7 +40,7 @@ func NewPythonDocumentParser(cfg PythonParserConfig) (*PythonDocumentParser, err
 	}
 	return &PythonDocumentParser{
 		cfg:    cfg,
-		client: &http.Client{Timeout: cfg.Timeout},
+		client: &http.Client{Timeout: cfg.Timeout, Transport: otelhttp.NewTransport(http.DefaultTransport)},
 	}, nil
 }
 

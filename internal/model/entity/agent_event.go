@@ -12,6 +12,10 @@ import (
 type AgentEvent struct {
 	ID        uint           `gorm:"primaryKey;autoIncrement"                             json:"id"`
 	RunID     string         `gorm:"type:uuid;not null;index:idx_agent_events_run_id_seq" json:"run_id"`
+	TraceID   *string        `gorm:"type:varchar(32)" json:"trace_id,omitempty"`
+	RequestID *string        `gorm:"type:varchar(128)" json:"request_id,omitempty"`
+	Stage     *string        `gorm:"type:varchar(40)" json:"stage,omitempty"`
+	Status    *string        `gorm:"type:varchar(20)" json:"status,omitempty"`
 	Sequence  int64          `gorm:"not null"                                             json:"sequence"`
 	EventType string         `gorm:"type:varchar(64);not null"                            json:"event_type"`
 	Timestamp time.Time      `gorm:"not null;default:now()"                               json:"timestamp"`

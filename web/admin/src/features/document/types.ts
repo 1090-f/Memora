@@ -22,6 +22,8 @@ export interface DocumentListItem {
   directory_id?: string;
   source_type: DocumentSourceType;
   processing_status: DocumentProcessingStatus;
+  failure_step?: string;
+  failure_reason?: string;
   index_mode: DocumentIndexMode;
   file_size?: number;
   created_at: string;
@@ -57,8 +59,24 @@ export interface DocumentProcessing {
   processing_status: DocumentProcessingStatus;
   current_index_version: number;
   active_index_version: number;
-  failure_step: string;
-  failure_reason: string;
+  task_id?: string;
+  failure_step?: string;
+  failure_reason?: string;
+  failure_code?: string;
+  trace_id?: string;
+  request_id?: string;
+  recovery_advice?: string;
+  stalled?: boolean;
+  stages?: Array<{
+    stage: 'upload' | 'parse' | 'normalize' | 'chunk' | 'embed' | 'index' | 'preview';
+    status: 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped';
+    started_at?: string;
+    ended_at?: string;
+    duration_ms?: number;
+    error_code?: string;
+    error_message?: string;
+    summary?: string;
+  }>;
 }
 
 export interface DocumentIndexVersion {
@@ -177,9 +195,19 @@ export interface ImportTask {
   status: ImportTaskStatus;
   current_step?: string;
   failure_reason?: string;
+  error_code?: string;
+  trace_id?: string;
+  request_id?: string;
   document_id?: string;
   created_at: string;
   completed_at?: string;
+}
+
+export interface ProcessingActionResponse {
+  task_id: string;
+  status: 'processing';
+  retried?: boolean;
+  document_id?: string;
 }
 
 export interface CreateDirectoryInput {

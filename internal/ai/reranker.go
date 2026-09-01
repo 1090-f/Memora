@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	"github.com/1090-f/Memora/internal/contracts"
 )
 
@@ -74,7 +76,7 @@ func (r *goOpenAIReranker) Rerank(ctx context.Context, query string, documents [
 	// 发送请求
 	client := r.client
 	if client == nil {
-		client = &http.Client{Timeout: 60 * time.Second}
+		client = &http.Client{Timeout: 60 * time.Second, Transport: otelhttp.NewTransport(http.DefaultTransport)}
 	}
 	resp, err := client.Do(req)
 	if err != nil {

@@ -310,7 +310,7 @@ func (r *documentRepository) PublishIndexBuildAndCompleteTask(ctx context.Contex
 		taskResult := tx.Model(&entity.ImportTask{}).
 			Where("id = ? AND status = 'running' AND document_id = ?", owner, docID).
 			Updates(map[string]any{
-				"status": "succeeded", "current_step": "succeeded", "completed_at": time.Now().UTC(), "failure_reason": nil,
+				"status": "succeeded", "current_step": "succeeded", "completed_at": time.Now().UTC(), "failure_reason": nil, "error_code": nil,
 			})
 		if taskResult.Error != nil {
 			return fmt.Errorf("事务完成导入任务失败: %w", taskResult.Error)
@@ -399,6 +399,20 @@ func (r *importTaskRepository) FindByIDInternal(ctx context.Context, taskID stri
 	}
 	if err != nil {
 		return nil, fmt.Errorf("查询导入任务失败: %w", err)
+	}
+	return &task, nil
+}
+
+func (r *importTaskRepository) FindLatestByDocument(ctx context.Context, userID, documentID string) (*entity.ImportTask, error) {
+	var task entity.ImportTask
+	err := dbFromContext(ctx, r.db).WithContext(ctx).
+		Where("user_id = ? AND document_id = ?", userID, documentID).
+		Order("created_at DESC").First(&task).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrImportTaskNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询文档最近处理任务失败: %w", err)
 	}
 	return &task, nil
 }
@@ -546,7 +560,7 @@ func (r *importTaskRepository) ReservePending(ctx context.Context) (*entity.Impo
 			SELECT id, user_id, knowledge_base_id, batch_id, source_path, target_directory_id, source_type,
 			       file_name, file_size, mime_type, source_url, source_hash,
 			       minio_bucket, minio_object_key, duplicate_policy, status, attempt,
-			       current_step, failure_reason, document_id, attachments,
+			       current_step, failure_reason, error_code, trace_id, request_id, document_id, attachments,
 			       created_at, started_at, completed_at
 			FROM import_tasks
 			WHERE status = 'pending'
@@ -609,7 +623,7 @@ func (r *importTaskRepository) recoverStaleLocked(ctx context.Context, db *gorm.
 	staleBefore := time.Now().UTC().Add(-importTaskLease).Unix()
 	result := db.WithContext(ctx).Model(&entity.ImportTask{}).
 		Where("status = 'running' AND started_at IS NOT NULL AND started_at < ?", time.Unix(staleBefore, 0).UTC()).
-		Updates(map[string]any{"status": "pending", "started_at": nil, "failure_reason": "worker 租约过期，任务恢复为待处理"})
+		Updates(map[string]any{"status": "pending", "started_at": nil, "error_code": string(contracts.ErrTaskStalled), "failure_reason": "worker 租约过期，任务恢复为待处理"})
 	if result.Error != nil {
 		return fmt.Errorf("恢复过期导入任务失败: %w", result.Error)
 	}
@@ -631,7 +645,7 @@ func (r *importTaskRepository) RecoverStale(ctx context.Context, staleBefore int
 			return nil
 		}
 		result := tx.Model(&entity.ImportTask{}).Where("id IN ? AND status = 'running'", taskIDs).
-			Updates(map[string]any{"status": "pending", "started_at": nil, "failure_reason": "消费者租约过期，任务恢复为待处理"})
+			Updates(map[string]any{"status": "pending", "started_at": nil, "error_code": string(contracts.ErrTaskStalled), "failure_reason": "消费者租约过期，任务恢复为待处理"})
 		if result.Error != nil {
 			return fmt.Errorf("恢复过期导入任务失败: %w", result.Error)
 		}
@@ -649,7 +663,7 @@ func (r *importTaskRepository) RecoverStale(ctx context.Context, staleBefore int
 // CompleteSucceeded 将任务标记为 succeeded 并记录完成时间与关联文档。
 // 幂等：允许 running 或已 succeeded 状态（Handler 编排与 Runner 完成回调可能重复调用）。
 func (r *importTaskRepository) CompleteSucceeded(ctx context.Context, taskID string, documentID *string) error {
-	updates := map[string]any{"status": "succeeded", "completed_at": time.Now().UTC(), "failure_reason": nil}
+	updates := map[string]any{"status": "succeeded", "completed_at": time.Now().UTC(), "failure_reason": nil, "error_code": nil}
 	if documentID != nil {
 		updates["document_id"] = *documentID
 	}
@@ -670,7 +684,7 @@ func (r *importTaskRepository) FailTask(ctx context.Context, taskID, failureReas
 	// 仅允许 running 状态标记失败，避免终态(succeeded/skipped)被意外覆盖。
 	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.ImportTask{}).
 		Where("id = ? AND status = 'running'", taskID).
-		Updates(map[string]any{"status": "failed", "failure_reason": failureReason, "completed_at": time.Now().UTC()})
+		Updates(map[string]any{"status": "failed", "error_code": string(contracts.ErrDocumentProcessing), "failure_reason": failureReason, "completed_at": time.Now().UTC()})
 	if result.Error != nil {
 		return fmt.Errorf("标记导入任务失败: %w", result.Error)
 	}
@@ -684,7 +698,7 @@ func (r *importTaskRepository) FailTask(ctx context.Context, taskID, failureReas
 func (r *importTaskRepository) RetryTask(ctx context.Context, taskID string) error {
 	return dbFromContext(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&entity.ImportTask{}).Where("id = ? AND status = 'failed'", taskID).
-			Updates(map[string]any{"status": "pending", "attempt": 0, "failure_reason": nil, "completed_at": nil, "started_at": nil})
+			Updates(map[string]any{"status": "pending", "failure_reason": nil, "error_code": nil, "completed_at": nil, "started_at": nil})
 		if result.Error != nil {
 			return fmt.Errorf("重试导入任务失败: %w", result.Error)
 		}
@@ -698,7 +712,7 @@ func (r *importTaskRepository) RetryTask(ctx context.Context, taskID string) err
 func (r *importTaskRepository) RequeueTask(ctx context.Context, taskID, failureReason string) error {
 	return dbFromContext(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&entity.ImportTask{}).Where("id = ? AND status = 'running'", taskID).
-			Updates(map[string]any{"status": "pending", "failure_reason": failureReason, "started_at": nil})
+			Updates(map[string]any{"status": "pending", "error_code": string(contracts.ErrDocumentProcessing), "failure_reason": failureReason, "started_at": nil})
 		if result.Error != nil {
 			return fmt.Errorf("重新排队导入任务失败: %w", result.Error)
 		}

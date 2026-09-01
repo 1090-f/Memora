@@ -4,6 +4,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,7 +15,12 @@ import (
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/1090-f/Memora/internal/repository"
 	"github.com/1090-f/Memora/pkg/logger"
+	"github.com/1090-f/Memora/pkg/metrics"
+	appobservability "github.com/1090-f/Memora/pkg/observability"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.uber.org/zap"
 )
 
@@ -45,9 +51,10 @@ type AgentWorker struct {
 	contextBuilder  contracts.ContextBuilder      // 上下文构建器（从数据库加载会话、配置等信息）
 	messageRepo     repository.MessageRepository  // 消息 Repository（用于持久化助手消息）
 	memoryExtractor contracts.MemoryExtractor     // 记忆提取器（从回答中提取长期记忆）
-	config          AgentWorkerConfig             // Worker 配置
-	mu              sync.Mutex                    // 保护 running 状态的互斥锁
-	running         bool                          // 是否正在运行
+	events          contracts.EventPublisher
+	config          AgentWorkerConfig // Worker 配置
+	mu              sync.Mutex        // 保护 running 状态的互斥锁
+	running         bool              // 是否正在运行
 }
 
 // NewAgentWorker 创建 Agent Worker 实例。
@@ -60,6 +67,7 @@ func NewAgentWorker(
 	messageRepo repository.MessageRepository,
 	contextBuilder contracts.ContextBuilder,
 	memoryExtractor contracts.MemoryExtractor,
+	events contracts.EventPublisher,
 	config AgentWorkerConfig,
 ) *AgentWorker {
 	return &AgentWorker{
@@ -68,6 +76,7 @@ func NewAgentWorker(
 		messageRepo:     messageRepo,
 		contextBuilder:  contextBuilder,
 		memoryExtractor: memoryExtractor,
+		events:          events,
 		config:          config,
 	}
 }
@@ -201,12 +210,31 @@ func (w *AgentWorker) pollAndExecute(ctx context.Context) {
 //  4. 执行结果由核心服务内部处理（状态更新、Token 记录、事件发布等）
 func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 	startedAt := time.Now()
+	metrics.StageFinished("agent_run", "queue_wait", "succeeded", time.Since(run.CreatedAt))
 
 	// 创建独立的执行上下文，带超时控制
 	execCtx, cancel := context.WithTimeout(context.Background(), w.config.MaxRunTime)
 	defer cancel()
+	traceID, requestID := "", ""
+	if run.TraceID != nil {
+		traceID = *run.TraceID
+	}
+	if run.RequestID != nil {
+		requestID = *run.RequestID
+	}
+	execCtx = contracts.WithCorrelation(execCtx, traceID, requestID)
+	execCtx = appobservability.ContextWithTraceID(execCtx, traceID)
+	execCtx, span := otel.Tracer("github.com/1090-f/Memora/worker").Start(execCtx, "agent.run")
+	defer span.End()
+	span.SetAttributes(attribute.String("memora.run_id", run.ID.String()), attribute.String("memora.knowledge_base_id", run.KnowledgeBaseID.String()))
 
 	runID := contracts.ID(run.ID.String())
+	execCtx = contracts.WithAgentStageReporter(execCtx, func(ctx context.Context, stage contracts.AgentStage, status contracts.StageStatus, durationMS int64, summary string, metadata map[string]any) {
+		w.publishStage(ctx, runID, stage, status, durationMS, summary, metadata)
+	})
+	w.publishStage(execCtx, runID, contracts.AgentStageQueryRewrite, contracts.StageSkipped, 0, "当前查询无需独立改写")
+	contextStarted := time.Now().UTC()
+	w.publishStage(execCtx, runID, contracts.AgentStageContextBuild, contracts.StageRunning, 0, "正在准备会话、记忆与知识上下文")
 
 	// 1. 构建 Agent 执行上下文（从数据库加载会话历史、Agent 配置、记忆等）
 	agentCtx, err := w.contextBuilder.Build(execCtx, contracts.AgentContextRequest{
@@ -218,6 +246,9 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 		Query:           run.Query,
 	})
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "context build failed")
+		w.publishStage(execCtx, runID, contracts.AgentStageContextBuild, contracts.StageFailed, time.Since(contextStarted).Milliseconds(), "上下文构建失败")
 		logger.Error("构建 Agent 执行上下文失败",
 			zap.String("run_id", run.ID.String()),
 			zap.Error(err),
@@ -231,6 +262,11 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 		w.createFailureMessage(context.Background(), run, fmt.Sprintf("抱歉，系统在准备回答时遇到了问题。失败原因：%s", failureMessage))
 		return
 	}
+	w.publishStage(execCtx, runID, contracts.AgentStageContextBuild, contracts.StageSucceeded, time.Since(contextStarted).Milliseconds(), "上下文准备完成")
+	if agentCtx.KnowledgeStatus == "" {
+		w.publishStage(execCtx, runID, contracts.AgentStageKnowledgeCheck, contracts.StageSkipped, 0, "知识检索已降级，未生成充分性结论")
+	}
+	w.publishStage(execCtx, runID, contracts.AgentStageRoute, contracts.StageRunning, 0, "正在选择执行路径")
 
 	// 2. 构造运行请求（使用从数据库加载的配置）
 	runRequest := contracts.AgentRunRequest{
@@ -242,6 +278,8 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 	// 3. 调用核心服务执行 Agent 运行
 	result, err := w.agentService.Run(execCtx, runRequest)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "agent run failed")
 		// 如果错误是 context 取消导致的（用户主动停止），不应覆盖 DB 中已被 Cancel 设为 cancelled 的状态。
 		if errors.Is(err, context.Canceled) {
 			logger.Info("Agent 运行已被用户取消", zap.String("run_id", run.ID.String()))
@@ -367,6 +405,27 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 	}
 
 	logger.Info("Agent 运行执行完成", zap.String("run_id", run.ID.String()))
+}
+
+func (w *AgentWorker) publishStage(ctx context.Context, runID contracts.ID, stage contracts.AgentStage, status contracts.StageStatus, durationMS int64, summary string, metadata ...map[string]any) {
+	if w.events == nil {
+		return
+	}
+	if durationMS > 0 && status != contracts.StageRunning {
+		metrics.StageFinished("agent_run", string(stage), string(status), time.Duration(durationMS)*time.Millisecond)
+	}
+	var safeMetadata map[string]any
+	if len(metadata) > 0 {
+		safeMetadata = metadata[0]
+	}
+	payload, err := json.Marshal(contracts.StageObservation{Stage: string(stage), Status: status, DurationMS: &durationMS, Summary: summary, Metadata: safeMetadata})
+	if err != nil {
+		return
+	}
+	traceID, requestID := contracts.CorrelationFromContext(ctx)
+	if err := w.events.Publish(ctx, contracts.AgentEvent{RunID: runID, TraceID: traceID, RequestID: requestID, Stage: stage, Status: status, EventType: contracts.EventStageUpdated, Data: payload}); err != nil {
+		logger.Warn("发布问答阶段事件失败，运行继续", zap.String("run_id", string(runID)), zap.String("stage", string(stage)), zap.Error(err))
+	}
 }
 
 func stringPtr(value string) *string { return &value }

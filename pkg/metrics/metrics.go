@@ -13,6 +13,8 @@ import (
 
 type httpKey struct{ method, path, status string }
 type workerKey struct{ jobType, result string }
+type queueKey struct{ jobType, kind string }
+type stageKey struct{ jobType, stage, result string }
 
 var (
 	httpRequests      sync.Map
@@ -23,6 +25,8 @@ var (
 	workerDuration    atomic.Int64
 	workerCount       atomic.Uint64
 	workerHeartbeat   atomic.Int64
+	queueDepth        sync.Map
+	stageDuration     sync.Map
 )
 
 // HTTPStarted 记录一个新HTTP请求开始，增加活跃请求计数
@@ -48,6 +52,25 @@ func WorkerFinished(jobType, result string, duration time.Duration) {
 // WorkerHeartbeat 更新Worker最后一次心跳时间戳
 func WorkerHeartbeat() { workerHeartbeat.Store(time.Now().UTC().Unix()) }
 
+// QueueDepth 更新低基数任务积压指标。
+func QueueDepth(jobType, kind string, value int64) {
+	gauge, _ := queueDepth.LoadOrStore(queueKey{jobType: jobType, kind: kind}, &atomic.Int64{})
+	gauge.(*atomic.Int64).Store(value)
+}
+
+type durationAggregate struct {
+	nanos atomic.Int64
+	count atomic.Uint64
+}
+
+// StageFinished 记录任务阶段时长，标签只允许低基数 job/stage/result。
+func StageFinished(jobType, stage, result string, duration time.Duration) {
+	value, _ := stageDuration.LoadOrStore(stageKey{jobType: jobType, stage: stage, result: result}, &durationAggregate{})
+	aggregate := value.(*durationAggregate)
+	aggregate.nanos.Add(duration.Nanoseconds())
+	aggregate.count.Add(1)
+}
+
 // Handler 返回Prometheus格式的指标导出HTTP处理器
 func Handler() http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -61,6 +84,20 @@ func Handler() http.Handler {
 		workerJobs.Range(func(key, value any) bool {
 			labels := key.(workerKey)
 			lines = append(lines, fmt.Sprintf("memora_worker_jobs_total{job_type=%q,result=%q} %d", labels.jobType, labels.result, value.(*atomic.Uint64).Load()))
+			return true
+		})
+		queueDepth.Range(func(key, value any) bool {
+			labels := key.(queueKey)
+			lines = append(lines, fmt.Sprintf("memora_worker_queue_depth{job_type=%q,kind=%q} %d", labels.jobType, labels.kind, value.(*atomic.Int64).Load()))
+			return true
+		})
+		stageDuration.Range(func(key, value any) bool {
+			labels := key.(stageKey)
+			aggregate := value.(*durationAggregate)
+			lines = append(lines,
+				fmt.Sprintf("memora_worker_stage_duration_seconds_sum{job_type=%q,stage=%q,result=%q} %.6f", labels.jobType, labels.stage, labels.result, float64(aggregate.nanos.Load())/float64(time.Second)),
+				fmt.Sprintf("memora_worker_stage_duration_seconds_count{job_type=%q,stage=%q,result=%q} %d", labels.jobType, labels.stage, labels.result, aggregate.count.Load()),
+			)
 			return true
 		})
 		sort.Strings(lines)

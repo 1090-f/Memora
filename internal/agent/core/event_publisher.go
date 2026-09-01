@@ -85,16 +85,27 @@ func (NoopEventPublisher) PublishStepCompleted(context.Context, contracts.ID, in
 
 // SequencedEventPublisher 为每个 Run 分配单调递增的事件序号。
 type SequencedEventPublisher struct {
-	publisher contracts.EventPublisher
-	mu        sync.Mutex
-	sequences map[contracts.ID]int64
+	publisher               contracts.EventPublisher
+	captureSensitiveContent bool
+	mu                      sync.Mutex
+	sequences               map[contracts.ID]int64
 }
 
-func NewSequencedEventPublisher(publisher contracts.EventPublisher) *SequencedEventPublisher {
-	return &SequencedEventPublisher{publisher: publisher, sequences: make(map[contracts.ID]int64)}
+func NewSequencedEventPublisher(publisher contracts.EventPublisher, captureSensitiveContent ...bool) *SequencedEventPublisher {
+	capture := len(captureSensitiveContent) > 0 && captureSensitiveContent[0]
+	return &SequencedEventPublisher{publisher: publisher, captureSensitiveContent: capture, sequences: make(map[contracts.ID]int64)}
 }
 
 func (p *SequencedEventPublisher) Publish(ctx context.Context, event contracts.AgentEvent) error {
+	if event.TraceID == "" || event.RequestID == "" {
+		traceID, requestID := contracts.CorrelationFromContext(ctx)
+		if event.TraceID == "" {
+			event.TraceID = traceID
+		}
+		if event.RequestID == "" {
+			event.RequestID = requestID
+		}
+	}
 	p.mu.Lock()
 	if event.Sequence <= p.sequences[event.RunID] {
 		event.Sequence = p.sequences[event.RunID] + 1
@@ -118,14 +129,80 @@ func (p *SequencedEventPublisher) publish(ctx context.Context, runID contracts.I
 	if err != nil {
 		return err
 	}
-	return p.Publish(ctx, contracts.AgentEvent{RunID: runID, EventType: typ, Data: payload})
+	stage, status := eventStage(typ)
+	return p.Publish(ctx, contracts.AgentEvent{RunID: runID, EventType: typ, Stage: stage, Status: status, Data: payload})
+}
+
+func (p *SequencedEventPublisher) publishStage(ctx context.Context, runID contracts.ID, stage contracts.AgentStage, status contracts.StageStatus, observation contracts.StageObservation) error {
+	payload, err := json.Marshal(observation)
+	if err != nil {
+		return err
+	}
+	return p.Publish(ctx, contracts.AgentEvent{RunID: runID, EventType: contracts.EventStageUpdated, Stage: stage, Status: status, Data: payload})
+}
+
+func eventStage(typ contracts.EventType) (contracts.AgentStage, contracts.StageStatus) {
+	switch typ {
+	case contracts.EventRouterCompleted:
+		return contracts.AgentStageRoute, contracts.StageSucceeded
+	case contracts.EventToolStarted:
+		return contracts.AgentStageToolCall, contracts.StageRunning
+	case contracts.EventToolCompleted:
+		return contracts.AgentStageToolCall, contracts.StageSucceeded
+	case contracts.EventToolCallFailed:
+		return contracts.AgentStageToolCall, contracts.StageFailed
+	case contracts.EventAnswerDelta:
+		return contracts.AgentStageModelGenerate, contracts.StageRunning
+	case contracts.EventRunCompleted:
+		return contracts.AgentStageAnswer, contracts.StageSucceeded
+	case contracts.EventRunFailed:
+		return contracts.AgentStageAnswer, contracts.StageFailed
+	case contracts.EventRunCancelled:
+		return contracts.AgentStageAnswer, contracts.StageSkipped
+	case contracts.EventCitationCreated:
+		return contracts.AgentStageAnswer, contracts.StageSucceeded
+	default:
+		return "", ""
+	}
 }
 
 func (p *SequencedEventPublisher) PublishRunStarted(ctx context.Context, id contracts.ID) error {
 	return p.publish(ctx, id, contracts.EventRunStarted, map[string]any{"execution_mode": ""})
 }
 func (p *SequencedEventPublisher) PublishRunCompleted(ctx context.Context, id contracts.ID, result contracts.AgentRunResult) error {
-	return p.publish(ctx, id, contracts.EventRunCompleted, map[string]any{"final_result": result.FinalResult})
+	durationMS := result.EndedAt.Sub(result.StartedAt).Milliseconds()
+	if durationMS < 0 {
+		durationMS = 0
+	}
+	if err := p.publishStage(ctx, id, contracts.AgentStageModelGenerate, contracts.StageSucceeded, contracts.StageObservation{
+		Stage: string(contracts.AgentStageModelGenerate), Status: contracts.StageSucceeded, DurationMS: &durationMS,
+		Summary: "模型生成完成", Metadata: map[string]any{"input_tokens": result.Usage.InputTokens, "output_tokens": result.Usage.OutputTokens},
+	}); err != nil {
+		return err
+	}
+	for _, citation := range result.Citations {
+		citationData := map[string]any{
+			"source_type": citation.SourceType, "knowledge_base_id": citation.KnowledgeBaseID,
+			"document_id": citation.DocumentID, "document_title": citation.DocumentTitle,
+			"chunk_id": citation.ChunkID, "title": citation.Title, "url": citation.URL,
+		}
+		if p.captureSensitiveContent {
+			quoted := []rune(citation.QuotedText)
+			if len(quoted) > 240 {
+				quoted = quoted[:240]
+			}
+			citationData["snippet"] = string(quoted)
+		}
+		if err := p.publish(ctx, id, contracts.EventCitationCreated, citationData); err != nil {
+			return err
+		}
+	}
+	return p.publish(ctx, id, contracts.EventRunCompleted, map[string]any{
+		"answer_available": true,
+		"citation_count":   len(result.Citations),
+		"knowledge_status": result.KnowledgeStatus,
+		"token_usage":      result.Usage,
+	})
 }
 func (p *SequencedEventPublisher) PublishRunFailed(ctx context.Context, id contracts.ID, mode contracts.ExecutionMode, runErr error) error {
 	return p.publish(ctx, id, contracts.EventRunFailed, map[string]any{

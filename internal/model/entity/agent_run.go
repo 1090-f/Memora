@@ -21,6 +21,8 @@ type AgentRun struct {
 	ChatModelID         uuid.UUID      `gorm:"type:uuid;not null" json:"chat_model_id"`                                                                                // 本次运行固化的 Chat 模型身份引用
 	RetryOfRunID        *uuid.UUID     `gorm:"type:uuid" json:"retry_of_run_id,omitempty"`                                                                             // 若为重试运行，指向被重试的原始运行 ID（可选）
 	Query               string         `gorm:"type:text;not null" json:"query"`                                                                                        // 用户本次查询的问题原文
+	TraceID             *string        `gorm:"type:varchar(32)" json:"trace_id,omitempty"`                                                                             // 跨服务 Trace ID
+	RequestID           *string        `gorm:"type:varchar(128)" json:"request_id,omitempty"`                                                                          // 触发运行的 HTTP 请求 ID
 	ExecutionMode       *string        `gorm:"type:varchar(20);check:execution_mode IN ('react')" json:"execution_mode,omitempty"`                                     // Router 选择的执行模式
 	RouterReasonSummary string         `gorm:"type:varchar(1000)" json:"router_reason_summary,omitempty"`                                                              // Router 决策原因摘要（面向用户展示）
 	RouterConfidence    *float64       `gorm:"type:numeric(5,4);check:router_confidence BETWEEN 0 AND 1" json:"router_confidence,omitempty"`                           // Router 决策置信度（可选）

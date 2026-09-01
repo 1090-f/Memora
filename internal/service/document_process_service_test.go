@@ -212,6 +212,32 @@ func TestProcessImportTaskManualDocumentRunsPipelineWithContent(t *testing.T) {
 	}
 }
 
+func TestDocumentStageSnapshotUsesStableStages(t *testing.T) {
+	reason := "embedding upstream unavailable"
+	stages := documentStageSnapshot(string(contracts.ProcessingFailed), "embedding", &reason)
+	if len(stages) != 6 {
+		t.Fatalf("expected 6 stages, got %d", len(stages))
+	}
+	if stages[4].Stage != string(contracts.DocumentStageEmbed) || stages[4].Status != contracts.StageFailed {
+		t.Fatalf("unexpected failed stage: %#v", stages[4])
+	}
+	if stages[4].ErrorMessage != reason {
+		t.Fatalf("unexpected error message: %q", stages[4].ErrorMessage)
+	}
+}
+
+func TestImportTaskStalled(t *testing.T) {
+	now := time.Now().UTC()
+	started := now.Add(-16 * time.Minute)
+	if !importTaskStalled(&entity.ImportTask{Status: string(contracts.TaskStatusRunning), StartedAt: &started}, now) {
+		t.Fatal("expected long-running task to be detected as stalled")
+	}
+	started = now.Add(-5 * time.Minute)
+	if importTaskStalled(&entity.ImportTask{Status: string(contracts.TaskStatusRunning), StartedAt: &started}, now) {
+		t.Fatal("recent running task must not be marked stalled")
+	}
+}
+
 // TestProcessImportTaskBuildConflictDoesNotTouchCandidate 验证另一任务持有构建权时，
 // 当前 Worker 在清理候选 Chunk 和执行流水线前即退出，也不会覆盖持有者状态。
 func TestProcessImportTaskBuildConflictDoesNotTouchCandidate(t *testing.T) {

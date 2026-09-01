@@ -70,6 +70,7 @@ import { ImportDrawer } from '../components/ImportDrawer';
 import { KnowledgeTree } from '../components/KnowledgeTree';
 import { flattenDirectories } from '../directoryOptions';
 import {
+  documentStatusLabel,
   documentStatusFilterParams,
   documentStatusOptions,
   type DocumentStatusFilter,
@@ -323,11 +324,13 @@ function DocumentList({
               <Typography noWrap sx={{ fontSize: 13, color: 'inherit' }}>{document.title}</Typography>
             </Stack>
             <Typography sx={{ fontSize: 12, color: '#65728a' }}>{extension}</Typography>
-            <Chip
-              size="small"
-              label={isProcessing(document.processing_status) ? '处理中' : document.processing_status === 'failed' ? '失败' : '已完成'}
-              sx={{ justifySelf: 'start', height: 24, borderRadius: 1.5, fontSize: 11, bgcolor: document.processing_status === 'failed' ? '#feecec' : isProcessing(document.processing_status) ? '#eaf2ff' : '#e8f7e9', color: document.processing_status === 'failed' ? '#d44b4b' : isProcessing(document.processing_status) ? '#4772d9' : '#32964a' }}
-            />
+            <Tooltip title={document.failure_reason || document.failure_step || document.processing_status}>
+              <Chip
+                size="small"
+                label={isProcessing(document.processing_status) ? documentStatusLabel(document.processing_status, document.index_mode) : document.processing_status === 'failed' ? '失败' : document.index_mode === 'none' ? '不可检索' : '可检索'}
+                sx={{ justifySelf: 'start', height: 24, borderRadius: 1.5, fontSize: 11, bgcolor: document.processing_status === 'failed' ? '#feecec' : isProcessing(document.processing_status) ? '#eaf2ff' : document.index_mode === 'none' ? '#fff3dd' : '#e8f7e9', color: document.processing_status === 'failed' ? '#d44b4b' : isProcessing(document.processing_status) ? '#4772d9' : document.index_mode === 'none' ? '#a16400' : '#32964a' }}
+              />
+            </Tooltip>
             <Typography sx={{ fontSize: 12, color: '#65728a' }}>{new Date(document.updated_at).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })}</Typography>
             <Stack direction="row" spacing={0}>
               <Tooltip title="打开文档"><IconButton size="small" onClick={(event) => { event.stopPropagation(); onSelect(document); }}><VisibilityOutlined sx={{ fontSize: 17 }} /></IconButton></Tooltip>
@@ -686,9 +689,10 @@ export function DocumentWorkspaceContent({ status, kbId, documentId }: {
       {enabled && dashboardQuery.error && <Alert severity="warning" action={<Button color="inherit" size="small" onClick={() => void dashboardQuery.refetch()}>重试</Button>}>知识库概览加载失败：{errorMessage(dashboardQuery.error)}</Alert>}
       {enabled && dashboard && (
         <>
-          <Paper variant="outlined" sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, minmax(0, 1fr))' }, borderRadius: 3, borderColor: '#e3e7ef', overflow: 'hidden' }}>
+          <Paper variant="outlined" sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(4, minmax(0, 1fr))' }, borderRadius: 3, borderColor: '#e3e7ef', overflow: 'hidden' }}>
             <MetricItem label="文档总数" value={dashboard.document_total} detail={`${directoryCount} 个目录`} />
-            <MetricItem label="处理成功" value={dashboard.indexed_total} detail="已完成处理" tone="success" />
+            <MetricItem label="可检索" value={dashboard.indexed_total} detail="已进入活动索引" tone="success" />
+            <MetricItem label="处理中" value={dashboard.processing_total} detail={dashboard.processing_total > 0 ? '状态将自动刷新' : '当前无处理任务'} />
             <MetricItem label="处理失败" value={dashboard.failed_total} detail={dashboard.failed_total > 0 ? '需要人工处理' : '当前无失败'} tone={dashboard.failed_total > 0 ? 'error' : 'default'} />
           </Paper>
 
