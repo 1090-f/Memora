@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -80,6 +81,45 @@ func TestSequencedEventPublisherAddsStageAndCorrelation(t *testing.T) {
 	}
 	if event.TraceID != "0123456789abcdef0123456789abcdef" || event.RequestID != "request-1" {
 		t.Fatalf("unexpected correlation: %q/%q", event.TraceID, event.RequestID)
+	}
+}
+
+func TestToolFailureCarriesRecoveryContract(t *testing.T) {
+	capture := &capturedEventPublisher{}
+	publisher := NewSequencedEventPublisher(capture)
+	if err := publisher.PublishToolCallCompleted(context.Background(), contracts.ID("run-1"), contracts.ID("call-1"), "mcp.search", false, "connection refused"); err != nil {
+		t.Fatal(err)
+	}
+	event := capture.events[0]
+	if event.EventType != contracts.EventToolCallFailed || event.Stage != contracts.AgentStageToolCall || event.Status != contracts.StageFailed {
+		t.Fatalf("unexpected failure event: %#v", event)
+	}
+	payload := eventPayload(t, event)
+	if payload["error_code"] != string(contracts.ErrToolCallFailed) || payload["retryable"] != true {
+		t.Fatalf("missing failure contract: %#v", payload)
+	}
+	if payload["recovery_advice"] == "" {
+		t.Fatalf("missing recovery advice: %#v", payload)
+	}
+}
+
+func TestRunFailureCarriesStableDiagnosticContract(t *testing.T) {
+	capture := &capturedEventPublisher{}
+	publisher := NewSequencedEventPublisher(capture)
+	runErr := newCoreError(contracts.ErrModelCallFailed, errors.New("provider secret must not become an error code"))
+	if err := publisher.PublishRunFailed(context.Background(), contracts.ID("run-1"), contracts.ExecutionReact, runErr); err != nil {
+		t.Fatal(err)
+	}
+	event := capture.events[0]
+	if event.EventType != contracts.EventRunFailed || event.Status != contracts.StageFailed {
+		t.Fatalf("unexpected failure event: %#v", event)
+	}
+	payload := eventPayload(t, event)
+	if payload["error_code"] != string(contracts.ErrModelCallFailed) || payload["failure_stage"] != string(contracts.AgentStageModelGenerate) {
+		t.Fatalf("unstable failure diagnostics: %#v", payload)
+	}
+	if payload["retryable"] != true || payload["recovery_advice"] == "" {
+		t.Fatalf("missing recovery contract: %#v", payload)
 	}
 }
 

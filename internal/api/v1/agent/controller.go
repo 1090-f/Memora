@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,11 @@ type Controller struct {
 	agentConfigRepo repository.AgentConfigRepository // Agent 配置查询仓库
 	eventSub        contracts.EventSubscriber        // Agent 事件订阅器（用于 SSE 流式推送）
 	agentEventRepo  repository.AgentEventRepository  // Agent 事件持久化仓库（用于断线重连时的历史回放）
+	runOwnerRepo    agentRunOwnerRepository          // SSE 归属校验所需的窄接口
+}
+
+type agentRunOwnerRepository interface {
+	FindByID(ctx context.Context, userID, runID uuid.UUID) (*entity.AgentRun, error)
 }
 
 // NewController 创建 Agent 运行管理的 HTTP 控制器实例。
@@ -53,6 +59,7 @@ func NewController(
 		agentConfigRepo: agentConfigRepo,
 		eventSub:        eventSub,
 		agentEventRepo:  agentEventRepo,
+		runOwnerRepo:    runRepo,
 	}
 }
 
@@ -335,7 +342,7 @@ func (ctrl *Controller) SubscribeEvents(c *gin.Context) {
 		return
 	}
 	// SSE 会回放持久化事件，必须在写响应头前验证 Run 归属，避免跨用户读取。
-	if _, err := ctrl.runRepo.FindByID(c.Request.Context(), userID, parsedRunID); err != nil {
+	if _, err := ctrl.runOwnerRepo.FindByID(c.Request.Context(), userID, parsedRunID); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			response.Failure(c, apperrors.ErrNotFound)
 			return

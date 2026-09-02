@@ -18,6 +18,7 @@ export interface SseOptions {
 
 const terminalEvents = new Set([
   'done',
+  'complete',
   'completed',
   'error',
   'agent.run.completed',
@@ -135,6 +136,12 @@ export async function readSseStream(
         if (!event) continue;
         if (event.sequence !== undefined && event.sequence <= highestSequence) continue;
         if (event.sequence !== undefined) highestSequence = event.sequence;
+
+        // complete/done 是传输层控制帧，不包含业务事件结构，不交给业务 reducer。
+        if (event.event === 'complete' || event.event === 'done') {
+          await reader.cancel();
+          return;
+        }
 
         options.onEvent(event);
 

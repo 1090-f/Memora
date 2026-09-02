@@ -21,6 +21,7 @@ const (
 	ErrServiceUnavailable     ErrorCode = "SERVICE_UNAVAILABLE"
 	ErrInternal               ErrorCode = "INTERNAL_ERROR"
 	ErrModelCallFailed        ErrorCode = "MODEL_CALL_FAILED"
+	ErrToolCallFailed         ErrorCode = "TOOL_CALL_FAILED"
 	ErrMCPCallFailed          ErrorCode = "MCP_CALL_FAILED"
 	ErrMCPConnectionFailed    ErrorCode = "MCP_CONNECTION_FAILED"
 	ErrMCPToolDisabled        ErrorCode = "MCP_TOOL_DISABLED" // MCP Server 或 Tool 在调用前被动态禁用

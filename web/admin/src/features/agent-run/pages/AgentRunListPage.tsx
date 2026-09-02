@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import ArrowBackOutlined from '@mui/icons-material/ArrowBackOutlined';
 import CheckCircleOutlined from '@mui/icons-material/CheckCircleOutlined';
 import ContentCopyOutlined from '@mui/icons-material/ContentCopyOutlined';
@@ -297,22 +297,41 @@ function RunTimeline({ run, toolCalls, liveState }: { run: AgentRun; toolCalls: 
 
 export function RunDetail({ run }: { run: AgentRun }) {
   const [liveState, dispatch] = useReducer(reduceAgentEvent, initialAgentRunState);
+  const highestSequenceRef = useRef(0);
   const toolCallsQuery = useQuery({
     queryKey: ['agent-run-tool-calls', run.id],
     queryFn: () => getAgentRunToolCalls(run.id),
   });
   useEffect(() => {
     dispatch({ type: 'HYDRATE_AGENT_RUN_STATE', run });
+    highestSequenceRef.current = 0;
     const controller = new AbortController();
-    void streamAgentEvents(`${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${run.id}/events`, {
-      signal: controller.signal,
-      afterSequence: 0,
-      timeout: run.status === 'running' || run.status === 'queued' ? 0 : 30_000,
-      onEvent: (event) => dispatch(event),
-    }).catch(() => {
-      // 运行详情仍可依赖 GET /runs 和 tool-calls 展示，事件回放失败不阻断页面。
-    });
-    return () => controller.abort();
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let terminal = run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled';
+    const connect = async () => {
+      try {
+        await streamAgentEvents(`${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${run.id}/events`, {
+          signal: controller.signal,
+          afterSequence: highestSequenceRef.current,
+          timeout: terminal ? 30_000 : 0,
+          onEvent: (event) => {
+            highestSequenceRef.current = Math.max(highestSequenceRef.current, event.sequence);
+            if (event.type === 'agent.run.completed' || event.type === 'agent.run.failed' || event.type === 'agent.run.cancelled') terminal = true;
+            dispatch(event);
+          },
+        });
+      } catch {
+        // 运行详情仍可依赖 GET /runs 和 tool-calls 展示，事件回放失败不阻断页面。
+      }
+      if (!controller.signal.aborted && !terminal) {
+        retryTimer = setTimeout(() => void connect(), 1_000);
+      }
+    };
+    void connect();
+    return () => {
+      controller.abort();
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
+    };
   }, [run]);
   const copyRunId = () => void navigator.clipboard?.writeText(run.id);
   const toolCalls = toolCallsQuery.data ?? [];

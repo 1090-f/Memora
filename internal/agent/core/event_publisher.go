@@ -332,6 +332,9 @@ func (p *SequencedEventPublisher) PublishToolCallCompleted(ctx context.Context, 
 	}
 	if !success {
 		payload["error_message"] = summary
+		payload["error_code"] = contracts.ErrToolCallFailed
+		payload["retryable"] = true
+		payload["recovery_advice"] = "请重试；若仍失败，请检查工具或 MCP 服务状态并使用 Trace ID 诊断。"
 	}
 	return p.publish(ctx, id, eventType, payload)
 }
