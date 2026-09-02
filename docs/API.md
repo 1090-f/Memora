@@ -53,6 +53,11 @@ POST /api/v1/knowledge-bases/:kb_id/search
 POST /api/v1/knowledge-bases/:kb_id/search/test
 ```
 
+`GET /health/workers` 使用 Redis TTL 心跳判断 Worker 是否存活，并在 `workers` 中返回文档处理和
+预览队列的 `pending/running/failed/retried`、最老待处理任务年龄、Redis Consumer Group
+Pending 数以及数据库 Outbox backlog。没有有效心跳时接口返回 503，但仍在错误详情中保留已取得的
+队列诊断数据。
+
 文档处理详情额外返回 `task_id`、`failure_code`、`recovery_advice` 与标准阶段数组
 `stages[]`。阶段名固定为 `upload/parse/normalize/chunk/embed/index/preview`，状态固定为
 `pending/running/succeeded/failed/skipped`。重试处理与重新索引响应均返回新建的 `task_id`
@@ -60,7 +65,10 @@ POST /api/v1/knowledge-bases/:kb_id/search/test
 详情返回 `stalled=true` 与 `failure_code=TASK_STALLED`，用于提示检查 Worker 健康状态。
 
 Agent 运行详情返回 `trace_id`、`request_id`、`router_confidence`、
-`router_fallback_used` 与脱敏的 `execution_trace`。SSE 事件保留既有 `event_type/data`
+`router_fallback_used`、`first_token_at`、`first_token_latency_ms`、
+`model_generate_duration_ms`、`failure_stage`、`retryable`、`recovery_advice`
+与脱敏的 `execution_trace`。其中 `first_token_latency_ms` 表示从运行开始到首个可见回答片段的延迟；
+当前非 token 流式模型链路不将其表述为模型供应商的原生首 Token 延迟。SSE 事件保留既有 `event_type/data`
 兼容字段，并增加顶层 `stage/status/trace_id/request_id`；不得在这些字段或摘要中写入
 完整 Prompt、文档正文、认证信息或工具敏感参数。
 
@@ -92,4 +100,6 @@ URL 导入的 HTTP 请求只创建异步任务。Worker 使用安全 Web Loader 
 
 `observability.retention_days` 控制 `agent_events` 与 `document_processing_events` 的保留期，
 后台进程启动时及之后每 24 小时清理一次过期事件。配置 `otlp_endpoint` 后，HTTP、模型、
-Python Parser 与 Streamable HTTP MCP 请求会传播 W3C Trace Context 并批量导出 OTLP Trace。
+Python Parser、Redis Stream 文档/预览任务与 Streamable HTTP MCP 请求会传播 W3C Trace
+Context 并批量导出 OTLP Trace；旧队列消息没有 `traceparent` 时仍使用任务表中的 `trace_id`
+作为兼容回退。

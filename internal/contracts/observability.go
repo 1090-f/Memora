@@ -125,3 +125,14 @@ type StageObservation struct {
 	Summary      string         `json:"summary,omitempty"`
 	Metadata     map[string]any `json:"metadata,omitempty"`
 }
+
+// AgentRunTiming 是运行详情可稳定查询的用户可见时延摘要。
+type AgentRunTiming struct {
+	FirstTokenAt            *time.Time
+	FirstTokenLatencyMS     *int64
+	ModelGenerateDurationMS *int64
+}
+
+type AgentRunTimingProvider interface {
+	AgentRunTiming(runID ID) AgentRunTiming
+}

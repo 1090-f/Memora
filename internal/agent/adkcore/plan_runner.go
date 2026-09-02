@@ -166,6 +166,7 @@ func (g *PlanExecuteGraph) Run(ctx context.Context, request contracts.AgentRunRe
 	}
 
 	// 3. 生成最终答案（在审查之前，让审查检查真实结果）
+	_ = g.eventPublisher.PublishModelGenerationStarted(ctx, request.RunID)
 	finalAnswer, synthUsage, synthErr := g.executor.SynthesizeFinalAnswerWithUsage(ctx, plan, request)
 	totalUsage.Add(synthUsage)
 	if synthErr != nil {

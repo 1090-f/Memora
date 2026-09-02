@@ -227,7 +227,8 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		return err
 	}
 	retentionRepo := repository.NewObservabilityRetentionRepository(a.db)
-	a.background = background.NewManager(a.backgroundRedis, importTasks, previewRepo, repository.NewTaskOutboxRepository(a.db), documentProcessService, previewProcessor, retentionRepo, cfg.DocumentConsumer, cfg.Preview, cfg.Outbox, cfg.IndexCleanup, cfg.Observability)
+	taskOutbox := repository.NewTaskOutboxRepository(a.db)
+	a.background = background.NewManager(a.backgroundRedis, importTasks, previewRepo, taskOutbox, documentProcessService, previewProcessor, retentionRepo, cfg.DocumentConsumer, cfg.Preview, cfg.Outbox, cfg.IndexCleanup, cfg.Observability)
 
 	// 初始化 ContextBuilder（Phase 3）
 	messages := repository.NewMessageRepository(a.db)
@@ -399,8 +400,50 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		RedisHealth:     func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
 		MinIOHealth:     a.store.Health,
 		ParserHealth:    a.documentParser.Health,
-		WorkerCount: func(ctx context.Context) (int64, error) {
-			return database.CountWorkerHeartbeats(ctx, a.redis)
+		WorkerHealth: func(ctx context.Context) (api.WorkerHealthSnapshot, error) {
+			activeWorkers, err := database.CountWorkerHeartbeats(ctx, a.redis)
+			if err != nil {
+				return api.WorkerHealthSnapshot{}, err
+			}
+			documentHealth, err := importTasks.HealthSnapshot(ctx)
+			if err != nil {
+				return api.WorkerHealthSnapshot{ActiveWorkers: activeWorkers}, err
+			}
+			previewHealth, err := previewRepo.HealthSnapshot(ctx)
+			if err != nil {
+				return api.WorkerHealthSnapshot{ActiveWorkers: activeWorkers}, err
+			}
+			outboxBacklog, err := taskOutbox.CountUnpublished(ctx)
+			if err != nil {
+				return api.WorkerHealthSnapshot{ActiveWorkers: activeWorkers}, err
+			}
+			var documentRedisPending, previewRedisPending int64
+			if cfg.DocumentConsumer.Enabled {
+				pending, pendingErr := a.redis.XPending(ctx, cfg.DocumentConsumer.Stream, cfg.DocumentConsumer.Group).Result()
+				if pendingErr != nil {
+					return api.WorkerHealthSnapshot{ActiveWorkers: activeWorkers}, pendingErr
+				}
+				documentRedisPending = pending.Count
+			}
+			if cfg.Preview.Enabled {
+				pending, pendingErr := a.redis.XPending(ctx, cfg.Preview.Consumer.Stream, cfg.Preview.Consumer.Group).Result()
+				if pendingErr != nil {
+					return api.WorkerHealthSnapshot{ActiveWorkers: activeWorkers}, pendingErr
+				}
+				previewRedisPending = pending.Count
+			}
+			return api.WorkerHealthSnapshot{
+				ActiveWorkers: activeWorkers,
+				Document: api.WorkerQueueHealth{
+					Pending: documentHealth.Pending, Running: documentHealth.Running, Failed: documentHealth.Failed,
+					Retried: documentHealth.Retried, OldestPendingAgeSeconds: documentHealth.OldestPendingAgeSeconds, RedisPending: documentRedisPending,
+				},
+				Preview: api.WorkerQueueHealth{
+					Pending: previewHealth.Pending, Running: previewHealth.Running, Failed: previewHealth.Failed,
+					Retried: previewHealth.Retried, OldestPendingAgeSeconds: previewHealth.OldestPendingAgeSeconds, RedisPending: previewRedisPending,
+				},
+				OutboxBacklog: outboxBacklog,
+			}, nil
 		},
 	})
 	a.server = &http.Server{

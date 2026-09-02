@@ -157,5 +157,6 @@ type ImportTaskHealthSnapshot struct {
 // TaskOutboxRepository 管理可靠 Redis Stream 发布事件。
 type TaskOutboxRepository interface {
 	ListUnpublished(ctx context.Context, limit int) ([]*entity.TaskOutbox, error)
+	CountUnpublished(ctx context.Context) (int64, error)
 	MarkPublished(ctx context.Context, eventID string) error
 }

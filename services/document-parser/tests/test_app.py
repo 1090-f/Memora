@@ -17,8 +17,11 @@ from fixtures import (
     build_pptx,
     build_xlsx,
 )
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 import app as app_module
+import parser_observability
 from app import app
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -46,6 +49,21 @@ def test_health_live(client):
     resp = client.get("/health/live")
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
+
+
+def test_parse_continues_incoming_traceparent(client):
+    exporter = InMemorySpanExporter()
+    assert parser_observability._provider is not None
+    parser_observability._provider.add_span_processor(SimpleSpanProcessor(exporter))
+    resp = client.post(
+        "/v1/parse",
+        headers={"traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"},
+        files={"file": ("notes.txt", b"hello", "text/plain")},
+        data={"options": "{}"},
+    )
+    assert resp.status_code == 422
+    spans = exporter.get_finished_spans()
+    assert any(format(span.context.trace_id, "032x") == "0123456789abcdef0123456789abcdef" for span in spans)
 
 
 def test_unknown_format_rejected(client):

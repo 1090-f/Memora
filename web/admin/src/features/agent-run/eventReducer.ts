@@ -32,15 +32,16 @@ function withEntry(state: AgentRunViewState, entry: AgentTimelineEntry): AgentRu
 }
 
 // 从后往前查找最后一条满足条件的记录并原地更新，返回新数组。
-function updateLastEntry(
+function updateLastEntry<T extends AgentTimelineEntry>(
   timeline: AgentTimelineEntry[],
-  predicate: (entry: AgentTimelineEntry) => boolean,
-  updater: (entry: AgentTimelineEntry) => AgentTimelineEntry,
+  predicate: (entry: AgentTimelineEntry) => entry is T,
+  updater: (entry: T) => AgentTimelineEntry,
 ): AgentTimelineEntry[] {
   for (let i = timeline.length - 1; i >= 0; i--) {
-    if (predicate(timeline[i])) {
+    const entry = timeline[i];
+    if (predicate(entry)) {
       const next = [...timeline];
-      next[i] = updater(timeline[i]);
+      next[i] = updater(entry);
       return next;
     }
   }
@@ -168,7 +169,7 @@ export function reduceAgentEvent(state: AgentRunViewState, event: AgentRunAction
         };
         const updated = updateLastEntry(
           next.timeline,
-          (entry) => entry.kind === 'stage' && entry.stage === stage && entry.status === 'running',
+          (entry): entry is Extract<AgentTimelineEntry, { kind: 'stage' }> => entry.kind === 'stage' && entry.stage === stage && entry.status === 'running',
           (entry) => ({ ...stageEntry, sequence: entry.sequence }),
         );
         return updated === next.timeline ? withEntry(next, stageEntry) : { ...next, timeline: updated };

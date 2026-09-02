@@ -259,6 +259,7 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 		if markErr := w.runRepo.MarkFailed(execCtx, run.ID, "context_build_error", failureMessage, "", time.Since(startedAt).Milliseconds(), 0, 0, 0); markErr != nil {
 			logger.Error("标记运行失败状态出错", zap.String("run_id", run.ID.String()), zap.Error(markErr))
 		}
+		w.updateRunObservability(execCtx, run.ID, contracts.AgentStageContextBuild, true, "请检查知识库、模型与会话配置后重试。")
 		// 创建失败状态的助手消息，确保问答页面能够展示本次运行失败的结果。
 		w.createFailureMessage(context.Background(), run, fmt.Sprintf("抱歉，系统在准备回答时遇到了问题。失败原因：%s", failureMessage))
 		return
@@ -304,6 +305,7 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 		if markErr := w.runRepo.MarkFailed(context.Background(), run.ID, "agent_run_error", err.Error(), executionMode, time.Since(startedAt).Milliseconds(), result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens); markErr != nil {
 			logger.Error("标记 Agent 运行失败状态出错", zap.String("run_id", run.ID.String()), zap.Error(markErr))
 		}
+		w.updateRunObservability(context.Background(), run.ID, contracts.AgentStageModelGenerate, true, "请重试；若仍失败，请检查模型服务状态并使用 Trace ID 诊断。")
 		// 创建失败状态的助手消息，向用户反馈本次运行执行失败。
 		w.createFailureMessage(context.Background(), run, w.getFriendlyErrorMessage(err))
 		return
@@ -329,6 +331,7 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 		); markErr != nil {
 			logger.Error("标记 Agent 运行失败状态出错", zap.String("run_id", run.ID.String()), zap.Error(markErr))
 		}
+		w.updateRunObservability(context.Background(), run.ID, contracts.AgentStageAnswer, true, "请重试或简化问题；若持续为空，请检查模型输出配置。")
 		w.createFailureMessage(context.Background(), run, "任务执行完成但未生成有效最终回答，请重试或简化问题")
 		return
 	}
@@ -348,6 +351,7 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 		logger.Error("标记 Agent 运行完成状态出错", zap.String("run_id", run.ID.String()), zap.Error(markErr))
 		return
 	}
+	w.updateRunObservability(context.Background(), run.ID, "", false, "")
 
 	// 持久化助手消息（AI 回复）
 	if result.FinalResult != "" {
@@ -447,6 +451,28 @@ func (w *AgentWorker) publishStage(ctx context.Context, runID contracts.ID, stag
 	traceID, requestID := contracts.CorrelationFromContext(ctx)
 	if err := w.events.Publish(ctx, contracts.AgentEvent{RunID: runID, TraceID: traceID, RequestID: requestID, Stage: stage, Status: status, EventType: contracts.EventStageUpdated, Data: payload}); err != nil {
 		logger.Warn("发布问答阶段事件失败，运行继续", zap.String("run_id", string(runID)), zap.String("stage", string(stage)), zap.Error(err))
+	}
+}
+
+func (w *AgentWorker) updateRunObservability(ctx context.Context, runID uuid.UUID, failureStage contracts.AgentStage, retryable bool, recoveryAdvice string) {
+	update := repository.AgentRunObservabilityUpdate{}
+	if provider, ok := w.events.(contracts.AgentRunTimingProvider); ok {
+		timing := provider.AgentRunTiming(contracts.ID(runID.String()))
+		update.FirstTokenAt = timing.FirstTokenAt
+		update.FirstTokenLatencyMS = timing.FirstTokenLatencyMS
+		update.ModelGenerateDurationMS = timing.ModelGenerateDurationMS
+		if timing.FirstTokenLatencyMS != nil {
+			metrics.StageFinished("agent_run", "first_token", "succeeded", time.Duration(*timing.FirstTokenLatencyMS)*time.Millisecond)
+		}
+	}
+	if failureStage != "" {
+		stage := string(failureStage)
+		update.FailureStage = &stage
+		update.Retryable = &retryable
+		update.RecoveryAdvice = &recoveryAdvice
+	}
+	if err := w.runRepo.UpdateObservability(ctx, runID, update); err != nil {
+		logger.Warn("更新 Agent 可观测摘要失败", zap.String("run_id", runID.String()), zap.Error(err))
 	}
 }
 

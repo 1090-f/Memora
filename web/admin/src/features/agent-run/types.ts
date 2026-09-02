@@ -35,6 +35,8 @@ export interface AgentEvent {
   sequence: number;
   timestamp: string;
   type: AgentEventType;
+  stage?: string;
+  status?: string;
   payload: Record<string, unknown>;
 }
 
@@ -84,6 +86,12 @@ export interface AgentRun {
   output_tokens?: number;
   total_tokens?: number;
   duration_ms?: number | null;
+  first_token_at?: string | null;
+  first_token_latency_ms?: number | null;
+  model_generate_duration_ms?: number | null;
+  failure_stage?: string | null;
+  retryable?: boolean | null;
+  recovery_advice?: string | null;
   started_at?: string | null;
   ended_at?: string | null;
   created_at?: string;

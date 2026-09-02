@@ -332,10 +332,12 @@ export function RunDetail({ run }: { run: AgentRun }) {
           </Stack>
           <Divider />
           <Grid container spacing={1.5}>
-            <Grid size={{ xs: 6, sm: 3 }}><Metric label="执行模式" value={run.execution_mode || '等待路由'} /></Grid>
-            <Grid size={{ xs: 6, sm: 3 }}><Metric label="总耗时" value={formatDuration(run.duration_ms)} /></Grid>
-            <Grid size={{ xs: 6, sm: 3 }}><Metric label="总 Token" value={`${run.total_tokens ?? 0}`} /></Grid>
-            <Grid size={{ xs: 6, sm: 3 }}><Metric label="工具调用" value={`${Math.max(toolCalls.length, liveState.tools.length)} 次`} /></Grid>
+            <Grid size={{ xs: 6, sm: 2 }}><Metric label="执行模式" value={run.execution_mode || '等待路由'} /></Grid>
+            <Grid size={{ xs: 6, sm: 2 }}><Metric label="总耗时" value={formatDuration(run.duration_ms)} /></Grid>
+            <Grid size={{ xs: 6, sm: 2 }}><Metric label="首字延迟" value={formatDuration(run.first_token_latency_ms)} /></Grid>
+            <Grid size={{ xs: 6, sm: 2 }}><Metric label="模型生成" value={formatDuration(run.model_generate_duration_ms)} /></Grid>
+            <Grid size={{ xs: 6, sm: 2 }}><Metric label="总 Token" value={`${run.total_tokens ?? 0}`} /></Grid>
+            <Grid size={{ xs: 6, sm: 2 }}><Metric label="工具调用" value={`${Math.max(toolCalls.length, liveState.tools.length)} 次`} /></Grid>
           </Grid>
           <Typography variant="caption" color="text.secondary">
             Token 明细：输入 {run.input_tokens ?? 0} · 输出 {run.output_tokens ?? 0}
@@ -368,7 +370,7 @@ export function RunDetail({ run }: { run: AgentRun }) {
             <RunTimeline run={run} toolCalls={toolCalls} liveState={liveState} />
           </Box>
           {toolCalls.length > 0 && <Typography variant="body2" color="text.secondary">工具调用共 {toolCalls.length} 次；输入、输出均为脱敏摘要，详细结果可在时间线中展开。</Typography>}
-          {run.error_message && <Alert severity="error"><strong>{run.error_code || 'RUN_FAILED'}</strong>：{run.error_message}<br />建议重试；若问题持续，请复制下方 Trace ID 进行诊断。</Alert>}
+          {run.error_message && <Alert severity="error"><strong>{run.error_code || 'RUN_FAILED'}</strong>{run.failure_stage ? `（${stageLabels[run.failure_stage] ?? run.failure_stage}）` : ''}：{run.error_message}<br />{run.recovery_advice || (run.retryable === false ? '请检查配置后再试。' : '建议重试；若问题持续，请复制下方 Trace ID 进行诊断。')}</Alert>}
           {run.final_result && (
             <Paper variant="outlined" sx={{ p: 2, bgcolor: 'background.default' }}>
               <Typography fontWeight={700} mb={1.5}>最终回答</Typography>

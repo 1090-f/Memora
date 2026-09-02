@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,6 +29,8 @@ type EventPublisher interface {
 	PublishToolCallStarted(ctx context.Context, runID contracts.ID, toolName string, callID contracts.ID) error
 	// PublishToolCallCompleted 发布工具调用完成事件。
 	PublishToolCallCompleted(ctx context.Context, runID contracts.ID, callID contracts.ID, toolName string, success bool, summary string) error
+	// PublishModelGenerationStarted 标记本次运行第一次模型生成开始。
+	PublishModelGenerationStarted(ctx context.Context, runID contracts.ID) error
 	// PublishAnswerDelta 发布流式回答增量事件。
 	PublishAnswerDelta(ctx context.Context, runID contracts.ID, delta string) error
 	// PublishPlanCreated 发布计划创建事件。
@@ -69,6 +72,9 @@ func (NoopEventPublisher) PublishToolCallStarted(context.Context, contracts.ID, 
 func (NoopEventPublisher) PublishToolCallCompleted(context.Context, contracts.ID, contracts.ID, string, bool, string) error {
 	return nil
 }
+func (NoopEventPublisher) PublishModelGenerationStarted(context.Context, contracts.ID) error {
+	return nil
+}
 func (NoopEventPublisher) PublishAnswerDelta(context.Context, contracts.ID, string) error { return nil }
 func (NoopEventPublisher) PublishPlanCreated(context.Context, contracts.ID, *contracts.Plan, string) error {
 	return nil
@@ -89,11 +95,19 @@ type SequencedEventPublisher struct {
 	captureSensitiveContent bool
 	mu                      sync.Mutex
 	sequences               map[contracts.ID]int64
+	timings                 map[contracts.ID]*agentRunTimingState
+}
+
+type agentRunTimingState struct {
+	runStarted    time.Time
+	modelStarted  time.Time
+	firstTokenAt  time.Time
+	modelFinished time.Time
 }
 
 func NewSequencedEventPublisher(publisher contracts.EventPublisher, captureSensitiveContent ...bool) *SequencedEventPublisher {
 	capture := len(captureSensitiveContent) > 0 && captureSensitiveContent[0]
-	return &SequencedEventPublisher{publisher: publisher, captureSensitiveContent: capture, sequences: make(map[contracts.ID]int64)}
+	return &SequencedEventPublisher{publisher: publisher, captureSensitiveContent: capture, sequences: make(map[contracts.ID]int64), timings: make(map[contracts.ID]*agentRunTimingState)}
 }
 
 func (p *SequencedEventPublisher) Publish(ctx context.Context, event contracts.AgentEvent) error {
@@ -167,15 +181,51 @@ func eventStage(typ contracts.EventType) (contracts.AgentStage, contracts.StageS
 }
 
 func (p *SequencedEventPublisher) PublishRunStarted(ctx context.Context, id contracts.ID) error {
+	p.mu.Lock()
+	p.timings[id] = &agentRunTimingState{runStarted: time.Now().UTC()}
+	p.mu.Unlock()
 	return p.publish(ctx, id, contracts.EventRunStarted, map[string]any{"execution_mode": ""})
 }
+func (p *SequencedEventPublisher) PublishModelGenerationStarted(ctx context.Context, id contracts.ID) error {
+	now := time.Now().UTC()
+	p.mu.Lock()
+	timing := p.timings[id]
+	if timing == nil {
+		timing = &agentRunTimingState{runStarted: now}
+		p.timings[id] = timing
+	}
+	first := timing.modelStarted.IsZero()
+	if first {
+		timing.modelStarted = now
+	}
+	p.mu.Unlock()
+	if !first {
+		return nil
+	}
+	return p.publishStage(ctx, id, contracts.AgentStageModelGenerate, contracts.StageRunning, contracts.StageObservation{Stage: string(contracts.AgentStageModelGenerate), Status: contracts.StageRunning, StartedAt: &now, Summary: "模型开始生成"})
+}
 func (p *SequencedEventPublisher) PublishRunCompleted(ctx context.Context, id contracts.ID, result contracts.AgentRunResult) error {
-	durationMS := result.EndedAt.Sub(result.StartedAt).Milliseconds()
+	finished := time.Now().UTC()
+	p.mu.Lock()
+	timing := p.timings[id]
+	if timing == nil {
+		timing = &agentRunTimingState{runStarted: result.StartedAt}
+		p.timings[id] = timing
+	}
+	timing.modelFinished = finished
+	modelStarted := timing.modelStarted
+	firstTokenAt := timing.firstTokenAt
+	runStarted := timing.runStarted
+	p.mu.Unlock()
+	if modelStarted.IsZero() {
+		modelStarted = result.StartedAt
+	}
+	durationMS := finished.Sub(modelStarted).Milliseconds()
 	if durationMS < 0 {
 		durationMS = 0
 	}
 	if err := p.publishStage(ctx, id, contracts.AgentStageModelGenerate, contracts.StageSucceeded, contracts.StageObservation{
-		Stage: string(contracts.AgentStageModelGenerate), Status: contracts.StageSucceeded, DurationMS: &durationMS,
+		Stage: string(contracts.AgentStageModelGenerate), Status: contracts.StageSucceeded, StartedAt: &modelStarted, EndedAt: &finished, DurationMS: &durationMS,
 		Summary: "模型生成完成", Metadata: map[string]any{"input_tokens": result.Usage.InputTokens, "output_tokens": result.Usage.OutputTokens},
 	}); err != nil {
 		return err
@@ -197,17 +247,32 @@ func (p *SequencedEventPublisher) PublishRunCompleted(ctx context.Context, id co
 			return err
 		}
 	}
-	return p.publish(ctx, id, contracts.EventRunCompleted, map[string]any{
-		"answer_available": true,
-		"citation_count":   len(result.Citations),
-		"knowledge_status": result.KnowledgeStatus,
-		"token_usage":      result.Usage,
-	})
+	completion := map[string]any{
+		"answer_available":           true,
+		"citation_count":             len(result.Citations),
+		"knowledge_status":           result.KnowledgeStatus,
+		"token_usage":                result.Usage,
+		"model_generate_duration_ms": durationMS,
+	}
+	if !firstTokenAt.IsZero() {
+		completion["first_token_at"] = firstTokenAt
+		completion["first_token_latency_ms"] = firstTokenAt.Sub(runStarted).Milliseconds()
+	}
+	return p.publish(ctx, id, contracts.EventRunCompleted, completion)
 }
 func (p *SequencedEventPublisher) PublishRunFailed(ctx context.Context, id contracts.ID, mode contracts.ExecutionMode, runErr error) error {
+	now := time.Now().UTC()
+	p.mu.Lock()
+	if timing := p.timings[id]; timing != nil {
+		timing.modelFinished = now
+	}
+	p.mu.Unlock()
 	return p.publish(ctx, id, contracts.EventRunFailed, map[string]any{
-		"execution_mode": mode,
-		"error_code":     errorCode(runErr),
+		"execution_mode":  mode,
+		"error_code":      errorCode(runErr),
+		"failure_stage":   contracts.AgentStageModelGenerate,
+		"retryable":       true,
+		"recovery_advice": "请重试；若仍失败，请检查模型服务状态并使用 Trace ID 诊断。",
 	})
 }
 func (p *SequencedEventPublisher) PublishRunCancelled(ctx context.Context, id contracts.ID) error {
@@ -272,7 +337,50 @@ func (p *SequencedEventPublisher) PublishToolCallCompleted(ctx context.Context, 
 }
 
 func (p *SequencedEventPublisher) PublishAnswerDelta(ctx context.Context, id contracts.ID, delta string) error {
-	return p.publish(ctx, id, contracts.EventAnswerDelta, map[string]any{"delta": delta})
+	now := time.Now().UTC()
+	firstLatency := int64(0)
+	first := false
+	if strings.TrimSpace(delta) != "" {
+		p.mu.Lock()
+		timing := p.timings[id]
+		if timing == nil {
+			timing = &agentRunTimingState{runStarted: now}
+			p.timings[id] = timing
+		}
+		if timing.firstTokenAt.IsZero() {
+			timing.firstTokenAt = now
+			first = true
+			firstLatency = now.Sub(timing.runStarted).Milliseconds()
+		}
+		p.mu.Unlock()
+	}
+	payload := map[string]any{"delta": delta}
+	if first {
+		payload["first_token_at"] = now
+		payload["first_token_latency_ms"] = firstLatency
+	}
+	return p.publish(ctx, id, contracts.EventAnswerDelta, payload)
+}
+
+func (p *SequencedEventPublisher) AgentRunTiming(id contracts.ID) contracts.AgentRunTiming {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	state := p.timings[id]
+	if state == nil {
+		return contracts.AgentRunTiming{}
+	}
+	delete(p.timings, id)
+	result := contracts.AgentRunTiming{}
+	if !state.firstTokenAt.IsZero() {
+		at := state.firstTokenAt
+		latency := at.Sub(state.runStarted).Milliseconds()
+		result.FirstTokenAt, result.FirstTokenLatencyMS = &at, &latency
+	}
+	if !state.modelStarted.IsZero() && !state.modelFinished.IsZero() {
+		duration := state.modelFinished.Sub(state.modelStarted).Milliseconds()
+		result.ModelGenerateDurationMS = &duration
+	}
+	return result
 }
 
 func (p *SequencedEventPublisher) PublishPlanCreated(ctx context.Context, id contracts.ID, plan *contracts.Plan, inputSummary string) error {

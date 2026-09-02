@@ -35,12 +35,18 @@ type AgentRun struct {
 	OutputTokens        int            `gorm:"not null;default:0;check:output_tokens >= 0" json:"output_tokens"`                                                       // 总输出 Token 数
 	TotalTokens         int            `gorm:"not null;default:0;check:total_tokens >= 0" json:"total_tokens"`                                                         // 总 Token 数
 	DurationMs          *int64         `gorm:"check:duration_ms >= 0" json:"duration_ms,omitempty"`                                                                    // 执行耗时（毫秒）
-	FinalResult         *string        `gorm:"type:text" json:"final_result,omitempty"`                                                                                // 最终回答结果
-	ErrorCode           *string        `gorm:"type:varchar(64)" json:"error_code,omitempty"`                                                                           // 失败时的错误码
-	ErrorMessage        *string        `gorm:"type:text" json:"error_message,omitempty"`                                                                               // 失败时的错误信息
-	StartedAt           *time.Time     `json:"started_at,omitempty"`                                                                                                   // 执行开始时间
-	EndedAt             *time.Time     `json:"ended_at,omitempty"`                                                                                                     // 执行结束时间
-	CreatedAt           time.Time      `gorm:"autoCreateTime" json:"created_at"`                                                                                       // 创建时间
+	FirstTokenAt        *time.Time     `json:"first_token_at,omitempty"`
+	FirstTokenLatencyMs *int64         `gorm:"check:first_token_latency_ms >= 0" json:"first_token_latency_ms,omitempty"`
+	ModelGenerateMs     *int64         `gorm:"column:model_generate_duration_ms;check:model_generate_duration_ms >= 0" json:"model_generate_duration_ms,omitempty"`
+	FinalResult         *string        `gorm:"type:text" json:"final_result,omitempty"`      // 最终回答结果
+	ErrorCode           *string        `gorm:"type:varchar(64)" json:"error_code,omitempty"` // 失败时的错误码
+	ErrorMessage        *string        `gorm:"type:text" json:"error_message,omitempty"`     // 失败时的错误信息
+	FailureStage        *string        `gorm:"type:varchar(40)" json:"failure_stage,omitempty"`
+	Retryable           *bool          `json:"retryable,omitempty"`
+	RecoveryAdvice      *string        `gorm:"type:varchar(1000)" json:"recovery_advice,omitempty"`
+	StartedAt           *time.Time     `json:"started_at,omitempty"`             // 执行开始时间
+	EndedAt             *time.Time     `json:"ended_at,omitempty"`               // 执行结束时间
+	CreatedAt           time.Time      `gorm:"autoCreateTime" json:"created_at"` // 创建时间
 }
 
 // TableName 指定 agent_runs 表名。

@@ -67,6 +67,7 @@ func (m *AgentMiddleware) BeforeModelRewriteState(ctx context.Context, state *ad
 	// 构建输入摘要
 	var inputSummary string
 	if m.EventPublisher != nil {
+		_ = m.EventPublisher.PublishModelGenerationStarted(ctx, m.RunID)
 		var msgCount int
 		if state.Messages != nil {
 			msgCount = len(state.Messages)

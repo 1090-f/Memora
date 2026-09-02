@@ -46,6 +46,8 @@ type AgentRunRepository interface {
 	// MarkFailed 更新运行状态为 failed，记录错误码、错误信息、执行模式、Token 用量、耗时和结束时间。
 	// inputTokens/outputTokens/totalTokens 用于记录失败前已消耗的 Token。
 	MarkFailed(ctx context.Context, runID uuid.UUID, errorCode, errorMessage, executionMode string, durationMs int64, inputTokens, outputTokens, totalTokens int) error
+	// UpdateObservability 写入不影响运行状态机的时延与失败诊断摘要。
+	UpdateObservability(ctx context.Context, runID uuid.UUID, update AgentRunObservabilityUpdate) error
 
 	// MarkCancelled 更新运行状态为 cancelled（需同时验证用户 ID 确保所有者可取消）。
 	// executionMode 为空表示在 Router 决策出模式前取消，此时不写入执行模式。
@@ -62,4 +64,13 @@ type AgentRunRepository interface {
 
 	// DeleteByConversationID 删除指定会话的所有 Agent 运行记录。
 	DeleteByConversationID(ctx context.Context, conversationID uuid.UUID) error
+}
+
+type AgentRunObservabilityUpdate struct {
+	FirstTokenAt            *time.Time
+	FirstTokenLatencyMS     *int64
+	ModelGenerateDurationMS *int64
+	FailureStage            *string
+	Retryable               *bool
+	RecoveryAdvice          *string
 }

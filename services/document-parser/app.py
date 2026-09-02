@@ -30,11 +30,17 @@ from fastapi.responses import JSONResponse  # noqa: E402
 
 import schemas  # noqa: E402
 from docling_adapter import DoclingAdapter, DocumentParserError  # noqa: E402
+from parser_observability import (  # noqa: E402
+    configure_tracing,
+    install_trace_log_filter,
+    shutdown_tracing,
+)
 
 logging.basicConfig(
     level=os.environ.get("DOCUMENT_PARSER_LOG_LEVEL", "info").upper(),
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    format="%(asctime)s %(levelname)s %(name)s trace_id=%(trace_id)s %(message)s",
 )
+install_trace_log_filter()
 _log = logging.getLogger("document-parser")
 
 
@@ -101,7 +107,10 @@ def _initialize_models() -> None:
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     thread = threading.Thread(target=_initialize_models, name="docling-init", daemon=True)
     thread.start()
-    yield
+    try:
+        yield
+    finally:
+        shutdown_tracing()
 
 
 app = FastAPI(
@@ -111,6 +120,7 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
 )
+configure_tracing(app)
 
 
 @app.get("/health/live")

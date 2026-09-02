@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -740,7 +739,7 @@ func (r *importTaskRepository) RequeueTask(ctx context.Context, taskID, failureR
 }
 
 func enqueueTaskEvent(db *gorm.DB, taskID string) error {
-	payload, err := json.Marshal(map[string]string{"task_id": taskID})
+	payload, err := marshalOutboxPayload(db.Statement.Context, map[string]string{"task_id": taskID})
 	if err != nil {
 		return fmt.Errorf("序列化任务 Outbox 事件失败: %w", err)
 	}

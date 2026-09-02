@@ -34,8 +34,25 @@ import (
 // HealthCheck 是一个健康检查函数类型，用于检测依赖服务的健康状态。
 type HealthCheck func(context.Context) error
 
-// WorkerCount 是一个函数类型，用于返回当前活跃的 Worker 数量。
-type WorkerCount func(context.Context) (int64, error)
+// WorkerQueueHealth 是一个不包含高基数标识的任务队列健康摘要。
+type WorkerQueueHealth struct {
+	Pending                 int64 `json:"pending"`
+	Running                 int64 `json:"running"`
+	Failed                  int64 `json:"failed"`
+	Retried                 int64 `json:"retried"`
+	OldestPendingAgeSeconds int64 `json:"oldest_pending_age_seconds"`
+	RedisPending            int64 `json:"redis_pending"`
+}
+
+// WorkerHealthSnapshot 汇总真实心跳、数据库队列、Redis Pending 与 Outbox 积压。
+type WorkerHealthSnapshot struct {
+	ActiveWorkers int64             `json:"active_workers"`
+	Document      WorkerQueueHealth `json:"document"`
+	Preview       WorkerQueueHealth `json:"preview"`
+	OutboxBacklog int64             `json:"outbox_backlog"`
+}
+
+type WorkerHealth func(context.Context) (WorkerHealthSnapshot, error)
 
 // Dependencies 持有 API 路由所需的所有外部依赖。
 type Dependencies struct {
@@ -63,7 +80,7 @@ type Dependencies struct {
 	RedisHealth     HealthCheck
 	MinIOHealth     HealthCheck
 	ParserHealth    HealthCheck
-	WorkerCount     WorkerCount
+	WorkerHealth    WorkerHealth
 }
 
 // NewRouter 创建一个新的 Gin 引擎，注册所有中间件、健康检查端点和 v1 路由组。
@@ -73,7 +90,7 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	engine.GET("/metrics", gin.WrapH(metrics.Handler()))
 	engine.GET("/health/live", func(c *gin.Context) { response.Success(c, http.StatusOK, gin.H{"status": "live"}) })
 	engine.GET("/health/ready", readiness(deps))
-	engine.GET("/health/workers", workerHealth(deps.WorkerCount))
+	engine.GET("/health/workers", workerHealth(deps.WorkerHealth))
 	v1 := engine.Group("/api/v1")
 	authRequired := middleware.Auth(deps.Auth)
 	auth.NewController(deps.Auth).RegisterRoutes(v1, authRequired)
@@ -104,22 +121,22 @@ func NewRouter(deps Dependencies) *gin.Engine {
 }
 
 // workerHealth 返回一个处理器，用于报告当前活跃的 Worker 数量。
-func workerHealth(countWorkers WorkerCount) gin.HandlerFunc {
+func workerHealth(loadHealth WorkerHealth) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
 		defer cancel()
-		if countWorkers == nil {
+		if loadHealth == nil {
 			response.Failure(c, apperrors.ErrInternal)
 			return
 		}
-		count, err := countWorkers(ctx)
-		if err != nil || count == 0 {
+		snapshot, err := loadHealth(ctx)
+		if err != nil || snapshot.ActiveWorkers == 0 {
 			failure := apperrors.New(contracts.ErrServiceUnavailable, err)
-			failure.Details = gin.H{"active_workers": count}
+			failure.Details = snapshot
 			response.Failure(c, failure)
 			return
 		}
-		response.Success(c, http.StatusOK, gin.H{"status": "available", "active_workers": count})
+		response.Success(c, http.StatusOK, gin.H{"status": "available", "workers": snapshot})
 	}
 }
 
