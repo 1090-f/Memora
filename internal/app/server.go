@@ -405,11 +405,11 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 			if err != nil {
 				return api.WorkerHealthSnapshot{}, err
 			}
-			documentHealth, err := importTasks.HealthSnapshot(ctx)
+			documentHealth, err := importTasks.HealthSnapshot(ctx, time.Now().UTC().Add(-cfg.DocumentConsumer.ProcessingTimeout))
 			if err != nil {
 				return api.WorkerHealthSnapshot{ActiveWorkers: activeWorkers}, err
 			}
-			previewHealth, err := previewRepo.HealthSnapshot(ctx)
+			previewHealth, err := previewRepo.HealthSnapshot(ctx, time.Now().UTC().Add(-cfg.Preview.Consumer.ProcessingTimeout))
 			if err != nil {
 				return api.WorkerHealthSnapshot{ActiveWorkers: activeWorkers}, err
 			}
@@ -436,11 +436,11 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 				ActiveWorkers: activeWorkers,
 				Document: api.WorkerQueueHealth{
 					Pending: documentHealth.Pending, Running: documentHealth.Running, Failed: documentHealth.Failed,
-					Retried: documentHealth.Retried, OldestPendingAgeSeconds: documentHealth.OldestPendingAgeSeconds, RedisPending: documentRedisPending,
+					Retried: documentHealth.Retried, Stalled: documentHealth.Stalled, OldestPendingAgeSeconds: documentHealth.OldestPendingAgeSeconds, RedisPending: documentRedisPending,
 				},
 				Preview: api.WorkerQueueHealth{
 					Pending: previewHealth.Pending, Running: previewHealth.Running, Failed: previewHealth.Failed,
-					Retried: previewHealth.Retried, OldestPendingAgeSeconds: previewHealth.OldestPendingAgeSeconds, RedisPending: previewRedisPending,
+					Retried: previewHealth.Retried, Stalled: previewHealth.Stalled, OldestPendingAgeSeconds: previewHealth.OldestPendingAgeSeconds, RedisPending: previewRedisPending,
 				},
 				OutboxBacklog: outboxBacklog,
 			}, nil

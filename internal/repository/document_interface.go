@@ -104,7 +104,7 @@ type ImportTaskRepository interface {
 	// FindLatestByDocument 查询文档最近一次处理任务，用于关联页面状态、日志与重试。
 	FindLatestByDocument(ctx context.Context, userID, documentID string) (*entity.ImportTask, error)
 	// HealthSnapshot 返回低基数队列健康摘要，用于指标与健康检查。
-	HealthSnapshot(ctx context.Context) (ImportTaskHealthSnapshot, error)
+	HealthSnapshot(ctx context.Context, stalledBefore time.Time) (ImportTaskHealthSnapshot, error)
 	// ListByKB 分页查询知识库导入任务。
 	ListByKB(ctx context.Context, userID, kbID string, page, pageSize int) ([]*entity.ImportTask, int64, error)
 	// UpdateObjectInfo 更新任务的 MinIO 对象信息与源哈希。
@@ -151,6 +151,7 @@ type ImportTaskHealthSnapshot struct {
 	Running                 int64
 	Failed                  int64
 	Retried                 int64
+	Stalled                 int64
 	OldestPendingAgeSeconds int64
 }
 

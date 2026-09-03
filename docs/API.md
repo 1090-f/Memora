@@ -56,7 +56,9 @@ POST /api/v1/knowledge-bases/:kb_id/search/test
 `GET /health/workers` 使用 Redis TTL 心跳判断 Worker 是否存活，并在 `workers` 中返回文档处理和
 预览队列的 `pending/running/failed/retried`、最老待处理任务年龄、Redis Consumer Group
 Pending 数以及数据库 Outbox backlog。没有有效心跳时接口返回 503，但仍在错误详情中保留已取得的
-队列诊断数据。
+队列诊断数据。运行时间超过对应 `processing_timeout` 的任务计入 `stalled`；存在停滞任务但心跳仍
+有效时返回 HTTP 200 和 `status=degraded`，并同时导出
+`memora_worker_stalled_tasks{job_type=...}`，供 Prometheus 主动告警。
 
 文档处理详情额外返回 `task_id`、`failure_code`、`recovery_advice` 与标准阶段数组
 `stages[]`。阶段名固定为 `upload/parse/normalize/chunk/embed/index/preview`，状态固定为

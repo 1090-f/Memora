@@ -50,3 +50,20 @@ func TestWorkerHealthIsUnavailableWithoutHeartbeat(t *testing.T) {
 		t.Fatalf("failure must retain queue diagnostics: %s", recorder.Body.String())
 	}
 }
+
+func TestWorkerHealthReportsDegradedWithoutDeclaringWorkerUnavailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/health/workers", workerHealth(func(context.Context) (WorkerHealthSnapshot, error) {
+		return WorkerHealthSnapshot{ActiveWorkers: 1, Document: WorkerQueueHealth{Running: 2, Stalled: 1}}, nil
+	}))
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/health/workers", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"status":"degraded"`) || !strings.Contains(recorder.Body.String(), `"stalled":1`) {
+		t.Fatalf("missing degraded diagnostics: %s", recorder.Body.String())
+	}
+}

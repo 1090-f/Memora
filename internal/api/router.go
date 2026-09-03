@@ -40,6 +40,7 @@ type WorkerQueueHealth struct {
 	Running                 int64 `json:"running"`
 	Failed                  int64 `json:"failed"`
 	Retried                 int64 `json:"retried"`
+	Stalled                 int64 `json:"stalled"`
 	OldestPendingAgeSeconds int64 `json:"oldest_pending_age_seconds"`
 	RedisPending            int64 `json:"redis_pending"`
 }
@@ -136,7 +137,11 @@ func workerHealth(loadHealth WorkerHealth) gin.HandlerFunc {
 			response.Failure(c, failure)
 			return
 		}
-		response.Success(c, http.StatusOK, gin.H{"status": "available", "workers": snapshot})
+		status := "available"
+		if snapshot.Document.Stalled > 0 || snapshot.Preview.Stalled > 0 {
+			status = "degraded"
+		}
+		response.Success(c, http.StatusOK, gin.H{"status": status, "workers": snapshot})
 	}
 }
 

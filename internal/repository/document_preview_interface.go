@@ -19,7 +19,7 @@ type DocumentPreviewRepository interface {
 	Requeue(ctx context.Context, previewID, errorCode, errorMessage string) error
 	RetryFailed(ctx context.Context, userID, documentID string, contentVersion int) (int64, error)
 	RecoverStale(ctx context.Context, staleBefore time.Time) (int64, error)
-	HealthSnapshot(ctx context.Context) (PreviewTaskHealthSnapshot, error)
+	HealthSnapshot(ctx context.Context, stalledBefore time.Time) (PreviewTaskHealthSnapshot, error)
 }
 
 type PreviewTaskHealthSnapshot struct {
@@ -27,5 +27,6 @@ type PreviewTaskHealthSnapshot struct {
 	Running                 int64
 	Failed                  int64
 	Retried                 int64
+	Stalled                 int64
 	OldestPendingAgeSeconds int64
 }

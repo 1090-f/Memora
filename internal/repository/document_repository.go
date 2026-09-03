@@ -416,7 +416,7 @@ func (r *importTaskRepository) FindLatestByDocument(ctx context.Context, userID,
 	return &task, nil
 }
 
-func (r *importTaskRepository) HealthSnapshot(ctx context.Context) (ImportTaskHealthSnapshot, error) {
+func (r *importTaskRepository) HealthSnapshot(ctx context.Context, stalledBefore time.Time) (ImportTaskHealthSnapshot, error) {
 	var snapshot ImportTaskHealthSnapshot
 	err := dbFromContext(ctx, r.db).WithContext(ctx).Raw(`
 		SELECT
@@ -424,8 +424,9 @@ func (r *importTaskRepository) HealthSnapshot(ctx context.Context) (ImportTaskHe
 			COUNT(*) FILTER (WHERE status = 'running') AS running,
 			COUNT(*) FILTER (WHERE status = 'failed') AS failed,
 			COUNT(*) FILTER (WHERE attempt > 1) AS retried,
+			COUNT(*) FILTER (WHERE status = 'running' AND started_at IS NOT NULL AND started_at < ?) AS stalled,
 			COALESCE(EXTRACT(EPOCH FROM (now() - MIN(created_at) FILTER (WHERE status = 'pending')))::bigint, 0) AS oldest_pending_age_seconds
-		FROM import_tasks`).Scan(&snapshot).Error
+		FROM import_tasks`, stalledBefore).Scan(&snapshot).Error
 	if err != nil {
 		return ImportTaskHealthSnapshot{}, fmt.Errorf("查询导入任务健康摘要失败: %w", err)
 	}

@@ -29,6 +29,7 @@ var (
 	stageDuration     sync.Map
 	oldestPendingAge  sync.Map
 	retriedTasks      sync.Map
+	stalledTasks      sync.Map
 )
 
 // HTTPStarted 记录一个新HTTP请求开始，增加活跃请求计数
@@ -61,11 +62,13 @@ func QueueDepth(jobType, kind string, value int64) {
 }
 
 // QueueHealth 更新任务队列年龄和重试任务数；jobType 必须为低基数类型。
-func QueueHealth(jobType string, oldestAgeSeconds, retried int64) {
+func QueueHealth(jobType string, oldestAgeSeconds, retried, stalled int64) {
 	age, _ := oldestPendingAge.LoadOrStore(jobType, &atomic.Int64{})
 	age.(*atomic.Int64).Store(oldestAgeSeconds)
 	retries, _ := retriedTasks.LoadOrStore(jobType, &atomic.Int64{})
 	retries.(*atomic.Int64).Store(retried)
+	stalledGauge, _ := stalledTasks.LoadOrStore(jobType, &atomic.Int64{})
+	stalledGauge.(*atomic.Int64).Store(stalled)
 }
 
 type durationAggregate struct {
@@ -116,6 +119,10 @@ func Handler() http.Handler {
 		})
 		retriedTasks.Range(func(key, value any) bool {
 			lines = append(lines, fmt.Sprintf("memora_worker_retried_tasks{job_type=%q} %d", key.(string), value.(*atomic.Int64).Load()))
+			return true
+		})
+		stalledTasks.Range(func(key, value any) bool {
+			lines = append(lines, fmt.Sprintf("memora_worker_stalled_tasks{job_type=%q} %d", key.(string), value.(*atomic.Int64).Load()))
 			return true
 		})
 		sort.Strings(lines)
