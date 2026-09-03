@@ -194,6 +194,7 @@ go vet ./...
 
 ```powershell
 Set-Location web
+pnpm --filter memora-admin test
 pnpm lint
 pnpm typecheck
 pnpm build
