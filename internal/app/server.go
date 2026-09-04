@@ -193,7 +193,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	previewRepo := repository.NewDocumentPreviewRepository(a.db)
 	officeRenderer, officeErr := previewrenderer.NewLibreOffice(cfg.Preview.Enabled && cfg.Preview.Office.Enabled, cfg.Preview.Office.MaxConcurrency, cfg.Preview.Office.Timeout)
 	if officeErr != nil {
-		// LibreOffice 缺失不阻断启动：Descriptor 会返回 parsed text/download fallback。
+		// LibreOffice 缺失不阻断启动：Office 原文件仍由浏览器直接预览，并保留解析正文/下载回退。
 		logger.Warnf("Office 异步预览不可用，请安装 LibreOffice: %v", officeErr)
 		officeRenderer, _ = previewrenderer.NewLibreOffice(false, 1, cfg.Preview.Office.Timeout)
 	}

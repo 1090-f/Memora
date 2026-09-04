@@ -73,7 +73,8 @@ preview:
     claim_idle: 15m
     max_attempts: 3
   office:
-    enabled: true
+    # 可选：生成 DOCX/PPTX/XLSX 的 LibreOffice PDF 高保真回退；普通部署无需安装 LibreOffice。
+    enabled: false
     max_concurrency: 1
     timeout: 5m
   xlsx:

@@ -18,6 +18,8 @@ const (
 	TypeText     Type = "text"
 	TypeMarkdown Type = "markdown"
 	TypePDF      Type = "pdf"
+	TypeDOCX     Type = "docx"
+	TypePPTX     Type = "pptx"
 	TypeImage    Type = "image"
 	TypeTable    Type = "table"
 	TypeDownload Type = "download"

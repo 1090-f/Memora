@@ -115,7 +115,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("preview.consumer.processing_timeout", "10m")
 	v.SetDefault("preview.consumer.claim_idle", "15m")
 	v.SetDefault("preview.consumer.max_attempts", 3)
-	v.SetDefault("preview.office.enabled", true)
+	// Office 文件默认由浏览器直接预览；启用后额外生成 LibreOffice PDF 高保真回退。
+	v.SetDefault("preview.office.enabled", false)
 	v.SetDefault("preview.office.max_concurrency", 1)
 	v.SetDefault("preview.office.timeout", "5m")
 	v.SetDefault("preview.xlsx.enabled", true)

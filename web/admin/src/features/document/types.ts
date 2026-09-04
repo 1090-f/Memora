@@ -96,7 +96,7 @@ export interface DocumentReadPage {
   citation: Citation;
 }
 
-export type PreviewType = 'text' | 'markdown' | 'pdf' | 'image' | 'table' | 'download' | 'none';
+export type PreviewType = 'text' | 'markdown' | 'pdf' | 'docx' | 'pptx' | 'image' | 'table' | 'download' | 'none';
 export type PreviewStatus = 'pending' | 'processing' | 'ready' | 'failed' | 'unsupported';
 
 export interface PreviewFallback {

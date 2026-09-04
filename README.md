@@ -170,7 +170,8 @@ pnpm dev
 - Markdown：按 Markdown 渲染标题、列表、加粗、代码块和表格。
 - TXT：按纯文本显示。
 - PDF：默认直接预览 MinIO 中的原始 PDF，可切换到解析产生的完整 Markdown 阅读模式。
-- DOCX/XLSX/PPTX：默认预览 LibreOffice 转换并缓存的 PDF，可切换到解析正文；转换不可用时自动回退阅读模式。
+- DOCX/PPTX：默认由浏览器直接读取原文件预览，可切换到解析正文；启用 LibreOffice 时额外提供 PDF 高保真回退。
+- XLSX：默认使用结构化工作表预览；启用 LibreOffice 时可生成 PDF 回退。
 - URL：展示安全抓取和清洗后的文章正文。
 - 所有文件导入文档均提供独立的原文件下载入口，版式预览不会替代源文件。
 
