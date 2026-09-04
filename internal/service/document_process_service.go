@@ -23,7 +23,6 @@ import (
 	"github.com/1090-f/Memora/pkg/logger"
 	"github.com/1090-f/Memora/pkg/metrics"
 	"github.com/1090-f/Memora/pkg/objectstore"
-	"github.com/cloudwego/eino/components/embedding"
 	"go.uber.org/zap"
 	"gorm.io/datatypes"
 )
@@ -638,11 +637,10 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 			return fmt.Errorf("清理旧版本向量失败: %w", err)
 		}
 	}
-	var embeddingModelID string
-	var embedder embedding.Embedder
+	var embeddingResolution *ResolvedDocumentEmbedding
 	if s.embeddings != nil {
 		var err error
-		embeddingModelID, embedder, err = s.embeddings.Resolve(ctx, task.UserID, task.KnowledgeBaseID)
+		embeddingResolution, err = s.embeddings.Resolve(ctx, task.UserID, task.KnowledgeBaseID)
 		if err != nil {
 			return fmt.Errorf("解析文档 Embedding 模型失败: %w", err)
 		}
@@ -653,13 +651,11 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 	// → enrich → canonical_chunk → clean → token_count → persist → index。
 	// 节点顺序由 pipeline 编译期固定，此处仅传入对象与元数据触发整条流水线。
 	input := pipeline.ProcessInput{
-		ObjectKey:        valueOrEmpty(task.MinIOObjectKey),
-		SourceURL:        valueOrEmpty(task.SourceURL),
-		FileName:         valueOrEmpty(task.FileName),
-		MIMEType:         valueOrEmpty(task.MIMEType),
-		Attachments:      task.Attachments,
-		Embedder:         embedder,
-		EmbeddingModelID: embeddingModelID,
+		ObjectKey:   valueOrEmpty(task.MinIOObjectKey),
+		SourceURL:   valueOrEmpty(task.SourceURL),
+		FileName:    valueOrEmpty(task.FileName),
+		MIMEType:    valueOrEmpty(task.MIMEType),
+		Attachments: task.Attachments,
 		DocMeta: transformer.DocMeta{
 			UserID:          task.UserID,
 			KnowledgeBaseID: task.KnowledgeBaseID,
@@ -675,6 +671,14 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 				"source_url":  valueOrEmpty(task.SourceURL),
 			},
 		},
+	}
+	if embeddingResolution != nil {
+		input.Embedder = embeddingResolution.Embedder
+		input.EmbeddingModelID = embeddingResolution.ModelID
+		input.EmbeddingProvider = embeddingResolution.Provider
+		input.EmbeddingModelName = embeddingResolution.ModelName
+		input.Tokenizer = embeddingResolution.Tokenizer
+		input.TokenizerExact = embeddingResolution.TokenizerExact
 	}
 	input.ChunkStrategyOverride = s.resolveChunkStrategyOverride(ctx, doc, task)
 	// 手工文档：正文存于 documents.content，直接交给流水线（不访问 MinIO）。
@@ -718,7 +722,7 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 		for _, stage := range []contracts.DocumentStage{contracts.DocumentStageParse, contracts.DocumentStageNormalize, contracts.DocumentStageChunk} {
 			s.appendDocumentEvent(ctx, task, doc, stage, contracts.StageSucceeded, pipelineStarted, &ended, nil)
 		}
-		if embedder != nil {
+		if embeddingResolution != nil && embeddingResolution.Embedder != nil {
 			s.appendDocumentEvent(ctx, task, doc, contracts.DocumentStageEmbed, contracts.StageSucceeded, pipelineStarted, &ended, nil)
 		} else {
 			s.appendDocumentEvent(ctx, task, doc, contracts.DocumentStageEmbed, contracts.StageSkipped, pipelineStarted, &ended, nil)
@@ -769,8 +773,8 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 			return fmt.Errorf("保存 URL 导入结果失败: %w", err)
 		}
 	}
-	if embeddingModelID != "" {
-		updates["embedding_model_id"] = embeddingModelID
+	if embeddingResolution != nil && embeddingResolution.ModelID != "" {
+		updates["embedding_model_id"] = embeddingResolution.ModelID
 	} else if modelID := s.processor.EmbeddingModelID(); modelID != "" {
 		updates["embedding_model_id"] = modelID
 	} else {

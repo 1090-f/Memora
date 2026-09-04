@@ -67,6 +67,12 @@ type ProcessInput struct {
 	// Embedder/EmbeddingModelID 是本任务按用户与知识库解析出的可选向量模型。
 	Embedder         embedding.Embedder
 	EmbeddingModelID string
+	// EmbeddingProvider/EmbeddingModelName 标识实际模型配置，参与运行期 chunk_config_hash。
+	EmbeddingProvider  string
+	EmbeddingModelName string
+	// Tokenizer 是本任务与 Embedding 模型对齐的计量器；为空时使用 Pipeline 回退实现。
+	Tokenizer      chunking.Tokenizer
+	TokenizerExact bool
 	// ChunkStrategyOverride 是文档/知识库级显式策略覆盖；为空时使用流水线配置。
 	ChunkStrategyOverride string
 }
@@ -148,6 +154,7 @@ type pipelineState struct {
 	canonicalCacheHit       bool
 	chunkConfigHash         string
 	computedHash            string
+	tokenizer               chunking.Tokenizer
 	// indexDocs 供向量索引节点使用（persist_chunks 后填充）。
 	indexDocs     []*schema.Document
 	loadedContent string
@@ -215,7 +222,6 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		}
 		return assetLoader
 	}
-	chunker := chunking.NewStructureAwareChunker(cfg.Tokenizer, cfg.ChunkOptions.StrategyVersion)
 	chunkRouter := chunking.NewStrategyRouter(chunking.DefaultRouterConfig())
 	chunkCleaner := transformer.NewChunkCleaner()
 
@@ -226,7 +232,11 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 	// load_source：URL 来源在 Worker 内通过安全 Eino Loader 抓取；文件来源保持 MinIO 流；
 	// 手工文档（manual）直接使用正文 Content，不访问 MinIO。
 	loadSourceLambda := compose.InvokableLambda(func(ctx context.Context, input ProcessInput) (*pipelineState, error) {
-		state := &pipelineState{input: input, stageStarted: make(map[contracts.DocumentStage]time.Time)}
+		tokenizer := input.Tokenizer
+		if tokenizer == nil {
+			tokenizer = cfg.Tokenizer
+		}
+		state := &pipelineState{input: input, tokenizer: tokenizer, stageStarted: make(map[contracts.DocumentStage]time.Time)}
 		startDocumentStage(ctx, state, contracts.DocumentStageParse, "正在加载并解析文档")
 		if input.Content != "" {
 			state.loadedContent = input.Content
@@ -485,9 +495,9 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		return nil, fmt.Errorf("注册 persist_canonical_artifact 节点失败: %w", err)
 	}
 
-	// document_profile：提取确定性策略路由特征；当前仍使用 Structured 主策略。
+	// document_profile：使用本任务模型 tokenizer 提取确定性策略路由特征。
 	profileLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
-		profile, err := canonical.Profile(state.canonical, state.doc, cfg.Tokenizer)
+		profile, err := canonical.Profile(state.canonical, state.doc, state.tokenizer)
 		if err != nil {
 			return nil, fmt.Errorf("生成 DocumentProfile 失败: %w", err)
 		}
@@ -508,8 +518,16 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		if err != nil {
 			return nil, fmt.Errorf("选择分块策略失败: %w", err)
 		}
+		decision.Features["tokenizer"] = state.tokenizer.Name()
+		decision.Features["tokenizer_exact"] = state.input.TokenizerExact
+		decision.Features["embedding_model_id"] = state.input.EmbeddingModelID
+		decision.Features["embedding_provider"] = state.input.EmbeddingProvider
+		decision.Features["embedding_model_name"] = state.input.EmbeddingModelName
 		state.chunkDecision = decision
-		state.chunkConfigHash = computeDocumentChunkConfigHash(chunkConfigHash, state.canonical.ContentHash, decision)
+		state.chunkConfigHash = computeDocumentChunkConfigHash(
+			chunkConfigHash, state.canonical.ContentHash, decision, state.input.EmbeddingModelID,
+			state.input.EmbeddingProvider, state.input.EmbeddingModelName, state.tokenizer.Name(),
+		)
 		return state, nil
 	})
 	if err := g.AddLambdaNode("chunk_strategy_route", routeLambda); err != nil {
@@ -518,6 +536,7 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 
 	// canonical_chunk：按 Router 决策消费 CanonicalDocument 分块。
 	chunkLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
+		chunker := chunking.NewStructureAwareChunker(state.tokenizer, cfg.ChunkOptions.StrategyVersion)
 		var chunks []chunking.ParsedChunk
 		var err error
 		if cfg.EnableCanonicalChunkDiff {
@@ -564,7 +583,7 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 
 	// chunk_clean：分块后清理（不改变 Chunk 边界）。
 	cleanLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
-		cleaned, err := chunkCleaner.Clean(state.chunks, cfg.ChunkOptions.MaxTokens, cfg.Tokenizer.Count)
+		cleaned, err := chunkCleaner.Clean(state.chunks, cfg.ChunkOptions.MaxTokens, state.tokenizer.Count)
 		if err != nil {
 			return nil, fmt.Errorf("Chunk 清理失败: %w", err)
 		}
@@ -578,7 +597,7 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 	// token_count：后置 TokenCounter 只记录 token_count，不切分不合并。
 	countLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
 		for i := range state.chunks {
-			tokens, err := cfg.Tokenizer.Count(state.chunks[i].Content)
+			tokens, err := state.tokenizer.Count(state.chunks[i].Content)
 			if err != nil {
 				return nil, fmt.Errorf("统计 Chunk %d token 数失败: %w", i, err)
 			}
@@ -809,12 +828,19 @@ func computeChunkConfigHash(cfg DocumentPipelineConfig) string {
 
 // computeDocumentChunkConfigHash 将实际 Canonical 内容和最终路由决策加入基础配置哈希。
 // 同一 Pipeline 下，人工覆盖或 auto 路由结果不同的文档不会共享错误的配置身份。
-func computeDocumentChunkConfigHash(baseHash, canonicalHash string, decision chunking.ChunkDecision) string {
+func computeDocumentChunkConfigHash(baseHash, canonicalHash string, decision chunking.ChunkDecision, modelID, provider, modelName, tokenizerName string) string {
 	payload := struct {
 		BaseHash      string                 `json:"base_hash"`
 		CanonicalHash string                 `json:"canonical_hash"`
 		Decision      chunking.ChunkDecision `json:"decision"`
-	}{BaseHash: baseHash, CanonicalHash: canonicalHash, Decision: decision}
+		ModelID       string                 `json:"embedding_model_id"`
+		Provider      string                 `json:"embedding_provider"`
+		ModelName     string                 `json:"embedding_model_name"`
+		Tokenizer     string                 `json:"tokenizer"`
+	}{
+		BaseHash: baseHash, CanonicalHash: canonicalHash, Decision: decision,
+		ModelID: modelID, Provider: provider, ModelName: modelName, Tokenizer: tokenizerName,
+	}
 	data, _ := json.Marshal(payload)
 	return sha256Hex(data)
 }

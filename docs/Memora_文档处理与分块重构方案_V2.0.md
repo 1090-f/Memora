@@ -5,7 +5,7 @@
 > 基于现有 Memora 实现及 Qavor / DocMind 参考方案修订
 > 版本：V2.0 · 2026-08-24
 >
-> 实施状态：自 2026-09-04 起，Canonical Chunker 已成为唯一生产分块主链路，默认策略为 `auto`；Legacy Chunker 仅用于可选差异对照。
+> 实施状态：自 2026-09-04 起，Canonical Chunker 已成为唯一生产分块主链路，默认策略为 `auto`；Legacy Chunker 仅用于可选差异对照。分块 Tokenizer 按知识库绑定的 Embedding 模型逐任务解析，已识别的 OpenAI Embedding 使用本地 `cl100k_base`，未知模型显式回退 `heuristic-v1`。
 
 ## 摘要
 
@@ -57,7 +57,7 @@ Keyword Index + Embedding / pgvector
 - 超长文本拆分后，各子块复制整组 BlockIDs，缺少块内字符范围；
 - `repeat_table_header` 配置参与哈希，但当前实现始终重复表头；
 - 超长表格单行按完整 MaxTokens 拆分后再追加表头，最终仍可能超限；
-- 当前启发式 tokenizer 未与实际 Embedding 模型严格对齐；
+- 未知或使用自定义部署名的 Embedding 模型无法可靠推断词表，当前显式回退启发式 tokenizer；
 - 同一文档并发重处理可能竞争相同的下一索引版本。
 
 ## 2. 设计目标与非目标

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 
 // fakeStore 是内存版 ObjectStore。
 type fakeStore struct {
+	mu      sync.Mutex
 	objects map[string][]byte
 	content map[string]string
 	opens   map[string]int
@@ -33,6 +35,8 @@ func newFakeStore() *fakeStore {
 }
 
 func (f *fakeStore) OpenObject(_ context.Context, objectKey string) (io.ReadCloser, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.opens[objectKey]++
 	data, ok := f.objects[objectKey]
 	if !ok {
@@ -46,12 +50,16 @@ func (f *fakeStore) PutObject(_ context.Context, objectKey string, reader io.Rea
 	if err != nil {
 		return err
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.objects[objectKey] = data
 	f.content[objectKey] = contentType
 	return nil
 }
 
 func (f *fakeStore) StatObject(_ context.Context, objectKey string) (*parser.ObjectInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	data, ok := f.objects[objectKey]
 	if !ok {
 		return nil, parser.ErrObjectNotFound
@@ -60,6 +68,8 @@ func (f *fakeStore) StatObject(_ context.Context, objectKey string) (*parser.Obj
 }
 
 func (f *fakeStore) RemoveObject(_ context.Context, objectKey string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	delete(f.objects, objectKey)
 	return nil
 }
@@ -68,10 +78,13 @@ func (f *fakeStore) Bucket() string { return "memora" }
 
 // fakeChunkWriter 记录批量插入。
 type fakeChunkWriter struct {
+	mu      sync.Mutex
 	inserts [][]*entity.DocumentChunk
 }
 
 func (w *fakeChunkWriter) BatchInsert(_ context.Context, chunks []*entity.DocumentChunk) ([]string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.inserts = append(w.inserts, chunks)
 	ids := make([]string, len(chunks))
 	for i := range chunks {
@@ -457,6 +470,133 @@ func TestPipelineDefaultAutoRoutesRecursiveDocument(t *testing.T) {
 	}
 	if out.ChunkStrategy != chunking.StrategyRecursive || out.ChunkStrategyVersion != chunking.RouterVersion {
 		t.Fatalf("unexpected route: %+v", out)
+	}
+}
+
+func TestPipelineUsesTaskTokenizerAndHashesModelIdentity(t *testing.T) {
+	store := newFakeStore()
+	content := "hello world. tokenizer aligned embedding content."
+	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.txt", strings.NewReader(content), int64(len(content)), "text/plain")
+
+	writer := &fakeChunkWriter{}
+	cfg := testPipelineConfig(store, `{}`)
+	cfg.Chunks = writer
+	p, err := NewDocumentPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	baseline, err := p.Run(context.Background(), processInput(store, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolution, err := chunking.ResolveEmbeddingTokenizer("openai", "text-embedding-3-small")
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelInput := processInput(store, "a.txt")
+	modelInput.DocMeta.IndexVersion = 2
+	modelInput.Tokenizer = resolution.Tokenizer
+	modelInput.EmbeddingModelID = "model-config-1"
+	modelInput.EmbeddingProvider = "openai"
+	modelInput.EmbeddingModelName = "text-embedding-3-small"
+	modelInput.TokenizerExact = true
+	modelOutput, err := p.Run(context.Background(), modelInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseline.ChunkConfigHash == modelOutput.ChunkConfigHash {
+		t.Fatal("任务级 tokenizer 与模型身份必须改变 chunk_config_hash")
+	}
+	modelChunk := writer.inserts[1][0]
+	wantTokens, err := resolution.Tokenizer.Count(modelChunk.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modelChunk.TokenCount != wantTokens {
+		t.Fatalf("token count = %d, want model tokenizer count %d", modelChunk.TokenCount, wantTokens)
+	}
+	var source map[string]any
+	if err := json.Unmarshal(modelChunk.SourceLocation, &source); err != nil {
+		t.Fatal(err)
+	}
+	decision, ok := source["decision"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing decision metadata: %v", source)
+	}
+	features, ok := decision["features"].(map[string]any)
+	if !ok || features["tokenizer"] != resolution.Tokenizer.Name() {
+		t.Fatalf("missing tokenizer observability: %v", decision)
+	}
+}
+
+func TestPipelineTaskTokenizerIsolationConcurrent(t *testing.T) {
+	store := newFakeStore()
+	content := "hello world. tokenizer isolation must survive concurrent document processing."
+	for _, name := range []string{"a.txt", "b.txt"} {
+		_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/"+name, strings.NewReader(content), int64(len(content)), "text/plain")
+	}
+	writer := &fakeChunkWriter{}
+	cfg := testPipelineConfig(store, `{}`)
+	cfg.Chunks = writer
+	p, err := NewDocumentPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolution, err := chunking.ResolveEmbeddingTokenizer("openai", "text-embedding-3-large")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	heuristicInput := processInput(store, "a.txt")
+	heuristicInput.DocMeta.DocumentID = "heuristic-doc"
+	modelInput := processInput(store, "b.txt")
+	modelInput.DocMeta.DocumentID = "model-doc"
+	modelInput.Tokenizer = resolution.Tokenizer
+	modelInput.TokenizerExact = true
+	modelInput.EmbeddingModelID = "model-config-1"
+	modelInput.EmbeddingProvider = "openai"
+	modelInput.EmbeddingModelName = "text-embedding-3-large"
+
+	errCh := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, input := range []ProcessInput{heuristicInput, modelInput} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, runErr := p.Run(context.Background(), input)
+			errCh <- runErr
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for runErr := range errCh {
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+	}
+
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	seen := map[string]bool{}
+	for _, batch := range writer.inserts {
+		for _, chunk := range batch {
+			var tokenizer chunking.Tokenizer = chunking.NewHeuristicTokenizer()
+			if chunk.DocumentID == "model-doc" {
+				tokenizer = resolution.Tokenizer
+			}
+			want, countErr := tokenizer.Count(chunk.Content)
+			if countErr != nil {
+				t.Fatal(countErr)
+			}
+			if chunk.TokenCount != want {
+				t.Fatalf("document %s token count = %d, want %d", chunk.DocumentID, chunk.TokenCount, want)
+			}
+			seen[chunk.DocumentID] = true
+		}
+	}
+	if !seen["heuristic-doc"] || !seen["model-doc"] {
+		t.Fatalf("missing concurrent results: %v", seen)
 	}
 }
 

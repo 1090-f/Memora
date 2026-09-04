@@ -54,6 +54,14 @@ func tokenCount(runes []rune) int {
 //  2. 贪心打包到 maxTokens，超出的单元触发换片；
 //  3. overlap 只发生在被拆分的长文本内部，不跨结构边界复制。
 func (t *HeuristicTokenizer) Split(text string, maxTokens, overlapTokens int) ([]string, error) {
+	return splitWithCounter(text, maxTokens, overlapTokens, t.Count)
+}
+
+type countTokensFunc func(string) (int, error)
+
+// splitWithCounter 使用调用方提供的模型计数器切分文本，保证边界策略在
+// heuristic 与模型 tokenizer 之间保持一致。
+func splitWithCounter(text string, maxTokens, overlapTokens int, count countTokensFunc) ([]string, error) {
 	if maxTokens <= 0 {
 		return nil, fmt.Errorf("maxTokens 必须为正数，实际 %d", maxTokens)
 	}
@@ -64,7 +72,11 @@ func (t *HeuristicTokenizer) Split(text string, maxTokens, overlapTokens int) ([
 	if trimmed == "" {
 		return nil, nil
 	}
-	if tokenCount([]rune(trimmed)) <= maxTokens {
+	total, err := count(trimmed)
+	if err != nil {
+		return nil, err
+	}
+	if total <= maxTokens {
 		return []string{trimmed}, nil
 	}
 
@@ -81,11 +93,18 @@ func (t *HeuristicTokenizer) Split(text string, maxTokens, overlapTokens int) ([
 	}
 
 	for _, unit := range units {
-		unitTokens := tokenCount([]rune(unit))
+		unitTokens, err := count(unit)
+		if err != nil {
+			return nil, err
+		}
 		if unitTokens > maxTokens {
 			// 单元自身超限：先 flush 当前，再对单元内部做 token 级硬拆。
 			flush()
-			chunks = append(chunks, t.hardSplit(unit, maxTokens)...)
+			pieces, err := hardSplitWithCounter(unit, maxTokens, count)
+			if err != nil {
+				return nil, err
+			}
+			chunks = append(chunks, pieces...)
 			overlapTail = ""
 			continue
 		}
@@ -93,7 +112,11 @@ func (t *HeuristicTokenizer) Split(text string, maxTokens, overlapTokens int) ([
 		if current.Len() > 0 {
 			candidate = current.String() + "\n" + unit
 		}
-		if current.Len() > 0 && tokenCount([]rune(candidate)) > maxTokens {
+		candidateTokens, err := count(candidate)
+		if err != nil {
+			return nil, err
+		}
+		if current.Len() > 0 && candidateTokens > maxTokens {
 			tail := overlapTail
 			flush()
 			// overlap 尾巴进入下一片开头。
@@ -105,7 +128,11 @@ func (t *HeuristicTokenizer) Split(text string, maxTokens, overlapTokens int) ([
 		// overlap 加上完整单元仍超限时，优先保留单元并放弃 overlap。
 		if current.Len() > 0 {
 			candidate = current.String() + "\n" + unit
-			if tokenCount([]rune(candidate)) > maxTokens {
+			candidateTokens, err = count(candidate)
+			if err != nil {
+				return nil, err
+			}
+			if candidateTokens > maxTokens {
 				current.Reset()
 			}
 		}
@@ -113,80 +140,80 @@ func (t *HeuristicTokenizer) Split(text string, maxTokens, overlapTokens int) ([
 			current.WriteString("\n")
 		}
 		current.WriteString(unit)
-		overlapTail = t.overlapSuffix(current.String(), overlapTokens)
+		overlapTail, err = overlapSuffixWithCounter(current.String(), overlapTokens, count)
+		if err != nil {
+			return nil, err
+		}
 	}
 	flush()
 	return chunks, nil
 }
 
-// hardSplit 在单元内部按 token 预算硬拆（确定性，按字符边界）。
-func (t *HeuristicTokenizer) hardSplit(text string, maxTokens int) []string {
+// hardSplitWithCounter 在单元内部按 token 预算和 Unicode 字符边界拆分。
+func hardSplitWithCounter(text string, maxTokens int, count countTokensFunc) ([]string, error) {
 	runes := []rune(text)
 	var pieces []string
-	start := 0
-	tokens := 0
-	ascii := 0
-	for i, r := range runes {
-		weight := 0
-		if r > 0x7F {
-			weight = 1
-		} else {
-			ascii++
-			if ascii == 4 {
-				weight = 1
-				ascii = 0
+	for start := 0; start < len(runes); {
+		lo, hi := start+1, len(runes)
+		best := start
+		for lo <= hi {
+			mid := lo + (hi-lo)/2
+			tokens, err := count(string(runes[start:mid]))
+			if err != nil {
+				return nil, err
+			}
+			if tokens <= maxTokens {
+				best = mid
+				lo = mid + 1
+			} else {
+				hi = mid - 1
 			}
 		}
-		if tokens+weight > maxTokens && i > start {
-			pieces = append(pieces, strings.TrimSpace(string(runes[start:i])))
-			start = i
-			tokens = 0
+		if best == start {
+			required, err := count(string(runes[start : start+1]))
+			if err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("单个 Unicode 字符需要 %d tokens，超过当前预算 %d", required, maxTokens)
 		}
-		tokens += weight
-	}
-	if start < len(runes) {
-		piece := strings.TrimSpace(string(runes[start:]))
+		piece := strings.TrimSpace(string(runes[start:best]))
 		if piece != "" {
 			pieces = append(pieces, piece)
 		}
+		start = best
 	}
-	return pieces
+	return pieces, nil
 }
 
-// overlapSuffix 返回文本结尾约 overlapTokens 的尾巴。
-func (t *HeuristicTokenizer) overlapSuffix(text string, overlapTokens int) string {
+// overlapSuffixWithCounter 返回文本结尾不超过 overlapTokens 的最长字符片段。
+func overlapSuffixWithCounter(text string, overlapTokens int, count countTokensFunc) (string, error) {
 	if overlapTokens <= 0 {
-		return ""
+		return "", nil
 	}
 	runes := []rune(text)
-	tokens := 0
-	ascii := 0
+	lo, hi := 0, len(runes)
 	start := len(runes)
-	for i := len(runes) - 1; i >= 0; i-- {
-		weight := 0
-		if runes[i] > 0x7F {
-			weight = 1
+	for lo <= hi {
+		mid := lo + (hi-lo)/2
+		tokens, err := count(string(runes[mid:]))
+		if err != nil {
+			return "", err
+		}
+		if tokens <= overlapTokens {
+			start = mid
+			hi = mid - 1
 		} else {
-			ascii++
-			if ascii == 4 {
-				weight = 1
-				ascii = 0
-			}
+			lo = mid + 1
 		}
-		if tokens+weight > overlapTokens {
-			break
-		}
-		tokens += weight
-		start = i
 	}
 	if start == 0 || start >= len(runes) {
-		return ""
+		return "", nil
 	}
 	suffix := strings.TrimSpace(string(runes[start:]))
 	if strings.TrimSpace(string(runes)) == suffix {
-		return ""
+		return "", nil
 	}
-	return suffix
+	return suffix, nil
 }
 
 // splitUnits 按段落与句子边界切分文本。
