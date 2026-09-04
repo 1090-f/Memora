@@ -28,7 +28,7 @@ func buildDocumentProcessService(cfg *config.Config, store *objectstore.Client, 
 		ChunkConfig: defaultChunkConfig, ChunkOptions: chunkOptions, Tokenizer: chunking.NewHeuristicTokenizer(),
 		ParseOptions: parseOptions, ParserConfig: parser.PythonParserConfig{BaseURL: cfg.DocumentParser.BaseURL, Timeout: cfg.DocumentParser.Timeout, MaxResponseBytes: cfg.DocumentParser.MaxResponseBytes},
 		ValidateLimits: parser.DefaultValidateLimits(), AssetEnricher: asset.NewNoopEnricher(),
-		ChunkStrategy: cfg.Chunking.Strategy, UseCanonicalChunker: cfg.Chunking.UseCanonicalChunker,
+		ChunkStrategy:            cfg.Chunking.Strategy,
 		EnableCanonicalChunkDiff: cfg.Chunking.EnableCanonicalChunkDiff,
 		WebLoader:                loader.NewSafeWebLoader(loader.SafeWebConfig{Timeout: cfg.URLImport.Timeout, MaxBytes: cfg.URLImport.MaxResponseBytes, MaxRedirects: cfg.URLImport.MaxRedirects}),
 	}

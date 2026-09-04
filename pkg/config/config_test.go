@@ -42,6 +42,9 @@ func TestLoadExampleConfig(t *testing.T) {
 	if cfg.Chunking.StrategyVersion == "" {
 		t.Error("strategy_version 应为默认值")
 	}
+	if cfg.Chunking.Strategy != "auto" {
+		t.Errorf("chunking.strategy = %q，期望 auto", cfg.Chunking.Strategy)
+	}
 	if cfg.AssetEnrichment.Mode != "none" {
 		t.Errorf("asset_enrichment.mode = %q，期望 none", cfg.AssetEnrichment.Mode)
 	}

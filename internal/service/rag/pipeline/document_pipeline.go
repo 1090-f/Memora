@@ -5,7 +5,7 @@
 //
 //	resolve_artifact → parse_if_missing → validate_parsed_document → ocr_assets → persist_artifact
 //	→ document_normalize → asset_enrich → canonical_render → validate_canonical_document
-//	→ persist_canonical_artifact → document_profile → structure_chunk → chunk_clean
+//	→ persist_canonical_artifact → document_profile → canonical_chunk → chunk_clean
 //	→ token_count → persist_chunks → embed_and_index
 package pipeline
 
@@ -128,9 +128,7 @@ type DocumentPipelineConfig struct {
 	CanonicalValidator canonical.Validator
 	// CanonicalConfig 是 Renderer 配置的稳定描述（参与 chunk_config_hash）。
 	CanonicalConfig string
-	// UseCanonicalChunker 灰度切换 StructureAwareChunker 的 typed canonical 输入。
-	UseCanonicalChunker bool
-	// EnableCanonicalChunkDiff 同时运行 legacy 与候选策略并生成边界/来源差异报告。
+	// EnableCanonicalChunkDiff 影子运行 legacy 分块器并与 Canonical 主链路生成差异报告。
 	EnableCanonicalChunkDiff bool
 	// ChunkStrategy controls deterministic routing: structured/paragraph/recursive_fallback/auto.
 	ChunkStrategy string
@@ -518,11 +516,10 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		return nil, fmt.Errorf("注册 chunk_strategy_route 节点失败: %w", err)
 	}
 
-	// structure_chunk：结构感知分块。
+	// canonical_chunk：按 Router 决策消费 CanonicalDocument 分块。
 	chunkLambda := compose.InvokableLambda(func(ctx context.Context, state *pipelineState) (*pipelineState, error) {
 		var chunks []chunking.ParsedChunk
 		var err error
-		useCanonical := cfg.UseCanonicalChunker || state.chunkDecision.Strategy != chunking.StrategyStructured
 		if cfg.EnableCanonicalChunkDiff {
 			legacyChunks, legacyErr := chunker.Chunk(ctx, state.doc, cfg.ChunkOptions)
 			if legacyErr != nil {
@@ -536,18 +533,12 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 				legacyChunks, candidateChunks, state.chunkDecision.Strategy, state.chunkDecision.Version,
 			)
 			state.chunkDiff = &report
-			if useCanonical {
-				chunks = candidateChunks
-			} else {
-				chunks = legacyChunks
-			}
-		} else if useCanonical {
-			chunks, err = chunker.ChunkCanonicalStrategy(ctx, state.canonical, cfg.ChunkOptions, state.chunkDecision.Strategy)
+			chunks = candidateChunks
 		} else {
-			chunks, err = chunker.Chunk(ctx, state.doc, cfg.ChunkOptions)
+			chunks, err = chunker.ChunkCanonicalStrategy(ctx, state.canonical, cfg.ChunkOptions, state.chunkDecision.Strategy)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("结构分块失败: %w", err)
+			return nil, fmt.Errorf("Canonical 分块失败: %w", err)
 		}
 		// 纯图片文档（图片无 OCR/caption 文字）没有可索引文本，允许 0 Chunk 成功
 		// 导入（资产与原文件保留）；有正文却分不出 Chunk 才是分块器 bug。
@@ -567,8 +558,8 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 		state.chunks = chunks
 		return state, nil
 	})
-	if err := g.AddLambdaNode("structure_chunk", chunkLambda); err != nil {
-		return nil, fmt.Errorf("注册 structure_chunk 节点失败: %w", err)
+	if err := g.AddLambdaNode("canonical_chunk", chunkLambda); err != nil {
+		return nil, fmt.Errorf("注册 canonical_chunk 节点失败: %w", err)
 	}
 
 	// chunk_clean：分块后清理（不改变 Chunk 边界）。
@@ -646,7 +637,7 @@ func NewDocumentPipeline(cfg DocumentPipelineConfig) (*DocumentPipeline, error) 
 	chain := []string{
 		"load_source", "resolve_artifact", "parse_if_missing", "validate_parsed_document", "ocr_assets", "persist_artifact",
 		"document_normalize", "asset_enrich", "canonical_render", "validate_canonical_document", "persist_canonical_artifact", "document_profile", "chunk_strategy_route",
-		"structure_chunk", "chunk_clean",
+		"canonical_chunk", "chunk_clean",
 		"token_count", "persist_chunks",
 	}
 	for i := 0; i+1 < len(chain); i++ {
@@ -762,7 +753,7 @@ func applyDefaults(cfg DocumentPipelineConfig) DocumentPipelineConfig {
 		cfg.CanonicalValidator = canonical.NewValidator()
 	}
 	if cfg.ChunkStrategy == "" {
-		cfg.ChunkStrategy = chunking.StrategyStructured
+		cfg.ChunkStrategy = chunking.StrategyAuto
 	}
 	if cfg.ValidateLimits.MaxBlocks == 0 {
 		cfg.ValidateLimits = parser.DefaultValidateLimits()
@@ -807,7 +798,6 @@ func computeChunkConfigHash(cfg DocumentPipelineConfig) string {
 		"embedding_model_id": cfg.EmbeddingModelID,
 		"canonical_renderer": cfg.CanonicalRenderer.Info().Identity(),
 		"canonical_config":   cfg.CanonicalConfig,
-		"canonical_chunker":  cfg.UseCanonicalChunker,
 		"chunk_strategy":     cfg.ChunkStrategy,
 		"chunk_router":       chunking.RouterVersion,
 		"paragraph_chunker":  chunking.ParagraphVersion,

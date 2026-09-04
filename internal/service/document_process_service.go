@@ -650,7 +650,7 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 
 	// 执行 Eino 文档加工 Graph：
 	// resolve_artifact → parse_if_missing → validate → persist_artifact → normalize
-	// → enrich → structure_chunk → clean → token_count → persist → index。
+	// → enrich → canonical_chunk → clean → token_count → persist → index。
 	// 节点顺序由 pipeline 编译期固定，此处仅传入对象与元数据触发整条流水线。
 	input := pipeline.ProcessInput{
 		ObjectKey:        valueOrEmpty(task.MinIOObjectKey),
@@ -726,7 +726,7 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 	}
 	s.appendDocumentEvent(ctx, task, doc, contracts.DocumentStageIndex, contracts.StageRunning, ended, nil, nil)
 	// 纯图片文档允许 0 Chunk 成功导入（无文字图片无可索引内容，资产与原文件保留）；
-	// 有正文却分不出 Chunk 的情况由流水线 structure_chunk 节点拒绝。
+	// 有正文却分不出 Chunk 的情况由流水线 canonical_chunk 节点拒绝。
 	// 加工成功：切换 active_index_version，并记录 Embedding 模型与分段配置哈希。
 	effectiveChunkConfigHash := out.ChunkConfigHash
 	if effectiveChunkConfigHash == "" && s.processor != nil {

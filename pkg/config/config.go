@@ -207,12 +207,10 @@ type DocumentParserConfig struct {
 
 // ChunkingConfig 定义 Go 分块策略配置（进入 chunk_config_hash，不进入 parse_config_hash）。
 type ChunkingConfig struct {
-	// Strategy 是 structured/paragraph/recursive_fallback/auto；默认 structured。
+	// Strategy 是 structured/paragraph/recursive_fallback/auto；默认 auto。
 	Strategy string `mapstructure:"strategy"`
 	// StrategyVersion 是分块策略版本。
 	StrategyVersion string `mapstructure:"strategy_version"`
-	// UseCanonicalChunker 灰度启用 typed CanonicalDocument 分块输入。
-	UseCanonicalChunker bool `mapstructure:"use_canonical_chunker"`
 	// EnableCanonicalChunkDiff 影子双跑旧/新分块器并输出差异报告。
 	EnableCanonicalChunkDiff bool `mapstructure:"enable_canonical_chunk_diff"`
 	// MaxTokens 是单个 Chunk 的 token 上限。

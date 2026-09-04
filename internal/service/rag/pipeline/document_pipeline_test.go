@@ -331,49 +331,36 @@ func TestPipelineChunkEntityFields(t *testing.T) {
 	}
 }
 
-func TestPipelineCanonicalChunkerMatchesLegacyForStructuredDocument(t *testing.T) {
+func TestPipelineCanonicalStructuredMatchesLegacy(t *testing.T) {
 	store := newFakeStore()
 	content := "# 标题\n\n第一段正文。\n\n## 小节\n\n第二段正文。"
 	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.md", strings.NewReader(content), int64(len(content)), "text/markdown")
 
-	legacyWriter := &fakeChunkWriter{}
-	legacyCfg := testPipelineConfig(store, `{}`)
-	legacyCfg.Chunks = legacyWriter
-	legacy, err := NewDocumentPipeline(legacyCfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := legacy.Run(context.Background(), processInput(store, "a.md")); err != nil {
-		t.Fatalf("legacy pipeline: %v", err)
-	}
-
 	canonicalWriter := &fakeChunkWriter{}
 	canonicalCfg := testPipelineConfig(store, `{}`)
 	canonicalCfg.Chunks = canonicalWriter
-	canonicalCfg.UseCanonicalChunker = true
+	canonicalCfg.ChunkStrategy = chunking.StrategyStructured
+	canonicalCfg.EnableCanonicalChunkDiff = true
 	canonicalPipeline, err := NewDocumentPipeline(canonicalCfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := canonicalPipeline.Run(context.Background(), processInput(store, "a.md")); err != nil {
+	out, err := canonicalPipeline.Run(context.Background(), processInput(store, "a.md"))
+	if err != nil {
 		t.Fatalf("canonical pipeline: %v", err)
 	}
-	if legacy.ChunkConfigHash() == canonicalPipeline.ChunkConfigHash() {
-		t.Error("canonical chunker feature flag must participate in chunk_config_hash")
+	if out.ChunkDiffReport == nil {
+		t.Fatal("未生成 Canonical 与 Legacy 的差异报告")
 	}
-	legacyChunks := legacyWriter.inserts[0]
-	canonicalChunks := canonicalWriter.inserts[0]
-	if len(legacyChunks) != len(canonicalChunks) {
-		t.Fatalf("chunk count changed: %d != %d", len(legacyChunks), len(canonicalChunks))
+	if out.ChunkDiffReport.CandidateChunkCount != out.ChunkCount {
+		t.Fatalf("持久化结果应来自 Canonical candidate: diff=%+v output=%+v", out.ChunkDiffReport, out)
 	}
-	for i := range legacyChunks {
-		if legacyChunks[i].Content != canonicalChunks[i].Content {
-			t.Errorf("chunk %d changed:\nlegacy=%q\ncanonical=%q", i, legacyChunks[i].Content, canonicalChunks[i].Content)
-		}
+	if out.ChunkDiffReport.BoundaryDifferenceRate != 0 || out.ChunkDiffReport.SourceDifferenceRate != 0 {
+		t.Fatalf("兼容迁移文档不应产生差异: %+v", out.ChunkDiffReport)
 	}
 }
 
-func TestPipelineCanonicalChunkDiffRunsInShadowMode(t *testing.T) {
+func TestPipelineLegacyChunkDiffRunsInShadowMode(t *testing.T) {
 	store := newFakeStore()
 	content := "# 标题\n\n第一段正文。\n\n## 小节\n\n第二段正文。"
 	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.md", strings.NewReader(content), int64(len(content)), "text/markdown")
@@ -382,7 +369,7 @@ func TestPipelineCanonicalChunkDiffRunsInShadowMode(t *testing.T) {
 	cfg := testPipelineConfig(store, `{}`)
 	cfg.Chunks = writer
 	cfg.EnableCanonicalChunkDiff = true
-	cfg.UseCanonicalChunker = false
+	cfg.ChunkStrategy = chunking.StrategyStructured
 	p, err := NewDocumentPipeline(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -394,8 +381,8 @@ func TestPipelineCanonicalChunkDiffRunsInShadowMode(t *testing.T) {
 	if out.ChunkDiffReport == nil {
 		t.Fatal("影子双跑未输出 ChunkDiffReport")
 	}
-	if out.ChunkDiffReport.LegacyChunkCount != out.ChunkCount ||
-		out.ChunkDiffReport.CandidateChunkCount == 0 {
+	if out.ChunkDiffReport.CandidateChunkCount != out.ChunkCount ||
+		out.ChunkDiffReport.LegacyChunkCount == 0 {
 		t.Fatalf("差异报告计数异常: %+v output=%+v", out.ChunkDiffReport, out)
 	}
 	if out.ChunkDiffReport.BoundaryDifferenceRate != 0 || out.ChunkDiffReport.SourceDifferenceRate != 0 {
@@ -403,14 +390,13 @@ func TestPipelineCanonicalChunkDiffRunsInShadowMode(t *testing.T) {
 	}
 }
 
-func TestPipelineAutoRoutesParagraphDocument(t *testing.T) {
+func TestPipelineDefaultAutoRoutesParagraphDocument(t *testing.T) {
 	store := newFakeStore()
 	content := "第一段正文。\n\n第二段正文。\n\n第三段正文。\n\n第四段正文。"
 	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.txt", strings.NewReader(content), int64(len(content)), "text/plain")
 	writer := &fakeChunkWriter{}
 	cfg := testPipelineConfig(store, `{}`)
 	cfg.Chunks = writer
-	cfg.ChunkStrategy = chunking.StrategyAuto
 	p, err := NewDocumentPipeline(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -431,6 +417,46 @@ func TestPipelineAutoRoutesParagraphDocument(t *testing.T) {
 	}
 	if source["strategy"] != chunking.StrategyParagraph {
 		t.Fatalf("persisted strategy = %v", source)
+	}
+}
+
+func TestPipelineDefaultAutoRoutesStructuredDocument(t *testing.T) {
+	store := newFakeStore()
+	content := "# 标题\n\n第一段正文。\n\n## 小节\n\n第二段正文。"
+	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.md", strings.NewReader(content), int64(len(content)), "text/markdown")
+	writer := &fakeChunkWriter{}
+	cfg := testPipelineConfig(store, `{}`)
+	cfg.Chunks = writer
+	p, err := NewDocumentPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := p.Run(context.Background(), processInput(store, "a.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ChunkStrategy != chunking.StrategyStructured || out.ChunkStrategyVersion != chunking.RouterVersion {
+		t.Fatalf("unexpected route: %+v", out)
+	}
+}
+
+func TestPipelineDefaultAutoRoutesRecursiveDocument(t *testing.T) {
+	store := newFakeStore()
+	content := "没有可靠结构的短文本。"
+	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.txt", strings.NewReader(content), int64(len(content)), "text/plain")
+	writer := &fakeChunkWriter{}
+	cfg := testPipelineConfig(store, `{}`)
+	cfg.Chunks = writer
+	p, err := NewDocumentPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := p.Run(context.Background(), processInput(store, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ChunkStrategy != chunking.StrategyRecursive || out.ChunkStrategyVersion != chunking.RouterVersion {
+		t.Fatalf("unexpected route: %+v", out)
 	}
 }
 
