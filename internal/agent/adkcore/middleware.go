@@ -41,6 +41,8 @@ type AgentMiddleware struct {
 	RoundNo int
 	// roundStartTime 记录当前轮次开始时间，用于计算耗时
 	roundStartTime time.Time
+	// knowledgeStatus 汇总实际知识库检索工具返回的充分性状态。
+	knowledgeStatus knowledgeStatusTracker
 }
 
 // Ensure AgentMiddleware implements the interface.
@@ -136,6 +138,7 @@ func (m *AgentMiddleware) WrapInvokableToolCall(ctx context.Context, endpoint ad
 		}
 
 		result, err := endpoint(toolCtx, argumentsInJSON, opts...)
+		m.knowledgeStatus.observe(toolName, result, err)
 		success := err == nil
 		if err != nil {
 			span.RecordError(err)

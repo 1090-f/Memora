@@ -74,6 +74,10 @@ Agent 运行详情返回 `trace_id`、`request_id`、`router_confidence`、
 兼容字段，并增加顶层 `stage/status/trace_id/request_id`；不得在这些字段或摘要中写入
 完整 Prompt、文档正文、认证信息或工具敏感参数。
 
+`knowledge_status` 以本次运行中实际成功完成的 `knowledge_search` 返回值为准，取值为
+`sufficient/ambiguous/insufficient`。同一运行多次检索时按“充分、不确定、不足”的优先级汇总；
+未执行知识检索、调用失败或结果无法解析时保持空值，前端显示“未评估”。
+
 文档页先请求 `GET /documents/:document_id/preview` 获取统一预览描述器。调用方只依据
 `preview_type`、`status`、`content_url` 和 `fallbacks` 选择 Viewer，不再自行按扩展名或
 MIME 路由。`pending`/`processing` 描述器会返回 `retry_after_ms`；预览失败后可调用 retry

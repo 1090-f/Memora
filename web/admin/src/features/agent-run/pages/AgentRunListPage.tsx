@@ -40,6 +40,7 @@ import { streamAgentEvents } from '@/features/conversation/events';
 import { getAgentRunToolCalls, getAgentRunTrace, listAgentRuns } from '../api';
 import { SpanExplorer } from '../components/SpanExplorer';
 import { initialAgentRunState, reduceAgentEvent } from '../eventReducer';
+import { knowledgeStatusLabel } from '../knowledgeStatus';
 import { timelineEntries } from '../timeline';
 import type { AgentRun, AgentRunViewState, AgentTimelineEntry, AgentToolCall } from '../types';
 
@@ -370,8 +371,8 @@ export function RunDetail({ run }: { run: AgentRun }) {
           <Typography variant="body2" color="text.secondary">
             {formatDate(run.started_at)} → {formatDate(run.ended_at)}
           </Typography>
-          <Alert severity={run.knowledge_status === 'insufficient' ? 'warning' : 'info'}>
-            知识充分性：{run.knowledge_status === 'sufficient' ? '充分' : run.knowledge_status === 'insufficient' ? '不足' : run.knowledge_status === 'ambiguous' ? '不确定' : '未记录'}
+          <Alert severity={run.knowledge_status === 'insufficient' || run.knowledge_status === 'ambiguous' ? 'warning' : 'info'}>
+            知识充分性：{knowledgeStatusLabel(run.knowledge_status)}
             {run.router_reason ? ` · ${run.router_reason}` : ''}
             {run.router_fallback_used ? ' · 已使用降级路由' : ''}
           </Alert>

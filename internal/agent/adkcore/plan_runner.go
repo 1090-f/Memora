@@ -192,13 +192,14 @@ func (g *PlanExecuteGraph) Run(ctx context.Context, request contracts.AgentRunRe
 
 	// 5. 组装最终结果
 	return contracts.AgentRunResult{
-		RunID:         request.RunID,
-		ExecutionMode: contracts.ExecutionPlanExecute,
-		FinalResult:   finalAnswer,
-		Citations:     extractCitationsFromPlan(plan),
-		Usage:         totalUsage,
-		StartedAt:     startedAt,
-		EndedAt:       time.Now(),
+		RunID:           request.RunID,
+		ExecutionMode:   contracts.ExecutionPlanExecute,
+		KnowledgeStatus: knowledgeStatusFromPlan(plan),
+		FinalResult:     finalAnswer,
+		Citations:       extractCitationsFromPlan(plan),
+		Usage:           totalUsage,
+		StartedAt:       startedAt,
+		EndedAt:         time.Now(),
 	}, nil
 }
 
