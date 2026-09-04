@@ -99,3 +99,21 @@ type ToolCallResponse struct {
 	StartedAt         time.Time       `json:"started_at"`                   // StartedAt 调用开始时间
 	EndedAt           *time.Time      `json:"ended_at,omitempty"`           // EndedAt 调用结束时间
 }
+
+// TraceSpanResponse 表示运行技术链路中的一个安全 Span。
+type TraceSpanResponse struct {
+	TraceID              string          `json:"trace_id"`
+	SpanID               string          `json:"span_id"`
+	ParentSpanID         *string         `json:"parent_span_id,omitempty"`
+	Name                 string          `json:"name"`
+	Kind                 string          `json:"kind"`
+	StatusCode           string          `json:"status_code"`
+	StatusMessage        *string         `json:"status_message,omitempty"`
+	StartedAt            time.Time       `json:"started_at"`
+	EndedAt              time.Time       `json:"ended_at"`
+	DurationMS           int64           `json:"duration_ms"`
+	Attributes           json.RawMessage `json:"attributes"`
+	Events               json.RawMessage `json:"events"`
+	ServiceName          *string         `json:"service_name,omitempty"`
+	InstrumentationScope *string         `json:"instrumentation_scope,omitempty"`
+}

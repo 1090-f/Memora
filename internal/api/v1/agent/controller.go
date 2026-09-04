@@ -24,6 +24,8 @@ import (
 	"github.com/1090-f/Memora/pkg/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -33,6 +35,7 @@ type Controller struct {
 	agentService    contracts.AgentRunService        // Agent 核心执行服务（包含 Run/Cancel/Retry）
 	runRepo         repository.AgentRunRepository    // 运行记录的持久化查询
 	toolCallRepo    repository.ToolCallRepository    // 工具调用的持久化查询
+	traceSpanRepo   repository.TraceSpanRepository   // 内置 Trace Span 查询
 	agentConfigRepo repository.AgentConfigRepository // Agent 配置查询仓库
 	eventSub        contracts.EventSubscriber        // Agent 事件订阅器（用于 SSE 流式推送）
 	agentEventRepo  repository.AgentEventRepository  // Agent 事件持久化仓库（用于断线重连时的历史回放）
@@ -48,6 +51,7 @@ func NewController(
 	agentService contracts.AgentRunService,
 	runRepo repository.AgentRunRepository,
 	toolCallRepo repository.ToolCallRepository,
+	traceSpanRepo repository.TraceSpanRepository,
 	agentConfigRepo repository.AgentConfigRepository,
 	eventSub contracts.EventSubscriber,
 	agentEventRepo repository.AgentEventRepository,
@@ -56,11 +60,62 @@ func NewController(
 		agentService:    agentService,
 		runRepo:         runRepo,
 		toolCallRepo:    toolCallRepo,
+		traceSpanRepo:   traceSpanRepo,
 		agentConfigRepo: agentConfigRepo,
 		eventSub:        eventSub,
 		agentEventRepo:  agentEventRepo,
 		runOwnerRepo:    runRepo,
 	}
+}
+
+// ListTraceSpans 处理 GET /api/v1/agent/runs/:id/trace，返回该运行的技术调用链。
+// 先按用户查询运行记录，再使用其 trace_id 获取 Span，避免跨用户读取。
+func (ctrl *Controller) ListTraceSpans(c *gin.Context) {
+	user, ok := middleware.GetUser(c)
+	if !ok {
+		response.Failure(c, apperrors.ErrUnauthorized)
+		return
+	}
+	runID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+	userID, err := uuid.Parse(string(user.ID))
+	if err != nil {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+	run, err := ctrl.runOwnerRepo.FindByID(c.Request.Context(), userID, runID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.Failure(c, apperrors.ErrNotFound)
+			return
+		}
+		response.Failure(c, apperrors.ErrInternal)
+		return
+	}
+	if run.TraceID == nil || *run.TraceID == "" || ctrl.traceSpanRepo == nil {
+		response.Success(c, http.StatusOK, []respdto.TraceSpanResponse{})
+		return
+	}
+	spans, err := ctrl.traceSpanRepo.ListByRunTrace(c.Request.Context(), *run.TraceID, run.ID.String())
+	if err != nil {
+		response.Failure(c, apperrors.ErrInternal)
+		return
+	}
+	items := make([]respdto.TraceSpanResponse, 0, len(spans))
+	for i := range spans {
+		span := &spans[i]
+		items = append(items, respdto.TraceSpanResponse{
+			TraceID: span.TraceID, SpanID: span.SpanID, ParentSpanID: span.ParentSpanID,
+			Name: span.Name, Kind: span.Kind, StatusCode: span.StatusCode, StatusMessage: span.StatusMessage,
+			StartedAt: span.StartedAt, EndedAt: span.EndedAt, DurationMS: span.DurationMS,
+			Attributes: json.RawMessage(span.Attributes), Events: json.RawMessage(span.Events),
+			ServiceName: span.ServiceName, InstrumentationScope: span.InstrumentationScope,
+		})
+	}
+	response.Success(c, http.StatusOK, items)
 }
 
 // CreateRun 处理 POST /api/v1/agent/runs，创建智能问答任务并排队执行。
@@ -105,7 +160,12 @@ func (ctrl *Controller) CreateRun(c *gin.Context) {
 		return
 	}
 
-	run, err := ctrl.runRepo.CreateQueuedForConversation(c.Request.Context(), userID, knowledgeBaseID, conversationID, agentConfigID, req.Query, middleware.GetTraceID(c), middleware.GetRequestID(c))
+	parentSpanID := ""
+	spanContext := oteltrace.SpanContextFromContext(c.Request.Context())
+	if spanID := spanContext.SpanID(); spanID.IsValid() {
+		parentSpanID = spanID.String()
+	}
+	run, err := ctrl.runRepo.CreateQueuedForConversation(c.Request.Context(), userID, knowledgeBaseID, conversationID, agentConfigID, req.Query, middleware.GetTraceID(c), parentSpanID, spanContext.IsSampled(), middleware.GetRequestID(c))
 	if err != nil {
 		if errors.Is(err, repository.ErrConversationNotFound) {
 			response.Failure(c, apperrors.ErrNotFound)
@@ -116,6 +176,7 @@ func (ctrl *Controller) CreateRun(c *gin.Context) {
 		}
 		return
 	}
+	oteltrace.SpanFromContext(c.Request.Context()).SetAttributes(attribute.String("memora.run_id", run.ID.String()))
 
 	response.Success(c, http.StatusAccepted, respdto.CreateAgentRunResponse{
 		RunID:          run.ID.String(),

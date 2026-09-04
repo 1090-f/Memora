@@ -178,4 +178,21 @@ export interface AgentToolCall {
   ended_at?: string | null;
 }
 
+export interface TraceSpan {
+  trace_id: string;
+  span_id: string;
+  parent_span_id?: string | null;
+  name: string;
+  kind: string;
+  status_code: 'Unset' | 'Ok' | 'Error' | string;
+  status_message?: string | null;
+  started_at: string;
+  ended_at: string;
+  duration_ms: number;
+  attributes: Record<string, unknown>;
+  events: Array<Record<string, unknown>>;
+  service_name?: string | null;
+  instrumentation_scope?: string | null;
+}
+
 export type AgentToolCallStatus = AgentToolCall['status'];

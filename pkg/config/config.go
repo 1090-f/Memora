@@ -38,7 +38,6 @@ type ObservabilityConfig struct {
 	CaptureSensitiveContent bool    `mapstructure:"capture_sensitive_content"`
 	TraceSampleRatio        float64 `mapstructure:"trace_sample_ratio"`
 	RetentionDays           int     `mapstructure:"retention_days"`
-	OTLPEndpoint            string  `mapstructure:"otlp_endpoint"`
 }
 
 // AppConfig 定义应用程序基础配置，包括名称、版本、运行模式和超时设置

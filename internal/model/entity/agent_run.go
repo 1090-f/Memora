@@ -22,6 +22,8 @@ type AgentRun struct {
 	RetryOfRunID        *uuid.UUID     `gorm:"type:uuid" json:"retry_of_run_id,omitempty"`                                                                             // 若为重试运行，指向被重试的原始运行 ID（可选）
 	Query               string         `gorm:"type:text;not null" json:"query"`                                                                                        // 用户本次查询的问题原文
 	TraceID             *string        `gorm:"type:varchar(32)" json:"trace_id,omitempty"`                                                                             // 跨服务 Trace ID
+	TraceParentSpanID   *string        `gorm:"type:varchar(16)" json:"trace_parent_span_id,omitempty"`                                                                 // 创建运行的 HTTP Span ID，用于异步调用树续接
+	TraceSampled        bool           `gorm:"not null;default:true" json:"trace_sampled"`                                                                             // 创建运行时的采样决策，异步 Worker 必须保持一致
 	RequestID           *string        `gorm:"type:varchar(128)" json:"request_id,omitempty"`                                                                          // 触发运行的 HTTP 请求 ID
 	ExecutionMode       *string        `gorm:"type:varchar(20);check:execution_mode IN ('react')" json:"execution_mode,omitempty"`                                     // Router 选择的执行模式
 	RouterReasonSummary string         `gorm:"type:varchar(1000)" json:"router_reason_summary,omitempty"`                                                              // Router 决策原因摘要（面向用户展示）

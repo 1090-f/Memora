@@ -12,6 +12,9 @@ import (
 
 	"github.com/1090-f/Memora/internal/agent/core"
 	"github.com/1090-f/Memora/internal/contracts"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 // AgentMiddleware 是 ADK ChatModelAgent 的自定义中间件，实现 adk.ChatModelAgentMiddleware 接口。
@@ -125,13 +128,20 @@ func (m *AgentMiddleware) WrapInvokableToolCall(ctx context.Context, endpoint ad
 	wrapped := func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
 		toolName := tc.Name
 		callID := tc.CallID
+		toolCtx, span := otel.Tracer("github.com/1090-f/Memora/agent").Start(ctx, "tool."+toolName)
+		span.SetAttributes(attribute.String("memora.run_id", string(m.RunID)), attribute.String("memora.tool_name", toolName), attribute.String("memora.tool_call_id", callID))
 
 		if m.EventPublisher != nil {
 			_ = m.EventPublisher.PublishToolCallStarted(ctx, m.RunID, toolName, contracts.ID(callID))
 		}
 
-		result, err := endpoint(ctx, argumentsInJSON, opts...)
+		result, err := endpoint(toolCtx, argumentsInJSON, opts...)
 		success := err == nil
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "tool call failed")
+		}
+		span.End()
 
 		if m.CitationCollector != nil {
 			citations := extractCitationsFromContext(ctx)
@@ -161,13 +171,20 @@ func (m *AgentMiddleware) WrapStreamableToolCall(ctx context.Context, endpoint a
 	wrapped := func(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (*schema.StreamReader[string], error) {
 		toolName := tc.Name
 		callID := tc.CallID
+		toolCtx, span := otel.Tracer("github.com/1090-f/Memora/agent").Start(ctx, "tool.stream.open."+toolName)
+		span.SetAttributes(attribute.String("memora.run_id", string(m.RunID)), attribute.String("memora.tool_name", toolName), attribute.String("memora.tool_call_id", callID))
 
 		if m.EventPublisher != nil {
 			_ = m.EventPublisher.PublishToolCallStarted(ctx, m.RunID, toolName, contracts.ID(callID))
 		}
 
-		result, err := endpoint(ctx, argumentsInJSON, opts...)
+		result, err := endpoint(toolCtx, argumentsInJSON, opts...)
 		success := err == nil
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "tool call failed")
+		}
+		span.End()
 
 		if m.CitationCollector != nil {
 			citations := extractCitationsFromContext(ctx)

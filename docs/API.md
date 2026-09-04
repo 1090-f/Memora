@@ -100,8 +100,11 @@ URL 导入的 HTTP 请求只创建异步任务。Worker 使用安全 Web Loader 
 
 所有 HTTP 响应返回 `X-Request-ID` 与 `X-Trace-ID`。调用方可传入 W3C `traceparent`，服务端提取其中的 Trace ID；未提供时自动生成。
 
-`observability.retention_days` 控制 `agent_events` 与 `document_processing_events` 的保留期，
-后台进程启动时及之后每 24 小时清理一次过期事件。配置 `otlp_endpoint` 后，HTTP、模型、
-Python Parser、Redis Stream 文档/预览任务与 Streamable HTTP MCP 请求会传播 W3C Trace
-Context 并批量导出 OTLP Trace；旧队列消息没有 `traceparent` 时仍使用任务表中的 `trace_id`
-作为兼容回退。
+`observability.retention_days` 控制 `agent_events`、`document_processing_events` 与 `trace_spans`
+的保留期，后台进程启动时及之后每 24 小时清理一次。HTTP、模型、Redis Stream 文档/预览任务与
+Streamable HTTP MCP 请求会传播 W3C Trace Context；Go → Python Parser 调用由 Go 客户端 Span 记录，关键 Go Span 经过属性白名单
+裁剪后批量写入现有 PostgreSQL。旧队列消息没有 `traceparent` 时仍使用任务表中的 `trace_id`
+作为兼容回退，不需要 Collector、Tempo、Jaeger 或 Grafana。
+
+`GET /api/v1/agent/runs/:id/trace` 返回当前用户指定运行的持久化 Span，包含父子 Span ID、名称、
+类型、状态、起止时间、耗时、安全属性和事件。接口先校验运行归属，不允许通过 Trace ID 越权查询。

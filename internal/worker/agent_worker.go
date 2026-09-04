@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -55,6 +56,7 @@ type AgentWorker struct {
 	config          AgentWorkerConfig // Worker 配置
 	mu              sync.Mutex        // 保护 running 状态的互斥锁
 	stageStarts     sync.Map          // run/stage -> time.Time，补齐阶段真实开始/结束时间
+	executions      sync.WaitGroup    // 等待已领取运行退出，避免关库后仍访问依赖
 	running         bool              // 是否正在运行
 }
 
@@ -197,9 +199,27 @@ func (w *AgentWorker) pollAndExecute(ctx context.Context) {
 			continue
 		}
 
-		// 在后台 goroutine 中执行 Agent 运行
-		// 使用独立的上下文，避免 Worker 主上下文取消传播到正在执行的 Agent
-		go w.executeRun(claimed)
+		// 在后台 goroutine 中执行 Agent 运行；服务关闭时取消并等待所有已领取运行退出。
+		w.executions.Add(1)
+		go func() {
+			defer w.executions.Done()
+			w.executeRun(ctx, claimed)
+		}()
+	}
+}
+
+// Wait 等待所有已经领取的运行退出。
+func (w *AgentWorker) Wait(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		w.executions.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -209,12 +229,12 @@ func (w *AgentWorker) pollAndExecute(ctx context.Context) {
 //  2. 调用 ContextBuilder 构建完整的 Agent 执行上下文
 //  3. 构造 AgentRunRequest 并调用 AgentRunService.Run 执行
 //  4. 执行结果由核心服务内部处理（状态更新、Token 记录、事件发布等）
-func (w *AgentWorker) executeRun(run *entity.AgentRun) {
+func (w *AgentWorker) executeRun(parent context.Context, run *entity.AgentRun) {
 	startedAt := time.Now()
 	metrics.StageFinished("agent_run", "queue_wait", "succeeded", time.Since(run.CreatedAt))
 
 	// 创建独立的执行上下文，带超时控制
-	execCtx, cancel := context.WithTimeout(context.Background(), w.config.MaxRunTime)
+	execCtx, cancel := context.WithTimeout(parent, w.config.MaxRunTime)
 	defer cancel()
 	traceID, requestID := "", ""
 	if run.TraceID != nil {
@@ -224,8 +244,20 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 		requestID = *run.RequestID
 	}
 	execCtx = contracts.WithCorrelation(execCtx, traceID, requestID)
-	execCtx = appobservability.ContextWithTraceID(execCtx, traceID)
-	execCtx, span := otel.Tracer("github.com/1090-f/Memora/worker").Start(execCtx, "agent.run")
+	parentSpanID := ""
+	if run.TraceParentSpanID != nil {
+		parentSpanID = *run.TraceParentSpanID
+	}
+	execCtx = appobservability.ContextWithTraceParent(execCtx, traceID, parentSpanID, run.TraceSampled)
+	queueEndedAt := time.Now().UTC()
+	queueStartedAt := run.CreatedAt
+	if queueStartedAt.IsZero() || queueStartedAt.After(queueEndedAt) {
+		queueStartedAt = queueEndedAt
+	}
+	queueCtx, queueSpan := otel.Tracer("github.com/1090-f/Memora/worker").Start(execCtx, "queue.wait", trace.WithTimestamp(queueStartedAt))
+	queueSpan.SetAttributes(attribute.String("memora.run_id", run.ID.String()), attribute.Int64("memora.queue_wait_ms", queueEndedAt.Sub(queueStartedAt).Milliseconds()))
+	queueSpan.End(trace.WithTimestamp(queueEndedAt))
+	execCtx, span := otel.Tracer("github.com/1090-f/Memora/worker").Start(queueCtx, "agent.run")
 	defer span.End()
 	span.SetAttributes(attribute.String("memora.run_id", run.ID.String()), attribute.String("memora.knowledge_base_id", run.KnowledgeBaseID.String()))
 
@@ -236,9 +268,10 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 	w.publishStage(execCtx, runID, contracts.AgentStageQueryRewrite, contracts.StageSkipped, 0, "当前查询无需独立改写")
 	contextStarted := time.Now().UTC()
 	w.publishStage(execCtx, runID, contracts.AgentStageContextBuild, contracts.StageRunning, 0, "正在准备会话、记忆与知识上下文")
+	contextBuildCtx, contextBuildSpan := otel.Tracer("github.com/1090-f/Memora/worker").Start(execCtx, "context.build")
 
 	// 1. 构建 Agent 执行上下文（从数据库加载会话历史、Agent 配置、记忆等）
-	agentCtx, err := w.contextBuilder.Build(execCtx, contracts.AgentContextRequest{
+	agentCtx, err := w.contextBuilder.Build(contextBuildCtx, contracts.AgentContextRequest{
 		UserID:          contracts.ID(run.UserID.String()),
 		KnowledgeBaseID: contracts.ID(run.KnowledgeBaseID.String()),
 		ConversationID:  contracts.ID(run.ConversationID.String()),
@@ -247,6 +280,9 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 		Query:           run.Query,
 	})
 	if err != nil {
+		contextBuildSpan.RecordError(err)
+		contextBuildSpan.SetStatus(codes.Error, "context build failed")
+		contextBuildSpan.End()
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "context build failed")
 		w.publishStage(execCtx, runID, contracts.AgentStageContextBuild, contracts.StageFailed, time.Since(contextStarted).Milliseconds(), "上下文构建失败")
@@ -264,6 +300,7 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 		w.createFailureMessage(context.Background(), run, fmt.Sprintf("抱歉，系统在准备回答时遇到了问题。失败原因：%s", failureMessage))
 		return
 	}
+	contextBuildSpan.End()
 	w.publishStage(execCtx, runID, contracts.AgentStageContextBuild, contracts.StageSucceeded, time.Since(contextStarted).Milliseconds(), "上下文准备完成")
 	if agentCtx.KnowledgeStatus == "" {
 		w.publishStage(execCtx, runID, contracts.AgentStageKnowledgeCheck, contracts.StageSkipped, 0, "知识检索已降级，未生成充分性结论")
@@ -284,6 +321,14 @@ func (w *AgentWorker) executeRun(run *entity.AgentRun) {
 		span.SetStatus(codes.Error, "agent run failed")
 		// 如果错误是 context 取消导致的（用户主动停止），不应覆盖 DB 中已被 Cancel 设为 cancelled 的状态。
 		if errors.Is(err, context.Canceled) {
+			if execCtx.Err() != nil {
+				durationMS := time.Since(startedAt).Milliseconds()
+				if markErr := w.runRepo.MarkFailed(context.Background(), run.ID, "worker_stopped", "服务停止，运行已中断", "", durationMS, result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens); markErr != nil {
+					logger.Error("标记被服务停止中断的运行失败", zap.String("run_id", run.ID.String()), zap.Error(markErr))
+				}
+				logger.Info("Agent 运行因 Worker 停止而中断", zap.String("run_id", run.ID.String()))
+				return
+			}
 			logger.Info("Agent 运行已被用户取消", zap.String("run_id", run.ID.String()))
 			return
 		}

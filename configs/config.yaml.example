@@ -178,7 +178,6 @@ observability:
   capture_sensitive_content: false
   trace_sample_ratio: 1.0
   retention_days: 30
-  otlp_endpoint: "" # 例如 http://localhost:4318/v1/traces；留空时不外发
 
 # Agent 配置
 agent:

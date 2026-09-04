@@ -37,7 +37,8 @@ import { Link, useNavigate } from 'react-router-dom';
 import { listKnowledgeBases } from '@/features/knowledge-base/api';
 import { listConversations } from '@/features/conversation/api';
 import { streamAgentEvents } from '@/features/conversation/events';
-import { getAgentRunToolCalls, listAgentRuns } from '../api';
+import { getAgentRunToolCalls, getAgentRunTrace, listAgentRuns } from '../api';
+import { SpanExplorer } from '../components/SpanExplorer';
 import { initialAgentRunState, reduceAgentEvent } from '../eventReducer';
 import { timelineEntries } from '../timeline';
 import type { AgentRun, AgentRunViewState, AgentTimelineEntry, AgentToolCall } from '../types';
@@ -302,6 +303,11 @@ export function RunDetail({ run }: { run: AgentRun }) {
     queryKey: ['agent-run-tool-calls', run.id],
     queryFn: () => getAgentRunToolCalls(run.id),
   });
+  const traceQuery = useQuery({
+    queryKey: ['agent-run-trace', run.id],
+    queryFn: () => getAgentRunTrace(run.id),
+    refetchInterval: run.status === 'running' || run.status === 'queued' ? 2_000 : false,
+  });
   useEffect(() => {
     dispatch({ type: 'HYDRATE_AGENT_RUN_STATE', run });
     highestSequenceRef.current = 0;
@@ -384,7 +390,11 @@ export function RunDetail({ run }: { run: AgentRun }) {
             </Box>
           )}
           <Box>
-            <Typography variant="h6" fontWeight={700} mb={1.5}>阶段时间线</Typography>
+            <Typography variant="h6" fontWeight={700} mb={1.5}>技术链路</Typography>
+            <SpanExplorer spans={traceQuery.data ?? []} loading={traceQuery.isLoading} error={Boolean(traceQuery.error)} />
+          </Box>
+          <Box>
+            <Typography variant="h6" fontWeight={700} mb={1.5}>业务阶段时间线</Typography>
             {toolCallsQuery.error && <Alert severity="warning" sx={{ mb: 1.5 }}>工具调用详情加载失败，但仍可查看运行结果。</Alert>}
             <RunTimeline run={run} toolCalls={toolCalls} liveState={liveState} />
           </Box>

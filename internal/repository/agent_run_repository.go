@@ -12,6 +12,7 @@ import (
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/google/uuid"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -33,7 +34,7 @@ func (r *agentRunRepository) CreateQueued(ctx context.Context, run *entity.Agent
 }
 
 // CreateQueuedForConversation 在同一事务中确定 Chat 模型身份引用并创建消息和运行记录。
-func (r *agentRunRepository) CreateQueuedForConversation(ctx context.Context, userID, knowledgeBaseID, conversationID, agentConfigID uuid.UUID, query, traceID, requestID string) (*entity.AgentRun, error) {
+func (r *agentRunRepository) CreateQueuedForConversation(ctx context.Context, userID, knowledgeBaseID, conversationID, agentConfigID uuid.UUID, query, traceID, traceParentSpanID string, traceSampled bool, requestID string) (*entity.AgentRun, error) {
 	var created *entity.AgentRun
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var conversation entity.Conversation
@@ -94,9 +95,13 @@ func (r *agentRunRepository) CreateQueuedForConversation(ctx context.Context, us
 			ChatModelID:     chatModelID,
 			Query:           query,
 			Status:          "queued",
+			TraceSampled:    traceSampled,
 		}
 		if traceID != "" {
 			run.TraceID = &traceID
+		}
+		if traceParentSpanID != "" {
+			run.TraceParentSpanID = &traceParentSpanID
 		}
 		if requestID != "" {
 			run.RequestID = &requestID
@@ -376,6 +381,11 @@ func (r *agentRunRepository) CreateRetry(ctx context.Context, originalRunID, use
 		if traceID != "" {
 			retry.TraceID = &traceID
 		}
+		if spanID := oteltrace.SpanContextFromContext(ctx).SpanID(); spanID.IsValid() {
+			value := spanID.String()
+			retry.TraceParentSpanID = &value
+		}
+		retry.TraceSampled = oteltrace.SpanContextFromContext(ctx).IsSampled()
 		if requestID != "" {
 			retry.RequestID = &requestID
 		}

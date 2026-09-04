@@ -16,7 +16,7 @@ type AgentRunRepository interface {
 	CreateQueued(ctx context.Context, run *entity.AgentRun) error
 
 	// CreateQueuedForConversation 锁定会话、重新校验当前 Chat 模型，并原子创建用户消息和 queued Run。
-	CreateQueuedForConversation(ctx context.Context, userID, knowledgeBaseID, conversationID, agentConfigID uuid.UUID, query, traceID, requestID string) (*entity.AgentRun, error)
+	CreateQueuedForConversation(ctx context.Context, userID, knowledgeBaseID, conversationID, agentConfigID uuid.UUID, query, traceID, traceParentSpanID string, traceSampled bool, requestID string) (*entity.AgentRun, error)
 
 	// FindByID 根据运行 ID 和用户 ID 查找运行记录（强制所有者过滤）。
 	FindByID(ctx context.Context, userID, runID uuid.UUID) (*entity.AgentRun, error)

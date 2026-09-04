@@ -15,6 +15,8 @@ func TestAgentRunObservabilityMigrationColumns(t *testing.T) {
 		"failure_stage",
 		"retryable",
 		"recovery_advice",
+		"trace_parent_span_id",
+		"trace_sampled",
 	}
 	for _, column := range columns {
 		var count int64
