@@ -26,6 +26,10 @@ func NewPostgresEventPublisher(eventRepo repository.AgentEventRepository) *Postg
 // Publish 将 Agent 事件写入 agent_events 表。
 // 如果事件数据为空，使用空 JSON 对象 {} 代替。
 func (p *PostgresEventPublisher) Publish(ctx context.Context, event contracts.AgentEvent) error {
+	// 回答增量只用于实时 SSE；完整回答已经由 agent_runs/messages 保存，避免在事件表重复留存内容。
+	if event.EventType == contracts.EventAnswerDelta {
+		return nil
+	}
 	data := event.Data
 	if len(data) == 0 {
 		data = json.RawMessage("{}")
@@ -36,6 +40,20 @@ func (p *PostgresEventPublisher) Publish(ctx context.Context, event contracts.Ag
 		EventType: string(event.EventType),
 		Timestamp: event.Timestamp,
 		Data:      datatypes.JSON(data),
+	}
+	if event.TraceID != "" {
+		ent.TraceID = &event.TraceID
+	}
+	if event.RequestID != "" {
+		ent.RequestID = &event.RequestID
+	}
+	if event.Stage != "" {
+		value := string(event.Stage)
+		ent.Stage = &value
+	}
+	if event.Status != "" {
+		value := string(event.Status)
+		ent.Status = &value
 	}
 	if event.Timestamp.IsZero() {
 		ent.Timestamp = time.Now().UTC()

@@ -16,6 +16,7 @@ import type {
   ImportUploadResponse,
   ImportTask,
   ImportURLInput,
+  ProcessingActionResponse,
 } from './types';
 import type { PageResult } from '@/features/knowledge-base/types';
 
@@ -122,10 +123,10 @@ export const getDocumentProcessing = (documentId: string) =>
   apiRequest<DocumentProcessing>({ url: `/documents/${documentId}/processing` });
 
 export const retryDocumentProcessing = (documentId: string) =>
-  apiRequest<{ retried: boolean }>({ url: `/documents/${documentId}/retry-processing`, method: 'POST' });
+  apiRequest<ProcessingActionResponse>({ url: `/documents/${documentId}/retry-processing`, method: 'POST' });
 
 export const reindexDocument = (documentId: string) =>
-  apiRequest<{ document_id: string; status: string }>({ url: `/documents/${documentId}/reindex`, method: 'POST' });
+  apiRequest<ProcessingActionResponse>({ url: `/documents/${documentId}/reindex`, method: 'POST' });
 
 export const readDocumentContent = (kbId: string, documentId: string, params: { cursor?: string; section?: string; max_tokens?: number } = {}) =>
   apiRequest<DocumentReadPage>({ url: `/knowledge-bases/${kbId}/documents/${documentId}/content`, params });

@@ -26,17 +26,18 @@ import {
   TableHead,
   TablePagination,
   TableRow,
+  TextField,
   Typography,
 } from '@mui/material';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import ExpandMoreOutlined from '@mui/icons-material/ExpandMoreOutlined';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { listKnowledgeBases } from '@/features/knowledge-base/api';
 import { listConversations } from '@/features/conversation/api';
 import { streamAgentEvents } from '@/features/conversation/events';
-import { getAgentRun, getAgentRunToolCalls, listAgentRuns } from '../api';
+import { getAgentRunToolCalls, listAgentRuns } from '../api';
 import { initialAgentRunState, reduceAgentEvent } from '../eventReducer';
 import { timelineEntries } from '../timeline';
 import type { AgentRun, AgentRunViewState, AgentTimelineEntry, AgentToolCall } from '../types';
@@ -62,6 +63,13 @@ function rememberKnowledgeBaseId(knowledgeBaseId: string) {
   } catch {
     // 隐私模式或存储被禁用时仍可使用当前页面内的选择。
   }
+}
+
+function localDateBoundary(value: string, endExclusive = false) {
+  if (!value) return undefined;
+  const date = new Date(`${value}T00:00:00`);
+  if (endExclusive) date.setDate(date.getDate() + 1);
+  return date.toISOString();
 }
 
 function formatDate(value?: string | null) {
@@ -275,7 +283,7 @@ function RunTimeline({ run, toolCalls, liveState }: { run: AgentRun; toolCalls: 
   );
 }
 
-function RunDetail({ run }: { run: AgentRun }) {
+export function RunDetail({ run }: { run: AgentRun }) {
   const [liveState, dispatch] = useReducer(reduceAgentEvent, initialAgentRunState);
   const toolCallsQuery = useQuery({
     queryKey: ['agent-run-tool-calls', run.id],
@@ -323,12 +331,32 @@ function RunDetail({ run }: { run: AgentRun }) {
           <Typography variant="body2" color="text.secondary">
             {formatDate(run.started_at)} → {formatDate(run.ended_at)}
           </Typography>
-          {run.error_message && <Alert severity="error">{run.error_message}</Alert>}
+          <Alert severity={run.knowledge_status === 'insufficient' ? 'warning' : 'info'}>
+            知识充分性：{run.knowledge_status === 'sufficient' ? '充分' : run.knowledge_status === 'insufficient' ? '不足' : run.knowledge_status === 'ambiguous' ? '不确定' : '未记录'}
+            {run.router_reason ? ` · ${run.router_reason}` : ''}
+            {run.router_fallback_used ? ' · 已使用降级路由' : ''}
+          </Alert>
+          {liveState.citations.length > 0 && (
+            <Box>
+              <Typography variant="h6" fontWeight={700} mb={1}>引用依据</Typography>
+              <Stack spacing={1}>
+                {liveState.citations.map((citation, index) => {
+                  const documentId = typeof citation.document_id === 'string' ? citation.document_id : '';
+                  const title = typeof citation.document_title === 'string' ? citation.document_title : typeof citation.title === 'string' ? citation.title : `引用 ${index + 1}`;
+                  const snippet = typeof citation.snippet === 'string' ? citation.snippet : typeof citation.content === 'string' ? citation.content : '';
+                  const content = <Paper variant="outlined" sx={{ p: 1.5 }}><Typography fontWeight={650}>{title}</Typography>{snippet && <Typography variant="body2" color="text.secondary">{truncate(snippet, 220)}</Typography>}</Paper>;
+                  return documentId && run.knowledge_base_id ? <Link key={`${documentId}-${index}`} to={`/kb/${run.knowledge_base_id}/docs/${documentId}`} style={{ color: 'inherit', textDecoration: 'none' }}>{content}</Link> : <Box key={`citation-${index}`}>{content}</Box>;
+                })}
+              </Stack>
+            </Box>
+          )}
           <Box>
-            <Typography variant="h6" fontWeight={700} mb={1.5}>执行链路</Typography>
+            <Typography variant="h6" fontWeight={700} mb={1.5}>阶段时间线</Typography>
             {toolCallsQuery.error && <Alert severity="warning" sx={{ mb: 1.5 }}>工具调用详情加载失败，但仍可查看运行结果。</Alert>}
             <RunTimeline run={run} toolCalls={toolCalls} liveState={liveState} />
           </Box>
+          {toolCalls.length > 0 && <Typography variant="body2" color="text.secondary">工具调用共 {toolCalls.length} 次；输入、输出均为脱敏摘要，详细结果可在时间线中展开。</Typography>}
+          {run.error_message && <Alert severity="error"><strong>{run.error_code || 'RUN_FAILED'}</strong>：{run.error_message}<br />建议重试；若问题持续，请复制下方 Trace ID 进行诊断。</Alert>}
           {run.final_result && (
             <Paper variant="outlined" sx={{ p: 2, bgcolor: 'background.default' }}>
               <Typography fontWeight={700} mb={1.5}>最终回答</Typography>
@@ -337,6 +365,17 @@ function RunDetail({ run }: { run: AgentRun }) {
               </Box>
             </Paper>
           )}
+          <Accordion disableGutters variant="outlined">
+            <AccordionSummary expandIcon={<ExpandMoreOutlined />}><Typography variant="body2">技术信息</Typography></AccordionSummary>
+            <AccordionDetails>
+              <Stack spacing={0.7}>
+                <Typography variant="body2">Trace ID：{run.trace_id || '-'}</Typography>
+                <Typography variant="body2">Request ID：{run.request_id || '-'}</Typography>
+                <Typography variant="body2">Run ID：{run.id}</Typography>
+                <Typography variant="body2">模型 ID：{run.chat_model_id || '-'}</Typography>
+              </Stack>
+            </AccordionDetails>
+          </Accordion>
         </Stack>
       </Paper>
     </Stack>
@@ -344,13 +383,14 @@ function RunDetail({ run }: { run: AgentRun }) {
 }
 
 export function AgentRunListPage() {
-  const { runId } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [selectedKbId, setSelectedKbId] = useState(storedKnowledgeBaseId);
   const [selectedConversationId, setSelectedConversationId] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('');
   const [selectedExecutionMode, setSelectedExecutionMode] = useState('');
+  const [createdFrom, setCreatedFrom] = useState('');
+  const [createdTo, setCreatedTo] = useState('');
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(20);
   const knowledgeBasesQuery = useQuery({
@@ -375,37 +415,28 @@ export function AgentRunListPage() {
   const conversationsQuery = useQuery({
     queryKey: ['agent-run-conversations', selectedKbId],
     queryFn: () => listConversations(selectedKbId, { page: 1, page_size: 100 }),
-    enabled: Boolean(selectedKbId) && !runId,
+    enabled: Boolean(selectedKbId),
   });
   const runsQuery = useQuery({
-    queryKey: ['agent-runs', selectedKbId, selectedConversationId, selectedStatus, selectedExecutionMode, page, pageSize],
+    queryKey: ['agent-runs', selectedKbId, selectedConversationId, selectedStatus, selectedExecutionMode, createdFrom, createdTo, page, pageSize],
     queryFn: () => listAgentRuns({
       knowledge_base_id: selectedKbId,
       ...(selectedConversationId ? { conversation_id: selectedConversationId } : {}),
       ...(selectedStatus ? { status: selectedStatus } : {}),
       ...(selectedExecutionMode ? { execution_mode: selectedExecutionMode } : {}),
+      ...(createdFrom ? { created_from: localDateBoundary(createdFrom) } : {}),
+      ...(createdTo ? { created_to: localDateBoundary(createdTo, true) } : {}),
       page: page + 1,
       page_size: pageSize,
     }),
-    enabled: Boolean(selectedKbId) && !runId,
+    enabled: Boolean(selectedKbId),
   });
-  const detailQuery = useQuery({
-    queryKey: ['agent-run', runId],
-    queryFn: () => getAgentRun(runId as string),
-    enabled: Boolean(runId),
-  });
-
-  if (runId) {
-    if (detailQuery.isPending) return <Typography>正在加载运行详情...</Typography>;
-    if (detailQuery.error) return <Alert severity="error">运行详情加载失败，请刷新重试。</Alert>;
-    if (detailQuery.data) return <RunDetail run={detailQuery.data} />;
-  }
 
   return (
     <Stack spacing={3}>
       <Stack direction="row" alignItems="center">
-        <Typography component="h2" variant="h5" fontWeight={750} sx={{ flexGrow: 1 }}>Agent 运行记录</Typography>
-        <Button startIcon={<RefreshOutlined />} onClick={() => void queryClient.invalidateQueries({ queryKey: ['agent-runs', selectedKbId, selectedConversationId, selectedStatus, selectedExecutionMode] })}>刷新</Button>
+        <Typography component="h2" variant="h5" fontWeight={750} sx={{ flexGrow: 1 }}>问答运行记录</Typography>
+        <Button startIcon={<RefreshOutlined />} onClick={() => void queryClient.invalidateQueries({ queryKey: ['agent-runs', selectedKbId] })}>刷新</Button>
       </Stack>
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
         <FormControl size="small" sx={{ minWidth: 240 }}>
@@ -453,16 +484,20 @@ export function AgentRunListPage() {
             <MenuItem value="plan_execute">Plan-Execute</MenuItem>
           </Select>
         </FormControl>
+        <TextField size="small" type="date" label="开始日期" value={createdFrom} onChange={(event) => { setCreatedFrom(event.target.value); setPage(0); }} slotProps={{ inputLabel: { shrink: true } }} />
+        <TextField size="small" type="date" label="结束日期" value={createdTo} onChange={(event) => { setCreatedTo(event.target.value); setPage(0); }} slotProps={{ inputLabel: { shrink: true } }} />
       </Stack>
       {!selectedKbId && <Typography color="text.secondary">请选择一个知识库查看运行记录。</Typography>}
       {runsQuery.error && <Alert severity="error">运行记录加载失败，请检查后端服务。</Alert>}
       <Paper variant="outlined">
         <Table>
-          <TableHead><TableRow><TableCell>问题</TableCell><TableCell>状态</TableCell><TableCell>模式</TableCell><TableCell>耗时</TableCell><TableCell>创建时间</TableCell></TableRow></TableHead>
+          <TableHead><TableRow><TableCell>问题</TableCell><TableCell>知识库</TableCell><TableCell>会话</TableCell><TableCell>状态</TableCell><TableCell>模式</TableCell><TableCell>耗时</TableCell><TableCell>创建时间</TableCell></TableRow></TableHead>
           <TableBody>
             {runsQuery.data?.items.map((run) => (
               <TableRow key={run.id} hover sx={{ cursor: 'pointer' }} onClick={() => navigate(`/runs/${run.id}`)}>
                 <TableCell sx={{ maxWidth: 420, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{run.query}</TableCell>
+                <TableCell>{knowledgeBasesQuery.data?.items.find((item) => item.id === selectedKbId)?.name || '-'}</TableCell>
+                <TableCell>{run.conversation_id.slice(0, 8)}</TableCell>
                 <TableCell><StatusChip status={run.status} /></TableCell>
                 <TableCell>{run.execution_mode || '-'}</TableCell>
                 <TableCell>{run.duration_ms == null ? '-' : `${run.duration_ms} ms`}</TableCell>

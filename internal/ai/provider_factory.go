@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	"github.com/1090-f/Memora/internal/ai/encryption"
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/model/entity"
@@ -107,7 +109,7 @@ func (f *einoProviderFactory) CreateReranker(ctx context.Context, config Reranke
 	// 使用 go-openai 实现 Reranker
 	return &goOpenAIReranker{
 		apiKey: config.APIKey, baseURL: config.BaseURL, model: config.Model,
-		client: &http.Client{Timeout: time.Duration(config.TimeoutSeconds) * time.Second},
+		client: &http.Client{Timeout: time.Duration(config.TimeoutSeconds) * time.Second, Transport: otelhttp.NewTransport(http.DefaultTransport)},
 	}, nil
 }
 

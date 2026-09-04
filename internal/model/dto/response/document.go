@@ -24,6 +24,7 @@ type DocumentResponse struct {
 	ContentVersion     int       `json:"content_version"`                // ContentVersion 内容版本号
 	ChunkVersion       int       `json:"chunk_version"`                  // ChunkVersion 分块版本号
 	ActiveIndexVersion *int      `json:"active_index_version,omitempty"` // ActiveIndexVersion 当前生效的索引版本，可选
+	ChunkStrategy      *string   `json:"chunk_strategy,omitempty"`       // ChunkStrategy 文档级分块策略覆盖
 	CreatedAt          time.Time `json:"created_at"`                     // CreatedAt 创建时间
 	UpdatedAt          time.Time `json:"updated_at"`                     // UpdatedAt 更新时间
 }
@@ -35,10 +36,12 @@ type DocumentListItem struct {
 	DirectoryID      *string   `json:"directory_id,omitempty"` // DirectoryID 所属目录 ID，为空表示未归入目录
 	SourceType       string    `json:"source_type"`            // SourceType 文档来源类型（manual/file/url）
 	ProcessingStatus string    `json:"processing_status"`      // ProcessingStatus 文档处理状态
-	IndexMode        string    `json:"index_mode"`             // IndexMode 当前活动索引能力（none/keyword/hybrid）
-	FileSize         *int64    `json:"file_size,omitempty"`    // FileSize 文件大小（字节），可选
-	CreatedAt        time.Time `json:"created_at"`             // CreatedAt 创建时间
-	UpdatedAt        time.Time `json:"updated_at"`             // UpdatedAt 更新时间
+	FailureStep      *string   `json:"failure_step,omitempty"`
+	FailureReason    *string   `json:"failure_reason,omitempty"`
+	IndexMode        string    `json:"index_mode"`          // IndexMode 当前活动索引能力（none/keyword/hybrid）
+	FileSize         *int64    `json:"file_size,omitempty"` // FileSize 文件大小（字节），可选
+	CreatedAt        time.Time `json:"created_at"`          // CreatedAt 创建时间
+	UpdatedAt        time.Time `json:"updated_at"`          // UpdatedAt 更新时间
 }
 
 // DocumentList 表示文档分页列表响应。

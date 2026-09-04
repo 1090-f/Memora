@@ -82,17 +82,26 @@ func NewRetrievalPipeline(keyword, vector retriever.Retriever, citations citatio
 		group, groupCtx := errgroup.WithContext(ctx)
 		if req.Mode == contracts.RetrievalKeyword || req.Mode == contracts.RetrievalHybrid {
 			group.Go(func() error {
+				started := time.Now()
+				contracts.ReportAgentStage(groupCtx, contracts.AgentStageKeywordRetrieve, contracts.StageRunning, 0, "正在执行关键词检索", nil)
 				docs, err := keyword.Retrieve(groupCtx, req.Query,
 					retriever.WithTopK(req.Config.KeywordTopK),
 					retrievalKeywordScope(string(req.UserID), string(req.KnowledgeBaseID), scopeIDs))
 				if err == nil {
 					state.keywordDocs = docs
+					contracts.ReportAgentStage(groupCtx, contracts.AgentStageKeywordRetrieve, contracts.StageSucceeded, time.Since(started).Milliseconds(), "关键词检索完成", map[string]any{"result_count": len(docs)})
+				} else {
+					contracts.ReportAgentStage(groupCtx, contracts.AgentStageKeywordRetrieve, contracts.StageFailed, time.Since(started).Milliseconds(), "关键词检索失败", nil)
 				}
 				return err
 			})
+		} else {
+			contracts.ReportAgentStage(ctx, contracts.AgentStageKeywordRetrieve, contracts.StageSkipped, 0, "当前检索模式未启用关键词检索", nil)
 		}
 		if req.Mode == contracts.RetrievalVector || req.Mode == contracts.RetrievalHybrid {
 			group.Go(func() error {
+				started := time.Now()
+				contracts.ReportAgentStage(groupCtx, contracts.AgentStageVectorRetrieve, contracts.StageRunning, 0, "正在执行向量检索", nil)
 				opts := []retriever.Option{
 					retriever.WithTopK(req.Config.VectorTopK), retriever.WithEmbedding(state.input.Embedder),
 					retrievalVectorScope(string(req.UserID), string(req.KnowledgeBaseID), scopeIDs, state.input.EmbeddingModelID),
@@ -105,9 +114,14 @@ func NewRetrievalPipeline(keyword, vector retriever.Retriever, citations citatio
 				docs, err := vector.Retrieve(groupCtx, req.Query, opts...)
 				if err == nil {
 					state.vectorDocs = docs
+					contracts.ReportAgentStage(groupCtx, contracts.AgentStageVectorRetrieve, contracts.StageSucceeded, time.Since(started).Milliseconds(), "向量检索完成", map[string]any{"result_count": len(docs)})
+				} else {
+					contracts.ReportAgentStage(groupCtx, contracts.AgentStageVectorRetrieve, contracts.StageFailed, time.Since(started).Milliseconds(), "向量检索失败", nil)
 				}
 				return err
 			})
+		} else {
+			contracts.ReportAgentStage(ctx, contracts.AgentStageVectorRetrieve, contracts.StageSkipped, 0, "当前检索模式未启用向量检索", nil)
 		}
 		if err := group.Wait(); err != nil {
 			return nil, fmt.Errorf("执行底层检索失败: %w", err)
@@ -119,6 +133,8 @@ func NewRetrievalPipeline(keyword, vector retriever.Retriever, citations citatio
 	}
 
 	fuse := compose.InvokableLambda(func(ctx context.Context, state *retrievalState) (*retrievalState, error) {
+		started := time.Now()
+		contracts.ReportAgentStage(ctx, contracts.AgentStageFusion, contracts.StageRunning, 0, "正在融合检索结果", nil)
 		state.fusedDocs = reciprocalRankFusion(state.keywordDocs, state.vectorDocs, state.input.Request.Config.RRFK)
 		limit := state.input.Request.Config.RRFTopK
 		if limit <= 0 || limit > len(state.fusedDocs) {
@@ -128,6 +144,7 @@ func NewRetrievalPipeline(keyword, vector retriever.Retriever, citations citatio
 		for _, doc := range state.fusedDocs {
 			einoadapter.SetMetaString(doc, einoadapter.MetaQuery, state.input.Request.Query)
 		}
+		contracts.ReportAgentStage(ctx, contracts.AgentStageFusion, contracts.StageSucceeded, time.Since(started).Milliseconds(), "检索结果融合完成", map[string]any{"result_count": len(state.fusedDocs)})
 		return state, nil
 	})
 	if err := g.AddLambdaNode("rrf_fusion", fuse); err != nil {
@@ -135,6 +152,12 @@ func NewRetrievalPipeline(keyword, vector retriever.Retriever, citations citatio
 	}
 
 	rerank := compose.InvokableLambda(func(ctx context.Context, state *retrievalState) (*retrievalState, error) {
+		started := time.Now()
+		if state.input.Reranker == nil {
+			contracts.ReportAgentStage(ctx, contracts.AgentStageRerank, contracts.StageSkipped, 0, "未配置重排模型", nil)
+		} else {
+			contracts.ReportAgentStage(ctx, contracts.AgentStageRerank, contracts.StageRunning, 0, "正在重排检索结果", nil)
+		}
 		state.finalDocs = state.fusedDocs
 		if state.input.Reranker != nil && len(state.fusedDocs) > 0 {
 			transformer, err := einoadapter.NewContractsRerankerTransformer(state.input.Reranker)
@@ -184,6 +207,9 @@ func NewRetrievalPipeline(keyword, vector retriever.Retriever, citations citatio
 		if limit < len(state.finalDocs) {
 			state.finalDocs = state.finalDocs[:limit]
 		}
+		if state.input.Reranker != nil {
+			contracts.ReportAgentStage(ctx, contracts.AgentStageRerank, contracts.StageSucceeded, time.Since(started).Milliseconds(), "检索结果重排完成", map[string]any{"result_count": len(state.finalDocs)})
+		}
 		return state, nil
 	})
 	if err := g.AddLambdaNode("reranker", rerank); err != nil {
@@ -191,12 +217,15 @@ func NewRetrievalPipeline(keyword, vector retriever.Retriever, citations citatio
 	}
 
 	evaluate := compose.InvokableLambda(func(ctx context.Context, state *retrievalState) (*retrievalState, error) {
+		started := time.Now()
+		contracts.ReportAgentStage(ctx, contracts.AgentStageKnowledgeCheck, contracts.StageRunning, 0, "正在判断知识充分性", nil)
 		minimum := state.input.Request.Config.MinimumEffectiveResult
 		if minimum <= 0 {
 			minimum = 1
 		}
 		state.status = knowledgeStatus(state.finalDocs, state.input.Request.Mode,
 			state.input.Request.Config.MinVectorScore, state.input.Request.Config.AmbiguousScore, minimum)
+		contracts.ReportAgentStage(ctx, contracts.AgentStageKnowledgeCheck, contracts.StageSucceeded, time.Since(started).Milliseconds(), "知识充分性判断完成", map[string]any{"knowledge_status": state.status, "result_count": len(state.finalDocs)})
 		return state, nil
 	})
 	if err := g.AddLambdaNode("knowledge_evaluate", evaluate); err != nil {

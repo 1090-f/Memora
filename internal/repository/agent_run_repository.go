@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -32,7 +33,7 @@ func (r *agentRunRepository) CreateQueued(ctx context.Context, run *entity.Agent
 }
 
 // CreateQueuedForConversation 在同一事务中确定 Chat 模型身份引用并创建消息和运行记录。
-func (r *agentRunRepository) CreateQueuedForConversation(ctx context.Context, userID, knowledgeBaseID, conversationID, agentConfigID uuid.UUID, query string) (*entity.AgentRun, error) {
+func (r *agentRunRepository) CreateQueuedForConversation(ctx context.Context, userID, knowledgeBaseID, conversationID, agentConfigID uuid.UUID, query, traceID, requestID string) (*entity.AgentRun, error) {
 	var created *entity.AgentRun
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var conversation entity.Conversation
@@ -94,6 +95,12 @@ func (r *agentRunRepository) CreateQueuedForConversation(ctx context.Context, us
 			Query:           query,
 			Status:          "queued",
 		}
+		if traceID != "" {
+			run.TraceID = &traceID
+		}
+		if requestID != "" {
+			run.RequestID = &requestID
+		}
 		if err := tx.Create(run).Error; err != nil {
 			return fmt.Errorf("创建排队 Run 失败: %w", err)
 		}
@@ -134,7 +141,7 @@ func (r *agentRunRepository) FindByIDAdmin(ctx context.Context, runID uuid.UUID)
 // ListByOwner 按用户、知识库、会话、状态和模式分页查询运行记录，按创建时间降序排列。
 // conversationID、status 和 executionMode 为空值时不按对应条件过滤。
 // page 从 1 开始，pageSize 为每页条数。
-func (r *agentRunRepository) ListByOwner(ctx context.Context, userID, kbID, conversationID uuid.UUID, status, executionMode string, page, pageSize int) ([]entity.AgentRun, int64, error) {
+func (r *agentRunRepository) ListByOwner(ctx context.Context, userID, kbID, conversationID uuid.UUID, status, executionMode string, createdFrom, createdTo *time.Time, page, pageSize int) ([]entity.AgentRun, int64, error) {
 	var runs []entity.AgentRun
 	var total int64
 
@@ -148,6 +155,12 @@ func (r *agentRunRepository) ListByOwner(ctx context.Context, userID, kbID, conv
 	}
 	if executionMode != "" {
 		query = query.Where("execution_mode = ?", executionMode)
+	}
+	if createdFrom != nil {
+		query = query.Where("created_at >= ?", createdFrom.UTC())
+	}
+	if createdTo != nil {
+		query = query.Where("created_at < ?", createdTo.UTC())
 	}
 
 	if err := query.Count(&total).Error; err != nil {
@@ -332,6 +345,13 @@ func (r *agentRunRepository) CreateRetry(ctx context.Context, originalRunID, use
 			RetryOfRunID:    &original.ID,
 			Query:           original.Query,
 			Status:          "queued",
+		}
+		traceID, requestID := contracts.CorrelationFromContext(ctx)
+		if traceID != "" {
+			retry.TraceID = &traceID
+		}
+		if requestID != "" {
+			retry.RequestID = &requestID
 		}
 		if err := tx.Create(retry).Error; err != nil {
 			return fmt.Errorf("创建重试运行记录失败: %w", err)

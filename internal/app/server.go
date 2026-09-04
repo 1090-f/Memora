@@ -34,6 +34,7 @@ import (
 	jwtmanager "github.com/1090-f/Memora/pkg/jwt"
 	"github.com/1090-f/Memora/pkg/logger"
 	"github.com/1090-f/Memora/pkg/objectstore"
+	appobservability "github.com/1090-f/Memora/pkg/observability"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
@@ -56,6 +57,7 @@ type ServerApp struct {
 	background      *background.Manager
 	documentParser  *documentParserProcess
 	workerCancel    context.CancelFunc // Agent Worker 生命周期取消函数
+	traceShutdown   func(context.Context) error
 }
 
 // NewServer 创建一个新的 ServerApp 实例。
@@ -70,6 +72,10 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	a.cfg = cfg
 	if err := logger.Init(&cfg.Log); err != nil {
 		return fmt.Errorf("初始化日志器失败: %w", err)
+	}
+	a.traceShutdown, err = appobservability.InitializeTracing(ctx, cfg.Observability, cfg.App.Name)
+	if err != nil {
+		return fmt.Errorf("初始化 OpenTelemetry 失败: %w", err)
 	}
 	gin.SetMode(cfg.App.Mode)
 	gin.DefaultWriter = io.Discard
@@ -214,12 +220,14 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		_ = a.Close()
 		return err
 	}
-	documentProcessService, err := buildDocumentProcessService(cfg, a.store, importTasks, docs, chunks, vectors, documentEmbeddingResolver, previewScheduler)
+	documentProcessingEvents := repository.NewDocumentProcessingEventRepository(a.db)
+	documentProcessService, err := buildDocumentProcessService(cfg, a.store, importTasks, docs, kbs, chunks, vectors, documentEmbeddingResolver, previewScheduler, documentProcessingEvents)
 	if err != nil {
 		_ = a.Close()
 		return err
 	}
-	a.background = background.NewManager(a.backgroundRedis, importTasks, previewRepo, repository.NewTaskOutboxRepository(a.db), documentProcessService, previewProcessor, cfg.DocumentConsumer, cfg.Preview, cfg.Outbox, cfg.IndexCleanup)
+	retentionRepo := repository.NewObservabilityRetentionRepository(a.db)
+	a.background = background.NewManager(a.backgroundRedis, importTasks, previewRepo, repository.NewTaskOutboxRepository(a.db), documentProcessService, previewProcessor, retentionRepo, cfg.DocumentConsumer, cfg.Preview, cfg.Outbox, cfg.IndexCleanup, cfg.Observability)
 
 	// 初始化 ContextBuilder（Phase 3）
 	messages := repository.NewMessageRepository(a.db)
@@ -284,7 +292,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	compositeEventPub := events.NewCompositeEventPublisher(eventPub, pgEventPub)
 
 	// 用带序列号的发布器包装底层组合发布器，确保事件序号单调递增。
-	sequencedEvents := core.NewSequencedEventPublisher(compositeEventPub)
+	sequencedEvents := core.NewSequencedEventPublisher(compositeEventPub, cfg.Observability.CaptureSensitiveContent)
 
 	// 初始化 Agent 运行和工具调用 Repository
 	agentRunRepo := repository.NewAgentRunRepository(a.db)
@@ -359,6 +367,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		messages,
 		contextBuilder,
 		memoryExtractor,
+		sequencedEvents,
 		worker.DefaultAgentWorkerConfig(),
 	)
 	// 启动前恢复上次未完成的 running 任务为 failed
@@ -390,11 +399,8 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		RedisHealth:     func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
 		MinIOHealth:     a.store.Health,
 		ParserHealth:    a.documentParser.Health,
-		WorkerCount: func(context.Context) (int64, error) {
-			if cfg.DocumentConsumer.Enabled {
-				return int64(cfg.DocumentConsumer.Concurrency), nil
-			}
-			return 0, nil
+		WorkerCount: func(ctx context.Context) (int64, error) {
+			return database.CountWorkerHeartbeats(ctx, a.redis)
 		},
 	})
 	a.server = &http.Server{
@@ -501,6 +507,12 @@ func (a *ServerApp) Close() error {
 		closeErr = errors.Join(closeErr, a.redis.Close())
 	}
 	closeErr = errors.Join(closeErr, database.ClosePostgres(a.db))
+	if a.traceShutdown != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		closeErr = errors.Join(closeErr, a.traceShutdown(shutdownCtx))
+		cancel()
+		a.traceShutdown = nil
+	}
 	if logger.GetLogger() != nil {
 		closeErr = errors.Join(closeErr, logger.Sync())
 	}

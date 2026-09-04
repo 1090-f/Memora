@@ -21,6 +21,7 @@ import (
 	"github.com/1090-f/Memora/internal/service/rag/pipeline"
 	"github.com/1090-f/Memora/internal/service/rag/transformer"
 	"github.com/1090-f/Memora/pkg/logger"
+	"github.com/1090-f/Memora/pkg/metrics"
 	"github.com/1090-f/Memora/pkg/objectstore"
 	"github.com/cloudwego/eino/components/embedding"
 	"go.uber.org/zap"
@@ -31,12 +32,14 @@ import (
 type documentProcessService struct {
 	tasks            repository.ImportTaskRepository
 	docs             repository.DocumentRepository
+	kbs              repository.KnowledgeBaseRepository
 	chunks           repository.DocumentChunkRepository
 	vectors          repository.VectorRepository
 	processor        DocumentProcessor
 	embeddings       DocumentEmbeddingResolver
 	store            ObjectStore
 	previewScheduler previewservice.Scheduler
+	processingEvents repository.DocumentProcessingEventRepository
 }
 
 // NewDocumentProcessService 创建一个新的文档处理服务实例。
@@ -44,14 +47,16 @@ type documentProcessService struct {
 func NewDocumentProcessService(
 	tasks repository.ImportTaskRepository,
 	docs repository.DocumentRepository,
+	kbs repository.KnowledgeBaseRepository,
 	chunks repository.DocumentChunkRepository,
 	vectors repository.VectorRepository,
 	processor DocumentProcessor,
 	embeddings DocumentEmbeddingResolver,
 	store ObjectStore,
 	previewScheduler previewservice.Scheduler,
+	processingEvents repository.DocumentProcessingEventRepository,
 ) DocumentProcessService {
-	return &documentProcessService{tasks: tasks, docs: docs, chunks: chunks, vectors: vectors, processor: processor, embeddings: embeddings, store: store, previewScheduler: previewScheduler}
+	return &documentProcessService{tasks: tasks, docs: docs, kbs: kbs, chunks: chunks, vectors: vectors, processor: processor, embeddings: embeddings, store: store, previewScheduler: previewScheduler, processingEvents: processingEvents}
 }
 
 // CreateImportTask 创建导入任务。
@@ -65,6 +70,9 @@ func (s *documentProcessService) CreateImportTask(ctx context.Context, userID, k
 		DuplicatePolicy: "skip",
 		Status:          string(contracts.TaskStatusPending),
 	}
+	traceID, requestID := contracts.CorrelationFromContext(ctx)
+	entityTask.TraceID = stringPtrOrNil(traceID)
+	entityTask.RequestID = stringPtrOrNil(requestID)
 	// 去重策略缺省为 skip：同名/同内容文件默认跳过，避免重复导入。
 	// 状态初始为 pending，由 Worker 领取后置为 running 再处理。
 	if task.FileName != "" {
@@ -296,16 +304,34 @@ func (s *documentProcessService) removeUploadedObjects(ctx context.Context, keys
 }
 
 // Reindex 为现有文档创建指向原文来源的新导入任务；Worker 构建新版本后原子切换活动索引。
-func (s *documentProcessService) Reindex(ctx context.Context, userID, kbID, documentID contracts.ID) error {
+func (s *documentProcessService) Reindex(ctx context.Context, userID, kbID, documentID contracts.ID) (contracts.ID, error) {
+	return s.ReindexWithStrategy(ctx, userID, kbID, documentID, nil)
+}
+
+// ReindexWithStrategy 可原子地更新文档级策略选择，并为该文档创建新索引任务。
+func (s *documentProcessService) ReindexWithStrategy(ctx context.Context, userID, kbID, documentID contracts.ID, chunkStrategy *string) (contracts.ID, error) {
 	doc, err := s.docs.FindByIDInKB(ctx, string(userID), string(kbID), string(documentID))
 	if errors.Is(err, repository.ErrDocumentNotFound) {
-		return apperrors.ErrNotFound
+		return "", apperrors.ErrNotFound
 	}
 	if err != nil {
-		return apperrors.New(contracts.ErrInternal, err)
+		return "", apperrors.New(contracts.ErrInternal, err)
 	}
 	if (doc.MinIOObjectKey == nil || *doc.MinIOObjectKey == "") && (doc.SourceURL == nil || *doc.SourceURL == "") && doc.SourceType != string(contracts.DocumentSourceManual) {
-		return apperrors.New(contracts.ErrInvalidState, fmt.Errorf("文档没有可重建的原始来源"))
+		return "", apperrors.New(contracts.ErrInvalidState, fmt.Errorf("文档没有可重建的原始来源"))
+	}
+	if chunkStrategy != nil {
+		value := strings.TrimSpace(*chunkStrategy)
+		var persisted any = value
+		if value == "" || value == "inherit" {
+			persisted = nil
+			doc.ChunkStrategy = nil
+		} else {
+			doc.ChunkStrategy = &value
+		}
+		if err := s.docs.UpdateProcessing(ctx, doc.ID, map[string]any{"chunk_strategy": persisted}); err != nil {
+			return "", apperrors.New(contracts.ErrInternal, fmt.Errorf("更新文档分块策略失败: %w", err))
+		}
 	}
 	task := &entity.ImportTask{
 		UserID: doc.UserID, KnowledgeBaseID: doc.KnowledgeBaseID, TargetDirectoryID: doc.DirectoryID,
@@ -313,6 +339,9 @@ func (s *documentProcessService) Reindex(ctx context.Context, userID, kbID, docu
 		SourceURL: doc.SourceURL, SourceHash: doc.FileHash, MinIOBucket: doc.MinIOBucket, MinIOObjectKey: doc.MinIOObjectKey,
 		DuplicatePolicy: "create_new", Status: string(contracts.TaskStatusPending), DocumentID: &doc.ID,
 	}
+	traceID, requestID := contracts.CorrelationFromContext(ctx)
+	task.TraceID = stringPtrOrNil(traceID)
+	task.RequestID = stringPtrOrNil(requestID)
 	// 手工文档没有 MinIO 对象与 URL：正文存于 documents.content，任务按来源类型
 	// 自动入队，Worker 读取正文后执行分块与索引。
 	if doc.SourceType == string(contracts.DocumentSourceManual) {
@@ -320,10 +349,10 @@ func (s *documentProcessService) Reindex(ctx context.Context, userID, kbID, docu
 		task.FileName = &fileName
 	}
 	if err := s.tasks.Create(ctx, task); err != nil {
-		return apperrors.New(contracts.ErrInternal, err)
+		return "", apperrors.New(contracts.ErrInternal, err)
 	}
 	logger.Info("文档重新索引任务已创建", zap.String("user_id", string(userID)), zap.String("document_id", string(documentID)), zap.String("task_id", task.ID))
-	return nil
+	return contracts.ID(task.ID), nil
 }
 
 // GetProcessingStatus 查询文档处理状态。
@@ -342,10 +371,96 @@ func (s *documentProcessService) GetProcessingStatus(ctx context.Context, userID
 		FailureReason:   valueOrEmpty(doc.FailureReason),
 		ActiveVersion:   valueOrZero(doc.ActiveIndexVersion),
 	}
+	if task, taskErr := s.tasks.FindLatestByDocument(ctx, doc.UserID, doc.ID); taskErr == nil && task != nil {
+		result.TaskID = contracts.ID(task.ID)
+		result.IndexVersion = valueOrZero(doc.IndexBuildVersion)
+		result.TraceID = valueOrEmpty(task.TraceID)
+		result.RequestID = valueOrEmpty(task.RequestID)
+		if task.ErrorCode != nil {
+			result.FailureCode = contracts.ErrorCode(*task.ErrorCode)
+		}
+		// 解析服务单次请求上限为 8 分钟；running 超过 15 分钟且尚未完成时视为停滞。
+		if importTaskStalled(task, time.Now().UTC()) {
+			result.Stalled = true
+			result.FailureCode = contracts.ErrTaskStalled
+			result.RecoveryAdvice = "任务长时间没有推进，可能是 Worker 已停止；请检查 /health/workers，任务会在租约恢复后自动重新排队。"
+		}
+	}
 	if doc.FailureStep != nil {
 		result.CurrentStep = *doc.FailureStep
 	}
+	result.Stages = documentStageSnapshot(doc.ProcessingStatus, result.CurrentStep, doc.FailureReason)
+	if s.processingEvents != nil {
+		if events, eventErr := s.processingEvents.ListByDocument(ctx, doc.UserID, doc.ID); eventErr == nil && len(events) > 0 {
+			result.Stages = observationsFromDocumentEvents(events)
+		}
+	}
+	if doc.ProcessingStatus == string(contracts.ProcessingFailed) {
+		if result.FailureCode == "" {
+			result.FailureCode = contracts.ErrDocumentProcessing
+		}
+		result.RecoveryAdvice = "请重试处理；若再次失败，请复制任务 ID 与 Trace ID 进行诊断。"
+	}
 	return result, nil
+}
+
+func importTaskStalled(task *entity.ImportTask, now time.Time) bool {
+	return task != nil && task.Status == string(contracts.TaskStatusRunning) && task.StartedAt != nil && now.Sub(task.StartedAt.UTC()) > 15*time.Minute
+}
+
+func observationsFromDocumentEvents(events []entity.DocumentProcessingEvent) []contracts.StageObservation {
+	latest := make(map[string]contracts.StageObservation)
+	for _, event := range events {
+		item := contracts.StageObservation{Stage: event.Stage, Status: contracts.StageStatus(event.Status), StartedAt: event.StartedAt, EndedAt: event.EndedAt, DurationMS: event.DurationMS}
+		if event.ErrorCode != nil {
+			item.ErrorCode = contracts.ErrorCode(*event.ErrorCode)
+		}
+		if event.ErrorMessage != nil {
+			item.ErrorMessage = *event.ErrorMessage
+		}
+		latest[event.Stage] = item
+	}
+	order := []contracts.DocumentStage{contracts.DocumentStageUpload, contracts.DocumentStageParse, contracts.DocumentStageNormalize, contracts.DocumentStageChunk, contracts.DocumentStageEmbed, contracts.DocumentStageIndex, contracts.DocumentStagePreview}
+	items := make([]contracts.StageObservation, 0, len(latest))
+	for _, stage := range order {
+		if item, ok := latest[string(stage)]; ok {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
+func documentStageSnapshot(status, failureStep string, failureReason *string) []contracts.StageObservation {
+	stages := []contracts.DocumentStage{contracts.DocumentStageUpload, contracts.DocumentStageParse, contracts.DocumentStageNormalize, contracts.DocumentStageChunk, contracts.DocumentStageEmbed, contracts.DocumentStageIndex}
+	current := map[string]int{"pending": 0, "parsing": 1, "cleaning": 2, "chunking": 3, "embedding": 4, "keyword_indexing": 5}[status]
+	if status == string(contracts.ProcessingFailed) {
+		current = 1
+		needle := strings.ToLower(failureStep)
+		for i, stage := range stages {
+			if strings.Contains(needle, string(stage)) {
+				current = i
+				break
+			}
+		}
+	}
+	items := make([]contracts.StageObservation, 0, len(stages))
+	for i, stage := range stages {
+		state := contracts.StagePending
+		if status == string(contracts.ProcessingSucceeded) || i < current {
+			state = contracts.StageSucceeded
+		} else if i == current && status == string(contracts.ProcessingFailed) {
+			state = contracts.StageFailed
+		} else if i == current && status != string(contracts.ProcessingPending) {
+			state = contracts.StageRunning
+		}
+		item := contracts.StageObservation{Stage: string(stage), Status: state}
+		if state == contracts.StageFailed {
+			item.ErrorCode = contracts.ErrDocumentProcessing
+			item.ErrorMessage = valueOrEmpty(failureReason)
+		}
+		items = append(items, item)
+	}
+	return items
 }
 
 func (s *documentProcessService) ListIndexVersions(ctx context.Context, userID, documentID contracts.ID) ([]DocumentIndexVersionView, error) {
@@ -474,7 +589,7 @@ func (s *documentProcessService) ProcessImportTask(ctx context.Context, taskID c
 		if err := s.processDocument(ctx, task, doc); err != nil {
 			// 加工失败：文档标记 failed，旧索引不受影响。
 			// 任务状态由 Runner 的 Fail 路径统一回写（Source.Fail → FailTask），避免双重标记。
-			s.markDocumentFailed(ctx, doc.ID, err)
+			s.markDocumentFailed(ctx, doc.ID, task.ID, err)
 			return err
 		}
 	} else {
@@ -492,18 +607,14 @@ func (s *documentProcessService) ProcessImportTask(ctx context.Context, taskID c
 // processDocument 调用 Eino 文档加工 Graph，并在加工过程中更新文档处理状态。
 // 注意：active_index_version 只在新版本全部成功落库后才更新，构建期间旧版本继续可用。
 func (s *documentProcessService) processDocument(ctx context.Context, task *entity.ImportTask, doc *entity.Document) error {
-	indexVersion := 1
-	if doc.ActiveIndexVersion != nil {
-		indexVersion = *doc.ActiveIndexVersion + 1
+	pipelineStarted := time.Now().UTC()
+	s.appendDocumentEvent(ctx, task, doc, contracts.DocumentStageParse, contracts.StageRunning, pipelineStarted, nil, nil)
+	// 在数据库行锁内领取候选版本。owner 使用稳定的任务 ID：同任务重试复用版本，
+	// 并发任务不能清理当前候选；过期任务被接管时会分配更高版本。
+	indexVersion, err := s.docs.BeginIndexBuild(ctx, doc.ID, task.ID, time.Now().UTC().Add(-repository.ImportTaskLease()))
+	if err != nil {
+		return fmt.Errorf("领取文档加工版本失败: %w", err)
 	}
-	// 每次加工递增 index_version：新版本全部落库成功前不切换 active_index_version，
-	// 构建期间旧版本索引继续对外可用。
-	// 加工开始：仅更新状态，不切换 active_index_version。
-	_ = s.docs.UpdateProcessing(ctx, doc.ID, map[string]any{
-		"processing_status": string(contracts.ProcessingParsing),
-		"failure_step":      nil,
-		"failure_reason":    nil,
-	})
 	_ = s.tasks.SetRunningStep(ctx, task.ID, "parsing")
 
 	// 清理同索引版本的残留 Chunk 与向量（重试/部分失败后的幂等保障）。
@@ -553,6 +664,7 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 			},
 		},
 	}
+	input.ChunkStrategyOverride = s.resolveChunkStrategyOverride(ctx, doc, task)
 	// 手工文档：正文存于 documents.content，直接交给流水线（不访问 MinIO）。
 	if task.SourceType == string(contracts.DocumentSourceManual) {
 		content := ""
@@ -566,15 +678,32 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 	}
 	out, err := s.processor.Run(ctx, input)
 	if err != nil {
+		ended := time.Now().UTC()
+		duration := ended.Sub(pipelineStarted).Milliseconds()
+		s.appendDocumentEvent(ctx, task, doc, inferDocumentFailureStage(err), contracts.StageFailed, pipelineStarted, &ended, &duration)
 		return fmt.Errorf("文档加工失败: %w", err)
 	}
+	ended := time.Now().UTC()
+	for _, stage := range []contracts.DocumentStage{contracts.DocumentStageParse, contracts.DocumentStageNormalize, contracts.DocumentStageChunk} {
+		s.appendDocumentEvent(ctx, task, doc, stage, contracts.StageSucceeded, pipelineStarted, &ended, nil)
+	}
+	if embedder != nil {
+		s.appendDocumentEvent(ctx, task, doc, contracts.DocumentStageEmbed, contracts.StageSucceeded, pipelineStarted, &ended, nil)
+	} else {
+		s.appendDocumentEvent(ctx, task, doc, contracts.DocumentStageEmbed, contracts.StageSkipped, pipelineStarted, &ended, nil)
+	}
+	s.appendDocumentEvent(ctx, task, doc, contracts.DocumentStageIndex, contracts.StageRunning, ended, nil, nil)
 	// 纯图片文档允许 0 Chunk 成功导入（无文字图片无可索引内容，资产与原文件保留）；
 	// 有正文却分不出 Chunk 的情况由流水线 structure_chunk 节点拒绝。
 	// 加工成功：切换 active_index_version，并记录 Embedding 模型与分段配置哈希。
+	effectiveChunkConfigHash := out.ChunkConfigHash
+	if effectiveChunkConfigHash == "" && s.processor != nil {
+		// 兼容尚未返回文档级哈希的自定义 Processor 实现。
+		effectiveChunkConfigHash = s.processor.ChunkConfigHash()
+	}
 	updates := map[string]any{
-		"processing_status":    string(contracts.ProcessingSucceeded),
-		"active_index_version": indexVersion,
-		"chunk_config_hash":    s.chunkConfigHash(doc),
+		"processing_status": string(contracts.ProcessingSucceeded),
+		"chunk_config_hash": stringPtrOrNil(effectiveChunkConfigHash),
 	}
 	if out.FinalURL != "" {
 		updates["source_url"] = out.FinalURL
@@ -594,6 +723,15 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 	} else {
 		updates["parse_warnings"] = nil
 	}
+	if out.ChunkDiffReport != nil {
+		diffJSON, marshalErr := json.Marshal(out.ChunkDiffReport)
+		if marshalErr != nil {
+			return fmt.Errorf("序列化分块差异报告失败: %w", marshalErr)
+		}
+		updates["chunk_diff_report"] = string(diffJSON)
+	} else {
+		updates["chunk_diff_report"] = nil
+	}
 	if task.SourceType == string(contracts.DocumentSourceURL) {
 		if err := s.tasks.UpdateURLResult(ctx, task.ID, out.FinalURL, out.SourceHash); err != nil {
 			return fmt.Errorf("保存 URL 导入结果失败: %w", err)
@@ -607,36 +745,98 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 		// 新活动版本未生成向量时清空旧模型，避免把关键词索引误报为混合索引。
 		updates["embedding_model_id"] = nil
 	}
-	if err := s.docs.UpdateProcessing(ctx, doc.ID, updates); err != nil {
+	if publisher, ok := s.docs.(repository.IndexBuildCompletionRepository); ok {
+		if err := publisher.PublishIndexBuildAndCompleteTask(ctx, doc.ID, task.ID, indexVersion, updates); err != nil {
+			failedAt := time.Now().UTC()
+			s.appendDocumentEvent(ctx, task, doc, contracts.DocumentStageIndex, contracts.StageFailed, ended, &failedAt, nil)
+			return fmt.Errorf("发布活动索引并完成任务失败: %w", err)
+		}
+		indexedAt := time.Now().UTC()
+		indexDuration := indexedAt.Sub(ended).Milliseconds()
+		s.appendDocumentEvent(ctx, task, doc, contracts.DocumentStageIndex, contracts.StageSucceeded, ended, &indexedAt, &indexDuration)
+		return nil
+	}
+	// 兼容测试替身和外部自定义仓储；生产 repository 使用上面的事务路径。
+	if err := s.docs.PublishIndexBuild(ctx, doc.ID, task.ID, indexVersion, updates); err != nil {
+		failedAt := time.Now().UTC()
+		s.appendDocumentEvent(ctx, task, doc, contracts.DocumentStageIndex, contracts.StageFailed, ended, &failedAt, nil)
 		return fmt.Errorf("切换活动索引版本失败: %w", err)
 	}
+	indexedAt := time.Now().UTC()
+	indexDuration := indexedAt.Sub(ended).Milliseconds()
+	s.appendDocumentEvent(ctx, task, doc, contracts.DocumentStageIndex, contracts.StageSucceeded, ended, &indexedAt, &indexDuration)
 	if err := s.tasks.SetRunningStep(ctx, task.ID, "succeeded"); err != nil {
-		return fmt.Errorf("更新导入任务完成步骤失败: %w", err)
+		// active 已经由 fencing 条件安全发布；步骤字段只是过程可观测信息，
+		// 最终任务状态仍由 CompleteSucceeded 统一写入，不能因此把已发布文档误标失败。
+		logger.Warn("更新导入任务完成步骤失败", zap.String("task_id", task.ID), zap.Error(err))
 	}
 	return nil
 }
 
-// chunkConfigHash 返回当前分段配置哈希（与 pipeline 使用的保持一致）。
-func (s *documentProcessService) chunkConfigHash(_ *entity.Document) *string {
-	if s.processor == nil {
-		return nil
+func (s *documentProcessService) appendDocumentEvent(ctx context.Context, task *entity.ImportTask, doc *entity.Document, stage contracts.DocumentStage, status contracts.StageStatus, started time.Time, ended *time.Time, duration *int64) {
+	if s.processingEvents == nil || task == nil || doc == nil {
+		return
 	}
-	hash := s.processor.ChunkConfigHash()
-	if hash == "" {
-		return nil
+	traceID, requestID := contracts.CorrelationFromContext(ctx)
+	event := &entity.DocumentProcessingEvent{KnowledgeBaseID: doc.KnowledgeBaseID, DocumentID: doc.ID, TaskID: &task.ID, Stage: string(stage), Status: string(status), StartedAt: &started, EndedAt: ended, DurationMS: duration, Attempt: max(task.Attempt, 1)}
+	if status == contracts.StageFailed {
+		code := string(contracts.ErrDocumentProcessing)
+		event.ErrorCode = &code
 	}
-	return &hash
+	if duration != nil {
+		metrics.StageFinished("document_process", string(stage), string(status), time.Duration(*duration)*time.Millisecond)
+	}
+	if traceID != "" {
+		event.TraceID = &traceID
+	}
+	if requestID != "" {
+		event.RequestID = &requestID
+	}
+	if err := s.processingEvents.Append(ctx, event); err != nil {
+		logger.Error("写入文档处理阶段事件失败，主流程继续", zap.String("task_id", task.ID), zap.String("stage", string(stage)), zap.Error(err))
+	}
+}
+
+func inferDocumentFailureStage(err error) contracts.DocumentStage {
+	message := strings.ToLower(err.Error())
+	for _, candidate := range []struct {
+		fragments []string
+		stage     contracts.DocumentStage
+	}{{[]string{"embed", "向量"}, contracts.DocumentStageEmbed}, {[]string{"chunk", "分块"}, contracts.DocumentStageChunk}, {[]string{"index", "索引"}, contracts.DocumentStageIndex}, {[]string{"normalize", "clean", "规范", "清洗"}, contracts.DocumentStageNormalize}} {
+		for _, fragment := range candidate.fragments {
+			if strings.Contains(message, fragment) {
+				return candidate.stage
+			}
+		}
+	}
+	return contracts.DocumentStageParse
+}
+
+// resolveChunkStrategyOverride 按“文档 > 知识库 > 环境”解析人工覆盖。
+// 环境级策略由 Pipeline 配置承担，因此无覆盖时返回空字符串。
+func (s *documentProcessService) resolveChunkStrategyOverride(ctx context.Context, doc *entity.Document, task *entity.ImportTask) string {
+	if doc != nil && doc.ChunkStrategy != nil {
+		return strings.TrimSpace(*doc.ChunkStrategy)
+	}
+	if s.kbs == nil || task == nil {
+		return ""
+	}
+	kb, err := s.kbs.FindByID(ctx, task.UserID, task.KnowledgeBaseID)
+	if err != nil {
+		logger.Warn("读取知识库分块策略失败，回退环境配置", zap.String("knowledge_base_id", task.KnowledgeBaseID), zap.Error(err))
+		return ""
+	}
+	if kb.ChunkStrategy == nil {
+		return ""
+	}
+	return strings.TrimSpace(*kb.ChunkStrategy)
 }
 
 // markDocumentFailed 标记文档处理失败，保留失败步骤与原因。
 // 任务状态由 Runner 的 Fail 路径统一回写。
-func (s *documentProcessService) markDocumentFailed(ctx context.Context, docID string, cause error) {
+func (s *documentProcessService) markDocumentFailed(ctx context.Context, docID, owner string, cause error) {
 	reason := cause.Error()
-	if err := s.docs.UpdateProcessing(ctx, docID, map[string]any{
-		"processing_status": string(contracts.ProcessingFailed),
-		"failure_step":      "document_pipeline",
-		"failure_reason":    reason,
-	}); err != nil {
+	if err := s.docs.FailIndexBuild(ctx, docID, owner, "document_pipeline", reason); err != nil {
 		logger.Error("标记文档处理失败失败", zap.String("document_id", docID), zap.Error(err))
 	}
 }
@@ -694,8 +894,9 @@ func importTaskView(task *entity.ImportTask) ImportTaskView {
 		Status:        contracts.ImportTaskStatus(task.Status),
 		CurrentStep:   task.CurrentStep,
 		FailureReason: task.FailureReason,
-		CreatedAt:     task.CreatedAt,
-		CompletedAt:   task.CompletedAt,
+		ErrorCode:     task.ErrorCode, TraceID: task.TraceID, RequestID: task.RequestID,
+		CreatedAt:   task.CreatedAt,
+		CompletedAt: task.CompletedAt,
 	}
 	if task.DocumentID != nil {
 		id := contracts.ID(*task.DocumentID)
@@ -721,6 +922,14 @@ func valueOrEmpty(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+// stringPtrOrNil 将空字符串转换为 nil，便于写入可空配置字段。
+func stringPtrOrNil(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 // valueOrZero 将整数指针安全解引用，nil 时返回 0。

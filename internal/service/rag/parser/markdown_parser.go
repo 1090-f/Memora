@@ -55,7 +55,7 @@ func (m *MarkdownParser) Parse(ctx context.Context, input ParseInput) (*ParsedDo
 		SchemaVersion: SchemaVersion,
 		Parser: ParserInfo{
 			Name:           ParserNameGoMarkdown,
-			Version:        "1.0",
+			Version:        GoParserVersion,
 			AdapterVersion: AdapterVersion,
 		},
 		Source: SourceInfo{

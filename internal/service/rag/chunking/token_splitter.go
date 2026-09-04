@@ -71,7 +71,6 @@ func (t *HeuristicTokenizer) Split(text string, maxTokens, overlapTokens int) ([
 	units := splitUnits(trimmed)
 	var chunks []string
 	var current strings.Builder
-	currentTokens := 0
 	var overlapTail string
 	flush := func() {
 		content := strings.TrimSpace(current.String())
@@ -79,7 +78,6 @@ func (t *HeuristicTokenizer) Split(text string, maxTokens, overlapTokens int) ([
 			chunks = append(chunks, content)
 		}
 		current.Reset()
-		currentTokens = 0
 	}
 
 	for _, unit := range units {
@@ -91,20 +89,30 @@ func (t *HeuristicTokenizer) Split(text string, maxTokens, overlapTokens int) ([
 			overlapTail = ""
 			continue
 		}
-		if currentTokens > 0 && currentTokens+unitTokens > maxTokens {
+		candidate := unit
+		if current.Len() > 0 {
+			candidate = current.String() + "\n" + unit
+		}
+		if current.Len() > 0 && tokenCount([]rune(candidate)) > maxTokens {
+			tail := overlapTail
 			flush()
 			// overlap 尾巴进入下一片开头。
-			if overlapTokens > 0 && overlapTail != "" {
-				current.WriteString(overlapTail)
-				currentTokens = tokenCount([]rune(overlapTail))
+			if overlapTokens > 0 && tail != "" {
+				current.WriteString(tail)
 			}
 			overlapTail = ""
 		}
-		if currentTokens > 0 {
+		// overlap 加上完整单元仍超限时，优先保留单元并放弃 overlap。
+		if current.Len() > 0 {
+			candidate = current.String() + "\n" + unit
+			if tokenCount([]rune(candidate)) > maxTokens {
+				current.Reset()
+			}
+		}
+		if current.Len() > 0 {
 			current.WriteString("\n")
 		}
 		current.WriteString(unit)
-		currentTokens += unitTokens
 		overlapTail = t.overlapSuffix(current.String(), overlapTokens)
 	}
 	flush()

@@ -32,4 +32,6 @@ const (
 	ErrPreviewArtifactMissing ErrorCode = "PREVIEW_ARTIFACT_MISSING"
 	ErrPreviewArtifactCorrupt ErrorCode = "PREVIEW_ARTIFACT_CORRUPTED"
 	ErrPreviewTableTooLarge   ErrorCode = "PREVIEW_TABLE_TOO_LARGE"
+	ErrDocumentProcessing     ErrorCode = "DOCUMENT_PROCESSING_FAILED"
+	ErrTaskStalled            ErrorCode = "TASK_STALLED"
 )

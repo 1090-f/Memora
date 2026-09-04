@@ -11,6 +11,7 @@ import (
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/model/entity"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var (
@@ -20,6 +21,8 @@ var (
 	ErrImportTaskNotFound = errors.New("导入任务不存在")
 	// ErrImportTaskConflict 表示任务状态并发冲突（另一 Worker 抢先领取）。
 	ErrImportTaskConflict = errors.New("导入任务状态冲突")
+	// ErrDocumentProcessingConflict 表示文档候选索引正由另一任务构建，或当前任务已失去发布权。
+	ErrDocumentProcessingConflict = errors.New("文档加工所有权冲突")
 )
 
 // importTaskLease 是导入任务的 Worker 租约时长：running 超过该时长视为 Worker 崩溃，恢复为 pending。
@@ -200,6 +203,146 @@ func (r *documentRepository) UpdateProcessing(ctx context.Context, docID string,
 	return nil
 }
 
+// BeginIndexBuild 在文档行锁内领取候选索引构建权。
+// 同一任务重试复用原候选版本；不同任务仅可接管过期构建，并始终分配更高版本，
+// 避免新旧 Worker 清理或写入同一 index_version。
+func (r *documentRepository) BeginIndexBuild(ctx context.Context, docID, owner string, staleBefore time.Time) (int, error) {
+	var indexVersion int
+	err := dbFromContext(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var doc entity.Document
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND deleted_at IS NULL", docID).First(&doc).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrDocumentNotFound
+			}
+			return fmt.Errorf("锁定文档加工版本失败: %w", err)
+		}
+
+		sameOwner := doc.IndexBuildOwner != nil && *doc.IndexBuildOwner == owner
+		if doc.IndexBuildOwner != nil && !sameOwner &&
+			(doc.IndexBuildStartedAt == nil || doc.IndexBuildStartedAt.After(staleBefore)) {
+			return ErrDocumentProcessingConflict
+		}
+
+		if sameOwner && doc.IndexBuildVersion != nil {
+			indexVersion = *doc.IndexBuildVersion
+		} else {
+			latestVersion := 0
+			if doc.ActiveIndexVersion != nil && *doc.ActiveIndexVersion > latestVersion {
+				latestVersion = *doc.ActiveIndexVersion
+			}
+			if doc.IndexBuildVersion != nil && *doc.IndexBuildVersion > latestVersion {
+				latestVersion = *doc.IndexBuildVersion
+			}
+			indexVersion = latestVersion + 1
+		}
+
+		now := time.Now().UTC()
+		result := tx.Model(&entity.Document{}).
+			Where("id = ? AND deleted_at IS NULL", docID).
+			Updates(map[string]any{
+				"index_build_owner":      owner,
+				"index_build_version":    indexVersion,
+				"index_build_started_at": now,
+				"processing_status":      string(contracts.ProcessingParsing),
+				"failure_step":           nil,
+				"failure_reason":         nil,
+				"updated_at":             now,
+			})
+		if result.Error != nil {
+			return fmt.Errorf("领取文档加工版本失败: %w", result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return ErrDocumentNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return indexVersion, nil
+}
+
+// PublishIndexBuild 使用 owner + indexVersion 作为 fencing 条件发布候选索引。
+func (r *documentRepository) PublishIndexBuild(ctx context.Context, docID, owner string, indexVersion int, updates map[string]any) error {
+	if updates == nil {
+		updates = make(map[string]any)
+	}
+	updates["active_index_version"] = indexVersion
+	updates["index_build_owner"] = nil
+	updates["index_build_version"] = nil
+	updates["index_build_started_at"] = nil
+	updates["updated_at"] = time.Now().UTC()
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.Document{}).
+		Where("id = ? AND deleted_at IS NULL AND index_build_owner = ? AND index_build_version = ?", docID, owner, indexVersion).
+		Updates(updates)
+	if result.Error != nil {
+		return fmt.Errorf("发布文档索引版本失败: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrDocumentProcessingConflict
+	}
+	return nil
+}
+
+// PublishIndexBuildAndCompleteTask 在同一事务中发布活动索引并完成其所有者任务。
+// 任一步骤失败都会回滚，杜绝“索引已 active、任务却被标记 failed”的分裂状态。
+func (r *documentRepository) PublishIndexBuildAndCompleteTask(ctx context.Context, docID, owner string, indexVersion int, updates map[string]any) error {
+	return dbFromContext(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		docUpdates := make(map[string]any, len(updates)+5)
+		for key, value := range updates {
+			docUpdates[key] = value
+		}
+		docUpdates["active_index_version"] = indexVersion
+		docUpdates["index_build_owner"] = nil
+		docUpdates["index_build_version"] = nil
+		docUpdates["index_build_started_at"] = nil
+		docUpdates["updated_at"] = time.Now().UTC()
+		docResult := tx.Model(&entity.Document{}).
+			Where("id = ? AND deleted_at IS NULL AND index_build_owner = ? AND index_build_version = ?", docID, owner, indexVersion).
+			Updates(docUpdates)
+		if docResult.Error != nil {
+			return fmt.Errorf("事务发布文档索引版本失败: %w", docResult.Error)
+		}
+		if docResult.RowsAffected == 0 {
+			return ErrDocumentProcessingConflict
+		}
+		taskResult := tx.Model(&entity.ImportTask{}).
+			Where("id = ? AND status = 'running' AND document_id = ?", owner, docID).
+			Updates(map[string]any{
+				"status": "succeeded", "current_step": "succeeded", "completed_at": time.Now().UTC(), "failure_reason": nil, "error_code": nil,
+			})
+		if taskResult.Error != nil {
+			return fmt.Errorf("事务完成导入任务失败: %w", taskResult.Error)
+		}
+		if taskResult.RowsAffected == 0 {
+			return ErrImportTaskConflict
+		}
+		return nil
+	})
+}
+
+// FailIndexBuild 只允许当前 owner 写入失败状态；旧 Worker 失去所有权后静默退出，
+// 防止其失败回调覆盖新任务的 parsing/succeeded 状态。
+func (r *documentRepository) FailIndexBuild(ctx context.Context, docID, owner, failureStep, failureReason string) error {
+	now := time.Now().UTC()
+	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.Document{}).
+		Where("id = ? AND deleted_at IS NULL AND index_build_owner = ?", docID, owner).
+		Updates(map[string]any{
+			"processing_status":      string(contracts.ProcessingFailed),
+			"failure_step":           failureStep,
+			"failure_reason":         failureReason,
+			"index_build_owner":      nil,
+			"index_build_version":    nil,
+			"index_build_started_at": nil,
+			"updated_at":             now,
+		})
+	if result.Error != nil {
+		return fmt.Errorf("标记文档加工失败: %w", result.Error)
+	}
+	return nil
+}
+
 func mapDocumentResult(doc *entity.Document, err error) (*entity.Document, error) {
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrDocumentNotFound
@@ -256,6 +399,20 @@ func (r *importTaskRepository) FindByIDInternal(ctx context.Context, taskID stri
 	}
 	if err != nil {
 		return nil, fmt.Errorf("查询导入任务失败: %w", err)
+	}
+	return &task, nil
+}
+
+func (r *importTaskRepository) FindLatestByDocument(ctx context.Context, userID, documentID string) (*entity.ImportTask, error) {
+	var task entity.ImportTask
+	err := dbFromContext(ctx, r.db).WithContext(ctx).
+		Where("user_id = ? AND document_id = ?", userID, documentID).
+		Order("created_at DESC").First(&task).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrImportTaskNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询文档最近处理任务失败: %w", err)
 	}
 	return &task, nil
 }
@@ -403,7 +560,7 @@ func (r *importTaskRepository) ReservePending(ctx context.Context) (*entity.Impo
 			SELECT id, user_id, knowledge_base_id, batch_id, source_path, target_directory_id, source_type,
 			       file_name, file_size, mime_type, source_url, source_hash,
 			       minio_bucket, minio_object_key, duplicate_policy, status, attempt,
-			       current_step, failure_reason, document_id, attachments,
+			       current_step, failure_reason, error_code, trace_id, request_id, document_id, attachments,
 			       created_at, started_at, completed_at
 			FROM import_tasks
 			WHERE status = 'pending'
@@ -466,7 +623,7 @@ func (r *importTaskRepository) recoverStaleLocked(ctx context.Context, db *gorm.
 	staleBefore := time.Now().UTC().Add(-importTaskLease).Unix()
 	result := db.WithContext(ctx).Model(&entity.ImportTask{}).
 		Where("status = 'running' AND started_at IS NOT NULL AND started_at < ?", time.Unix(staleBefore, 0).UTC()).
-		Updates(map[string]any{"status": "pending", "started_at": nil, "failure_reason": "worker 租约过期，任务恢复为待处理"})
+		Updates(map[string]any{"status": "pending", "started_at": nil, "error_code": string(contracts.ErrTaskStalled), "failure_reason": "worker 租约过期，任务恢复为待处理"})
 	if result.Error != nil {
 		return fmt.Errorf("恢复过期导入任务失败: %w", result.Error)
 	}
@@ -488,7 +645,7 @@ func (r *importTaskRepository) RecoverStale(ctx context.Context, staleBefore int
 			return nil
 		}
 		result := tx.Model(&entity.ImportTask{}).Where("id IN ? AND status = 'running'", taskIDs).
-			Updates(map[string]any{"status": "pending", "started_at": nil, "failure_reason": "消费者租约过期，任务恢复为待处理"})
+			Updates(map[string]any{"status": "pending", "started_at": nil, "error_code": string(contracts.ErrTaskStalled), "failure_reason": "消费者租约过期，任务恢复为待处理"})
 		if result.Error != nil {
 			return fmt.Errorf("恢复过期导入任务失败: %w", result.Error)
 		}
@@ -506,7 +663,7 @@ func (r *importTaskRepository) RecoverStale(ctx context.Context, staleBefore int
 // CompleteSucceeded 将任务标记为 succeeded 并记录完成时间与关联文档。
 // 幂等：允许 running 或已 succeeded 状态（Handler 编排与 Runner 完成回调可能重复调用）。
 func (r *importTaskRepository) CompleteSucceeded(ctx context.Context, taskID string, documentID *string) error {
-	updates := map[string]any{"status": "succeeded", "completed_at": time.Now().UTC(), "failure_reason": nil}
+	updates := map[string]any{"status": "succeeded", "completed_at": time.Now().UTC(), "failure_reason": nil, "error_code": nil}
 	if documentID != nil {
 		updates["document_id"] = *documentID
 	}
@@ -527,7 +684,7 @@ func (r *importTaskRepository) FailTask(ctx context.Context, taskID, failureReas
 	// 仅允许 running 状态标记失败，避免终态(succeeded/skipped)被意外覆盖。
 	result := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.ImportTask{}).
 		Where("id = ? AND status = 'running'", taskID).
-		Updates(map[string]any{"status": "failed", "failure_reason": failureReason, "completed_at": time.Now().UTC()})
+		Updates(map[string]any{"status": "failed", "error_code": string(contracts.ErrDocumentProcessing), "failure_reason": failureReason, "completed_at": time.Now().UTC()})
 	if result.Error != nil {
 		return fmt.Errorf("标记导入任务失败: %w", result.Error)
 	}
@@ -541,7 +698,7 @@ func (r *importTaskRepository) FailTask(ctx context.Context, taskID, failureReas
 func (r *importTaskRepository) RetryTask(ctx context.Context, taskID string) error {
 	return dbFromContext(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&entity.ImportTask{}).Where("id = ? AND status = 'failed'", taskID).
-			Updates(map[string]any{"status": "pending", "attempt": 0, "failure_reason": nil, "completed_at": nil, "started_at": nil})
+			Updates(map[string]any{"status": "pending", "failure_reason": nil, "error_code": nil, "completed_at": nil, "started_at": nil})
 		if result.Error != nil {
 			return fmt.Errorf("重试导入任务失败: %w", result.Error)
 		}
@@ -555,7 +712,7 @@ func (r *importTaskRepository) RetryTask(ctx context.Context, taskID string) err
 func (r *importTaskRepository) RequeueTask(ctx context.Context, taskID, failureReason string) error {
 	return dbFromContext(ctx, r.db).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&entity.ImportTask{}).Where("id = ? AND status = 'running'", taskID).
-			Updates(map[string]any{"status": "pending", "failure_reason": failureReason, "started_at": nil})
+			Updates(map[string]any{"status": "pending", "error_code": string(contracts.ErrDocumentProcessing), "failure_reason": failureReason, "started_at": nil})
 		if result.Error != nil {
 			return fmt.Errorf("重新排队导入任务失败: %w", result.Error)
 		}

@@ -129,6 +129,30 @@ func TestArtifactStoreSaveDegradesOversizedAsset(t *testing.T) {
 	}
 }
 
+func TestArtifactResolveRejectsStaleParserIdentity(t *testing.T) {
+	store := newMemoryObjectStore()
+	artifacts := NewArtifactStore(store, DefaultValidateLimits())
+	doc := testParsedDocument(Asset{ID: "asset-000001", Kind: "picture", Omitted: true})
+	if _, err := artifacts.Save(context.Background(), "prefix/", doc, "cfg-hash"); err != nil {
+		t.Fatalf("保存 Artifact 失败: %v", err)
+	}
+	identity := DefaultParseRuntimeIdentity()
+	if _, err := artifacts.ResolveWithIdentity(context.Background(), "prefix/", doc.Source.SHA256, identity); err != nil {
+		t.Fatalf("相同 Parser identity 应命中: %v", err)
+	}
+	identity.ParserVersions = map[string]string{
+		ParserNameGoText: GoParserVersion, ParserNameGoMarkdown: "2.0", ParserNameDocling: DoclingParserVersion,
+	}
+	if _, err := artifacts.ResolveWithIdentity(context.Background(), "prefix/", doc.Source.SHA256, identity); !errors.Is(err, ErrArtifactNotFound) {
+		t.Fatalf("旧 Parser Artifact 应视为未命中，实际: %v", err)
+	}
+	identity = DefaultParseRuntimeIdentity()
+	identity.AdapterVersion = "2.0"
+	if _, err := artifacts.ResolveWithIdentity(context.Background(), "prefix/", doc.Source.SHA256, identity); !errors.Is(err, ErrArtifactNotFound) {
+		t.Fatalf("旧 Adapter Artifact 应视为未命中，实际: %v", err)
+	}
+}
+
 // TestArtifactStoreSaveDegradesUnsupportedMIME 验证 SVG 等不受支持类型降级为 Omitted。
 func TestArtifactStoreSaveDegradesUnsupportedMIME(t *testing.T) {
 	store := newMemoryObjectStore()

@@ -1,6 +1,7 @@
 package importtask
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	apperrors "github.com/1090-f/Memora/internal/apperror"
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/middleware"
+	"github.com/1090-f/Memora/internal/model/dto/request"
 	"github.com/1090-f/Memora/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -102,8 +104,15 @@ func (ctrl *Controller) GetProcessing(c *gin.Context) {
 		"processing_status":     status.Status,
 		"current_index_version": status.IndexVersion,
 		"active_index_version":  status.ActiveVersion,
+		"task_id":               status.TaskID,
+		"trace_id":              status.TraceID,
+		"request_id":            status.RequestID,
 		"failure_step":          status.CurrentStep,
 		"failure_reason":        status.FailureReason,
+		"failure_code":          status.FailureCode,
+		"recovery_advice":       status.RecoveryAdvice,
+		"stalled":               status.Stalled,
+		"stages":                status.Stages,
 	})
 }
 
@@ -128,11 +137,12 @@ func (ctrl *Controller) RetryProcessing(c *gin.Context) {
 		response.Failure(c, apperrors.New(contracts.ErrInvalidState, nil))
 		return
 	}
-	if err := ctrl.process.Reindex(c.Request.Context(), contracts.ID(user.ID), status.KnowledgeBaseID, contracts.ID(c.Param("document_id"))); err != nil {
+	taskID, err := ctrl.process.Reindex(c.Request.Context(), contracts.ID(user.ID), status.KnowledgeBaseID, contracts.ID(c.Param("document_id")))
+	if err != nil {
 		response.Failure(c, err)
 		return
 	}
-	response.Success(c, http.StatusOK, gin.H{"retried": true})
+	response.Success(c, http.StatusOK, gin.H{"retried": true, "task_id": taskID, "status": "processing"})
 }
 
 // Reindex 触发文档重新索引。
@@ -151,17 +161,24 @@ func (ctrl *Controller) Reindex(c *gin.Context) {
 		response.Failure(c, err)
 		return
 	}
-	if err := ctrl.process.Reindex(
+	var req request.ReindexDocumentRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		response.Failure(c, apperrors.ErrInvalidArgument)
+		return
+	}
+	taskID, err := ctrl.process.ReindexWithStrategy(
 		c.Request.Context(),
 		contracts.ID(user.ID),
 		status.KnowledgeBaseID,
 		contracts.ID(c.Param("document_id")),
-	); err != nil {
+		req.ChunkStrategy,
+	)
+	if err != nil {
 		response.Failure(c, err)
 		return
 	}
 	response.Success(c, http.StatusOK, gin.H{
-		"document_id": c.Param("document_id"), "status": "processing",
+		"document_id": c.Param("document_id"), "task_id": taskID, "status": "processing",
 	})
 }
 
@@ -286,6 +303,9 @@ type taskResponse struct {
 	Status        string     `json:"status"`
 	CurrentStep   *string    `json:"current_step,omitempty"`
 	FailureReason *string    `json:"failure_reason,omitempty"`
+	ErrorCode     *string    `json:"error_code,omitempty"`
+	TraceID       *string    `json:"trace_id,omitempty"`
+	RequestID     *string    `json:"request_id,omitempty"`
 	DocumentID    *string    `json:"document_id,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	CompletedAt   *time.Time `json:"completed_at,omitempty"`
@@ -299,6 +319,7 @@ func taskResponseFromView(view service.ImportTaskView) taskResponse {
 		FileName: view.FileName, FileSize: view.FileSize, MIMEType: view.MIMEType,
 		SourceURL: view.SourceURL, Status: string(view.Status),
 		CurrentStep: view.CurrentStep, FailureReason: view.FailureReason,
+		ErrorCode: view.ErrorCode, TraceID: view.TraceID, RequestID: view.RequestID,
 		CreatedAt: view.CreatedAt, CompletedAt: view.CompletedAt,
 	}
 	if view.DocumentID != nil {

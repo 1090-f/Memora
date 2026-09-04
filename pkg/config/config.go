@@ -29,6 +29,16 @@ type Config struct {
 	Agent            AgentConfig            `mapstructure:"agent"`
 	AgentWorker      AgentWorkerConfig      `mapstructure:"agent_worker"`
 	AgentEvents      AgentEventsConfig      `mapstructure:"agent_events"`
+	Observability    ObservabilityConfig    `mapstructure:"observability"`
+}
+
+// ObservabilityConfig 控制安全观测数据的采样与保留；敏感正文默认永不采集。
+type ObservabilityConfig struct {
+	Enabled                 bool    `mapstructure:"enabled"`
+	CaptureSensitiveContent bool    `mapstructure:"capture_sensitive_content"`
+	TraceSampleRatio        float64 `mapstructure:"trace_sample_ratio"`
+	RetentionDays           int     `mapstructure:"retention_days"`
+	OTLPEndpoint            string  `mapstructure:"otlp_endpoint"`
 }
 
 // AppConfig 定义应用程序基础配置，包括名称、版本、运行模式和超时设置
@@ -198,8 +208,14 @@ type DocumentParserConfig struct {
 
 // ChunkingConfig 定义 Go 分块策略配置（进入 chunk_config_hash，不进入 parse_config_hash）。
 type ChunkingConfig struct {
+	// Strategy 是 structured/paragraph/recursive_fallback/auto；默认 structured。
+	Strategy string `mapstructure:"strategy"`
 	// StrategyVersion 是分块策略版本。
 	StrategyVersion string `mapstructure:"strategy_version"`
+	// UseCanonicalChunker 灰度启用 typed CanonicalDocument 分块输入。
+	UseCanonicalChunker bool `mapstructure:"use_canonical_chunker"`
+	// EnableCanonicalChunkDiff 影子双跑旧/新分块器并输出差异报告。
+	EnableCanonicalChunkDiff bool `mapstructure:"enable_canonical_chunk_diff"`
 	// MaxTokens 是单个 Chunk 的 token 上限。
 	MaxTokens int `mapstructure:"max_tokens"`
 	// MinTokens 是过短合并阈值。
@@ -254,6 +270,12 @@ type AgentEventsConfig struct {
 // Validate 校验所有配置项，收集所有错误后返回合并的错误信息
 func (c Config) Validate() error {
 	var errs []error
+	if c.Observability.TraceSampleRatio < 0 || c.Observability.TraceSampleRatio > 1 {
+		errs = append(errs, errors.New("observability.trace_sample_ratio 必须在 0 到 1 之间"))
+	}
+	if c.Observability.RetentionDays < 1 {
+		errs = append(errs, errors.New("observability.retention_days 必须大于 0"))
+	}
 	if c.App.Address == "" {
 		errs = append(errs, errors.New("缺少环境变量 MEMORA_HTTP_ADDRESS"))
 	}
@@ -313,6 +335,11 @@ func (c Config) Validate() error {
 	}
 	if c.Chunking.MinTokens > c.Chunking.MaxTokens {
 		errs = append(errs, errors.New("chunking.min_tokens 不能大于 max_tokens"))
+	}
+	switch c.Chunking.Strategy {
+	case "", "structured", "paragraph", "recursive_fallback", "auto":
+	default:
+		errs = append(errs, errors.New("chunking.strategy 必须是 structured、paragraph、recursive_fallback 或 auto"))
 	}
 	if c.DocumentParser.MaxFileBytes <= 0 || c.DocumentParser.MaxResponseBytes <= 0 || c.DocumentParser.MaxAssetBytes <= 0 {
 		errs = append(errs, errors.New("document_parser 大小限制必须为正数"))

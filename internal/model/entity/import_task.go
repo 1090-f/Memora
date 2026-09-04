@@ -27,6 +27,9 @@ type ImportTask struct {
 	Attempt           int     `gorm:"column:attempt" json:"attempt"`                                      // Attempt 已执行次数
 	CurrentStep       *string `gorm:"column:current_step" json:"current_step,omitempty"`                  // CurrentStep 当前执行的步骤，可选
 	FailureReason     *string `gorm:"column:failure_reason" json:"failure_reason,omitempty"`              // FailureReason 失败原因，可选
+	ErrorCode         *string `gorm:"column:error_code" json:"error_code,omitempty"`                      // ErrorCode 稳定失败分类
+	TraceID           *string `gorm:"column:trace_id" json:"trace_id,omitempty"`                          // TraceID 原始请求的 Trace ID
+	RequestID         *string `gorm:"column:request_id" json:"request_id,omitempty"`                      // RequestID 原始 HTTP 请求 ID
 	DocumentID        *string `gorm:"column:document_id" json:"document_id,omitempty"`                    // DocumentID 导入成功后生成的文档 ID，可选
 	// Attachments 是 zip 导入的附件映射（zip 内相对路径 → MinIO object key），可选。
 	Attachments StringMap  `gorm:"column:attachments;type:jsonb" json:"attachments,omitempty"`

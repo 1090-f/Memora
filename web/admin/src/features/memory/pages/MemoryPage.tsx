@@ -31,7 +31,7 @@ import { ErrorState } from '@/components/shared/ErrorState';
 import { LoadingState } from '@/components/shared/LoadingState';
 import { UnavailableState } from '@/components/shared/UnavailableState';
 import { listMemories, updateMemoryStatus, deleteMemory } from '../api';
-import type { Memory, MemoryType, MemoryStatus } from '../types';
+import type { Memory, MemoryType } from '../types';
 
 // 记忆类型到中文的映射
 const MEMORY_TYPE_LABELS: Record<MemoryType, string> = {

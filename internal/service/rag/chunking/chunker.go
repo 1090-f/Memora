@@ -5,6 +5,7 @@ package chunking
 import (
 	"context"
 
+	"github.com/1090-f/Memora/internal/service/rag/canonical"
 	"github.com/1090-f/Memora/internal/service/rag/parser"
 )
 
@@ -35,14 +36,18 @@ func DefaultChunkOptions() ChunkOptions {
 
 // ParsedChunk 是分块产物；与 entity.DocumentChunk 的转换在 pipeline 完成。
 type ParsedChunk struct {
-	Content        string
-	HeadingPath    []string
-	SourceLocation parser.SourceLocation
-	ContentTypes   []string
-	BlockIDs       []string
-	TableRefs      []string
-	AssetRefs      []string
-	TokenCount     int
+	Content         string
+	HeadingPath     []string
+	SourceLocation  parser.SourceLocation
+	ContentTypes    []string
+	BlockIDs        []string
+	TableRefs       []string
+	AssetRefs       []string
+	SourceSpans     []canonical.SourceSpan
+	Strategy        string
+	StrategyVersion string
+	Decision        *ChunkDecision
+	TokenCount      int
 }
 
 // Tokenizer 是分块/计数共用的 token 计量接口。
@@ -59,4 +64,10 @@ type Tokenizer interface {
 // Chunker 将 ParsedDocument 分块。
 type Chunker interface {
 	Chunk(ctx context.Context, doc *parser.ParsedDocument, opts ChunkOptions) ([]ParsedChunk, error)
+}
+
+// CanonicalChunker consumes the stable canonical contract. Implementations must
+// use typed nodes and references rather than reparsing the Markdown view.
+type CanonicalChunker interface {
+	ChunkCanonical(ctx context.Context, doc *canonical.CanonicalDocument, opts ChunkOptions) ([]ParsedChunk, error)
 }
