@@ -6,7 +6,7 @@ import ErrorOutlineRounded from '@mui/icons-material/ErrorOutlineRounded';
 import ExpandMoreRounded from '@mui/icons-material/ExpandMoreRounded';
 import SyncRounded from '@mui/icons-material/SyncRounded';
 import { Box, Button, Chip, Collapse, IconButton, Stack, Typography } from '@mui/material';
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { getAgentRunToolCalls } from '../api';
 import { timelineEntries } from '../timeline';
@@ -70,31 +70,31 @@ function TimelineDot({ status, index }: { status: string; index: number }) {
 export function InlineAgentRun({ state, runId }: { state: AgentRunViewState; runId?: string }) {
   const [expanded, setExpanded] = useState(state.status === 'running' || state.status === 'queued');
   const [toolRecords, setToolRecords] = useState<AgentToolCall[] | null>(null);
-  const [recordsLoading, setRecordsLoading] = useState(false);
   const [expandedToolKey, setExpandedToolKey] = useState<string | null>(null);
   const [expandedEntryKey, setExpandedEntryKey] = useState<string | null>(null);
   const running = state.status === 'running' || state.status === 'queued';
   const failed = state.status === 'failed';
   const entries = timelineEntries(state);
 
-  const fetchToolRecords = useCallback(async () => {
-    if (!runId || toolRecords !== null || recordsLoading) return;
-    setRecordsLoading(true);
-    try {
-      const records = await getAgentRunToolCalls(runId);
-      setToolRecords(Array.isArray(records) ? records : []);
-    } catch {
-      setToolRecords([]);
-    } finally {
-      setRecordsLoading(false);
-    }
-  }, [runId, toolRecords, recordsLoading]);
-
-  // 当链路中没有实时工具事件（如 Plan-Execute 模式）时，从服务端补齐工具调用记录。
+  // 只要存在 runId 就拉取工具调用详情；running 期间定时轮询，及时补充已完成的工具调用详情。
   useEffect(() => {
-    if (!runId || running || state.timeline.some((entry) => entry.kind === 'tool')) return;
-    void fetchToolRecords();
-  }, [runId, running, state.timeline, fetchToolRecords]);
+    if (!runId) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const records = await getAgentRunToolCalls(runId);
+        if (!cancelled) setToolRecords(Array.isArray(records) ? records : []);
+      } catch {
+        if (!cancelled) setToolRecords((prev) => prev ?? []);
+      }
+    };
+    void load();
+    const timer = running ? window.setInterval(() => { void load(); }, 2000) : undefined;
+    return () => {
+      cancelled = true;
+      if (timer) window.clearInterval(timer);
+    };
+  }, [runId, running]);
 
   // DB 工具调用记录与 timeline 中 tool 条目按时间顺序一一对应。
   const toolRecordBySeq = new Map<number, AgentToolCall | undefined>();

@@ -97,6 +97,10 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
     ? (conversationRunIds[activeConversationId] ?? [...messages].reverse().find((m) => m.agent_run_id)?.agent_run_id ?? null)
     : null;
 
+  // 是否正在运行的派生状态：直接复用 store 中按会话键控的 runState.status，
+  // 避免依赖易被切换逻辑重置的局部 submitting，保证暂停按钮状态不丢失且各会话互不干扰。
+  const isAgentLive = runState.status === 'queued' || runState.status === 'running';
+
   /**
    * 运行结束后收尾：若缺少助手消息则补上（按 run_id 去重）、标记该 run 已完整回放、触发消息刷新。
    */
@@ -531,7 +535,7 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
     <ChatComposer
       draft={draft}
       disabled={!enabled || !selectedChatModelId}
-      streaming={submitting}
+      streaming={submitting || isAgentLive}
       knowledgeBases={knowledgeBasesQuery.data?.items ?? []}
       selectedKnowledgeBaseId={kbId}
       chatModels={chatModels}
