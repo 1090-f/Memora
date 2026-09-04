@@ -185,7 +185,7 @@ function RunTimeline({ run, toolCalls, liveState }: { run: AgentRun; toolCalls: 
         switch (entry.kind) {
           case 'status':
             if (entry.status === 'completed') {
-              title = '生成最终回答';
+              title = entry.title || '运行完成';
               detail = '回答生成完成';
               circleStatus = 'completed';
             } else if (entry.status === 'failed') {
