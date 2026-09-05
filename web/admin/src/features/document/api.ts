@@ -59,8 +59,7 @@ export const retryDocumentPreview = (documentId: string) =>
 export const getOriginalDocument = (documentId: string, inline = false) =>
   apiBlobRequest({ url: `/documents/${documentId}/original`, params: inline ? { inline: true } : undefined });
 
-// getRenderedDocument 返回渲染预览 PDF（PDF 原文件 / Office 文档经 LibreOffice 转换）。
-// 大文件首次转换可能超过默认 120s，这里单独放宽到 10 分钟。
+// getRenderedDocument 是旧兼容入口，仅读取已经异步生成的 LibreOffice PDF Artifact。
 export const getRenderedDocument = (documentId: string) =>
   apiBlobRequest({ url: `/documents/${documentId}/rendered` });
 

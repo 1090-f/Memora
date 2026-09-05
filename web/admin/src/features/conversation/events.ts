@@ -9,6 +9,7 @@ export const streamAgentEvents = (
   afterSequence: options.afterSequence,
   timeout: options.timeout,
   onEvent: (event) => {
+    if (event.event === 'complete' || event.event === 'done') return;
     const body = event.data as {
       run_id: string;
       sequence: number;

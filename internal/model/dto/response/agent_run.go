@@ -9,34 +9,40 @@ import (
 // AgentRunResponse 表示 Agent 运行详情的响应。
 // 用于展示运行状态、路由决策、执行轨迹和最终结果。
 type AgentRunResponse struct {
-	ID                 string          `json:"id"`                        // ID 运行 ID
-	UserID             string          `json:"user_id"`                   // UserID 所属用户 ID
-	KnowledgeBaseID    string          `json:"knowledge_base_id"`         // KnowledgeBaseID 所属知识库 ID
-	ConversationID     string          `json:"conversation_id"`           // ConversationID 关联会话 ID
-	AgentConfigID      string          `json:"agent_config_id"`           // AgentConfigID 使用的 Agent 配置 ID
-	ChatModelID        string          `json:"chat_model_id"`             // ChatModelID 本次运行固化的模型身份引用
-	RetryOfRunID       *string         `json:"retry_of_run_id,omitempty"` // RetryOfRunID 重试的原始运行 ID
-	Query              string          `json:"query"`                     // Query 用户查询原文
-	TraceID            *string         `json:"trace_id,omitempty"`        // TraceID 跨服务追踪标识
-	RequestID          *string         `json:"request_id,omitempty"`      // RequestID 触发运行的请求标识
-	ExecutionTrace     json.RawMessage `json:"execution_trace,omitempty"` // ExecutionTrace 安全执行摘要
-	RouterConfidence   *float64        `json:"router_confidence,omitempty"`
-	RouterFallbackUsed bool            `json:"router_fallback_used"`
-	ExecutionMode      *string         `json:"execution_mode,omitempty"`   // ExecutionMode Router 选择的执行模式
-	RouterReason       string          `json:"router_reason,omitempty"`    // RouterReason Router 选择原因摘要
-	KnowledgeStatus    *string         `json:"knowledge_status,omitempty"` // KnowledgeStatus 知识充分性状态
-	Status             string          `json:"status"`                     // Status 运行状态
-	MemoryUsedCount    int             `json:"memory_used_count"`          // MemoryUsedCount 使用的记忆条数
-	InputTokens        int             `json:"input_tokens"`               // InputTokens 输入 Token 数
-	OutputTokens       int             `json:"output_tokens"`              // OutputTokens 输出 Token 数
-	TotalTokens        int             `json:"total_tokens"`               // TotalTokens 总 Token 数
-	DurationMs         *int64          `json:"duration_ms,omitempty"`      // DurationMs 执行耗时（毫秒）
-	FinalResult        *string         `json:"final_result,omitempty"`     // FinalResult 最终回答
-	ErrorCode          *string         `json:"error_code,omitempty"`       // ErrorCode 错误码
-	ErrorMessage       *string         `json:"error_message,omitempty"`    // ErrorMessage 错误信息
-	StartedAt          *time.Time      `json:"started_at,omitempty"`       // StartedAt 开始时间
-	EndedAt            *time.Time      `json:"ended_at,omitempty"`         // EndedAt 结束时间
-	CreatedAt          time.Time       `json:"created_at"`                 // CreatedAt 创建时间
+	ID                      string          `json:"id"`                        // ID 运行 ID
+	UserID                  string          `json:"user_id"`                   // UserID 所属用户 ID
+	KnowledgeBaseID         string          `json:"knowledge_base_id"`         // KnowledgeBaseID 所属知识库 ID
+	ConversationID          string          `json:"conversation_id"`           // ConversationID 关联会话 ID
+	AgentConfigID           string          `json:"agent_config_id"`           // AgentConfigID 使用的 Agent 配置 ID
+	ChatModelID             string          `json:"chat_model_id"`             // ChatModelID 本次运行固化的模型身份引用
+	RetryOfRunID            *string         `json:"retry_of_run_id,omitempty"` // RetryOfRunID 重试的原始运行 ID
+	Query                   string          `json:"query"`                     // Query 用户查询原文
+	TraceID                 *string         `json:"trace_id,omitempty"`        // TraceID 跨服务追踪标识
+	RequestID               *string         `json:"request_id,omitempty"`      // RequestID 触发运行的请求标识
+	ExecutionTrace          json.RawMessage `json:"execution_trace,omitempty"` // ExecutionTrace 安全执行摘要
+	RouterConfidence        *float64        `json:"router_confidence,omitempty"`
+	RouterFallbackUsed      bool            `json:"router_fallback_used"`
+	ExecutionMode           *string         `json:"execution_mode,omitempty"`   // ExecutionMode Router 选择的执行模式
+	RouterReason            string          `json:"router_reason,omitempty"`    // RouterReason Router 选择原因摘要
+	KnowledgeStatus         *string         `json:"knowledge_status,omitempty"` // KnowledgeStatus 知识充分性状态
+	Status                  string          `json:"status"`                     // Status 运行状态
+	MemoryUsedCount         int             `json:"memory_used_count"`          // MemoryUsedCount 使用的记忆条数
+	InputTokens             int             `json:"input_tokens"`               // InputTokens 输入 Token 数
+	OutputTokens            int             `json:"output_tokens"`              // OutputTokens 输出 Token 数
+	TotalTokens             int             `json:"total_tokens"`               // TotalTokens 总 Token 数
+	DurationMs              *int64          `json:"duration_ms,omitempty"`      // DurationMs 执行耗时（毫秒）
+	FirstTokenAt            *time.Time      `json:"first_token_at,omitempty"`
+	FirstTokenLatencyMs     *int64          `json:"first_token_latency_ms,omitempty"`
+	ModelGenerateDurationMs *int64          `json:"model_generate_duration_ms,omitempty"`
+	FinalResult             *string         `json:"final_result,omitempty"`  // FinalResult 最终回答
+	ErrorCode               *string         `json:"error_code,omitempty"`    // ErrorCode 错误码
+	ErrorMessage            *string         `json:"error_message,omitempty"` // ErrorMessage 错误信息
+	FailureStage            *string         `json:"failure_stage,omitempty"`
+	Retryable               *bool           `json:"retryable,omitempty"`
+	RecoveryAdvice          *string         `json:"recovery_advice,omitempty"`
+	StartedAt               *time.Time      `json:"started_at,omitempty"` // StartedAt 开始时间
+	EndedAt                 *time.Time      `json:"ended_at,omitempty"`   // EndedAt 结束时间
+	CreatedAt               time.Time       `json:"created_at"`           // CreatedAt 创建时间
 }
 
 // AgentRunListItem 表示 Agent 运行列表项（不含最终结果和详细轨迹）。
@@ -92,4 +98,22 @@ type ToolCallResponse struct {
 	DurationMs        *int64          `json:"duration_ms,omitempty"`        // DurationMs 调用耗时（毫秒）
 	StartedAt         time.Time       `json:"started_at"`                   // StartedAt 调用开始时间
 	EndedAt           *time.Time      `json:"ended_at,omitempty"`           // EndedAt 调用结束时间
+}
+
+// TraceSpanResponse 表示运行技术链路中的一个安全 Span。
+type TraceSpanResponse struct {
+	TraceID              string          `json:"trace_id"`
+	SpanID               string          `json:"span_id"`
+	ParentSpanID         *string         `json:"parent_span_id,omitempty"`
+	Name                 string          `json:"name"`
+	Kind                 string          `json:"kind"`
+	StatusCode           string          `json:"status_code"`
+	StatusMessage        *string         `json:"status_message,omitempty"`
+	StartedAt            time.Time       `json:"started_at"`
+	EndedAt              time.Time       `json:"ended_at"`
+	DurationMS           int64           `json:"duration_ms"`
+	Attributes           json.RawMessage `json:"attributes"`
+	Events               json.RawMessage `json:"events"`
+	ServiceName          *string         `json:"service_name,omitempty"`
+	InstrumentationScope *string         `json:"instrumentation_scope,omitempty"`
 }

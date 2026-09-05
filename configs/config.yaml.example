@@ -73,7 +73,8 @@ preview:
     claim_idle: 15m
     max_attempts: 3
   office:
-    enabled: true
+    # 可选：生成 DOCX/PPTX/XLSX 的 LibreOffice PDF 高保真回退；普通部署无需安装 LibreOffice。
+    enabled: false
     max_concurrency: 1
     timeout: 5m
   xlsx:
@@ -149,10 +150,9 @@ document_parser:
 
 # Go 分块策略（进入 chunk_config_hash）
 chunking:
-  strategy: "structured"              # structured / paragraph / recursive_fallback / auto
+  strategy: "auto"                    # structured / paragraph / recursive_fallback / auto
   strategy_version: "structure-v1"
-  use_canonical_chunker: false         # 灰度开关；false 时 Canonical 仅影子生成
-  enable_canonical_chunk_diff: false   # 影子双跑旧/新分块器并生成边界、来源差异报告
+  enable_canonical_chunk_diff: false   # 影子运行旧分块器并生成边界、来源差异报告
   max_tokens: 1000
   min_tokens: 100
   overlap_tokens: 100
@@ -178,7 +178,6 @@ observability:
   capture_sensitive_content: false
   trace_sample_ratio: 1.0
   retention_days: 30
-  otlp_endpoint: "" # 例如 http://localhost:4318/v1/traces；留空时不外发
 
 # Agent 配置
 agent:

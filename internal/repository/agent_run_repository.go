@@ -12,6 +12,7 @@ import (
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/google/uuid"
+	oteltrace "go.opentelemetry.io/otel/trace"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -33,7 +34,7 @@ func (r *agentRunRepository) CreateQueued(ctx context.Context, run *entity.Agent
 }
 
 // CreateQueuedForConversation 在同一事务中确定 Chat 模型身份引用并创建消息和运行记录。
-func (r *agentRunRepository) CreateQueuedForConversation(ctx context.Context, userID, knowledgeBaseID, conversationID, agentConfigID uuid.UUID, query, traceID, requestID string) (*entity.AgentRun, error) {
+func (r *agentRunRepository) CreateQueuedForConversation(ctx context.Context, userID, knowledgeBaseID, conversationID, agentConfigID uuid.UUID, query, traceID, traceParentSpanID string, traceSampled bool, requestID string) (*entity.AgentRun, error) {
 	var created *entity.AgentRun
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var conversation entity.Conversation
@@ -94,9 +95,13 @@ func (r *agentRunRepository) CreateQueuedForConversation(ctx context.Context, us
 			ChatModelID:     chatModelID,
 			Query:           query,
 			Status:          "queued",
+			TraceSampled:    traceSampled,
 		}
 		if traceID != "" {
 			run.TraceID = &traceID
+		}
+		if traceParentSpanID != "" {
+			run.TraceParentSpanID = &traceParentSpanID
 		}
 		if requestID != "" {
 			run.RequestID = &requestID
@@ -275,6 +280,32 @@ func (r *agentRunRepository) MarkFailed(ctx context.Context, runID uuid.UUID, er
 		Updates(updates).Error
 }
 
+func (r *agentRunRepository) UpdateObservability(ctx context.Context, runID uuid.UUID, update AgentRunObservabilityUpdate) error {
+	values := map[string]any{}
+	if update.FirstTokenAt != nil {
+		values["first_token_at"] = update.FirstTokenAt.UTC()
+	}
+	if update.FirstTokenLatencyMS != nil {
+		values["first_token_latency_ms"] = *update.FirstTokenLatencyMS
+	}
+	if update.ModelGenerateDurationMS != nil {
+		values["model_generate_duration_ms"] = *update.ModelGenerateDurationMS
+	}
+	if update.FailureStage != nil {
+		values["failure_stage"] = *update.FailureStage
+	}
+	if update.Retryable != nil {
+		values["retryable"] = *update.Retryable
+	}
+	if update.RecoveryAdvice != nil {
+		values["recovery_advice"] = *update.RecoveryAdvice
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).Model(&entity.AgentRun{}).Where("id = ?", runID).Updates(values).Error
+}
+
 // MarkCancelled 更新运行状态为 cancelled（需同时验证用户 ID 确保所有者可取消）。
 // executionMode 为空表示在 Router 决策出模式前取消，此时不写入 execution_mode。
 // duration_ms 由数据库根据 started_at 与当前时间计算，尚未开始执行（queued）时为 0。
@@ -350,6 +381,11 @@ func (r *agentRunRepository) CreateRetry(ctx context.Context, originalRunID, use
 		if traceID != "" {
 			retry.TraceID = &traceID
 		}
+		if spanID := oteltrace.SpanContextFromContext(ctx).SpanID(); spanID.IsValid() {
+			value := spanID.String()
+			retry.TraceParentSpanID = &value
+		}
+		retry.TraceSampled = oteltrace.SpanContextFromContext(ctx).IsSampled()
 		if requestID != "" {
 			retry.RequestID = &requestID
 		}

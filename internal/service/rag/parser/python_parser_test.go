@@ -10,6 +10,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 // fakePythonService 模拟 Python document-parser 服务。
@@ -46,10 +50,25 @@ func testDocument() *ParsedDocument {
 }
 
 func TestPythonParserSendsMultipartAndParsesResponse(t *testing.T) {
+	previousProvider := otel.GetTracerProvider()
+	previousPropagator := otel.GetTextMapPropagator()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	otel.SetTracerProvider(provider)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	defer func() {
+		_ = provider.Shutdown(context.Background())
+		otel.SetTracerProvider(previousProvider)
+		otel.SetTextMapPropagator(previousPropagator)
+	}()
+
 	service := &fakePythonService{t: t}
 	service.handler = func(t *testing.T, w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/parse" {
 			t.Errorf("路径 = %q", r.URL.Path)
+		}
+		parts := strings.Split(r.Header.Get("traceparent"), "-")
+		if len(parts) != 4 || parts[1] == strings.Repeat("0", 32) {
+			t.Errorf("未注入有效 traceparent: %q", r.Header.Get("traceparent"))
 		}
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Fatalf("multipart 解析失败: %v", err)
@@ -88,7 +107,9 @@ func TestPythonParserSendsMultipartAndParsesResponse(t *testing.T) {
 		Size:     int64(len("pdf-bytes")),
 		Options:  DefaultParseOptions(),
 	}
-	doc, err := client.Parse(context.Background(), input)
+	ctx, span := provider.Tracer("test").Start(context.Background(), "parse-parent")
+	doc, err := client.Parse(ctx, input)
+	span.End()
 	if err != nil {
 		t.Fatalf("解析失败: %v", err)
 	}

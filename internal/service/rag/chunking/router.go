@@ -26,8 +26,8 @@ type RouterConfig struct {
 	MaxAverageParagraphTokens float64 `json:"max_average_paragraph_tokens"`
 }
 
-// DefaultRouterConfig returns conservative rules; production remains fixed
-// structured unless ChunkStrategy is explicitly set to auto.
+// DefaultRouterConfig returns conservative, deterministic rules used by the
+// default auto strategy.
 func DefaultRouterConfig() RouterConfig {
 	return RouterConfig{
 		MinHeadingCount: 2, MinHeadingDepth: 2, MinHeadingCoverage: 0.25,

@@ -3,7 +3,9 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/1090-f/Memora/internal/contracts"
 )
@@ -82,6 +84,45 @@ func TestSequencedEventPublisherAddsStageAndCorrelation(t *testing.T) {
 	}
 }
 
+func TestToolFailureCarriesRecoveryContract(t *testing.T) {
+	capture := &capturedEventPublisher{}
+	publisher := NewSequencedEventPublisher(capture)
+	if err := publisher.PublishToolCallCompleted(context.Background(), contracts.ID("run-1"), contracts.ID("call-1"), "mcp.search", false, "connection refused"); err != nil {
+		t.Fatal(err)
+	}
+	event := capture.events[0]
+	if event.EventType != contracts.EventToolCallFailed || event.Stage != contracts.AgentStageToolCall || event.Status != contracts.StageFailed {
+		t.Fatalf("unexpected failure event: %#v", event)
+	}
+	payload := eventPayload(t, event)
+	if payload["error_code"] != string(contracts.ErrToolCallFailed) || payload["retryable"] != true {
+		t.Fatalf("missing failure contract: %#v", payload)
+	}
+	if payload["recovery_advice"] == "" {
+		t.Fatalf("missing recovery advice: %#v", payload)
+	}
+}
+
+func TestRunFailureCarriesStableDiagnosticContract(t *testing.T) {
+	capture := &capturedEventPublisher{}
+	publisher := NewSequencedEventPublisher(capture)
+	runErr := newCoreError(contracts.ErrModelCallFailed, errors.New("provider secret must not become an error code"))
+	if err := publisher.PublishRunFailed(context.Background(), contracts.ID("run-1"), contracts.ExecutionReact, runErr); err != nil {
+		t.Fatal(err)
+	}
+	event := capture.events[0]
+	if event.EventType != contracts.EventRunFailed || event.Status != contracts.StageFailed {
+		t.Fatalf("unexpected failure event: %#v", event)
+	}
+	payload := eventPayload(t, event)
+	if payload["error_code"] != string(contracts.ErrModelCallFailed) || payload["failure_stage"] != string(contracts.AgentStageModelGenerate) {
+		t.Fatalf("unstable failure diagnostics: %#v", payload)
+	}
+	if payload["retryable"] != true || payload["recovery_advice"] == "" {
+		t.Fatalf("missing recovery contract: %#v", payload)
+	}
+}
+
 func TestRunCompletedEventDoesNotDuplicateAnswer(t *testing.T) {
 	capture := &capturedEventPublisher{}
 	publisher := NewSequencedEventPublisher(capture)
@@ -107,5 +148,45 @@ func TestRunCompletedEventOmitsCitationSnippetByDefault(t *testing.T) {
 	payload := eventPayload(t, capture.events[1])
 	if _, exists := payload["snippet"]; exists {
 		t.Fatal("citation event must omit source text unless sensitive capture is enabled")
+	}
+}
+
+func TestRunTimingCapturesFirstVisibleAnswerOnce(t *testing.T) {
+	capture := &capturedEventPublisher{}
+	publisher := NewSequencedEventPublisher(capture)
+	runID := contracts.ID("run-timing")
+	ctx := context.Background()
+	if err := publisher.PublishRunStarted(ctx, runID); err != nil {
+		t.Fatal(err)
+	}
+	if err := publisher.PublishModelGenerationStarted(ctx, runID); err != nil {
+		t.Fatal(err)
+	}
+	_ = publisher.PublishAnswerDelta(ctx, runID, "")
+	_ = publisher.PublishAnswerDelta(ctx, runID, "首个可见回答")
+	_ = publisher.PublishAnswerDelta(ctx, runID, "后续回答")
+	now := time.Now().UTC()
+	if err := publisher.PublishRunCompleted(ctx, runID, contracts.AgentRunResult{StartedAt: now, EndedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	timing := publisher.AgentRunTiming(runID)
+	if timing.FirstTokenAt == nil || timing.FirstTokenLatencyMS == nil || timing.ModelGenerateDurationMS == nil {
+		t.Fatalf("incomplete timing: %#v", timing)
+	}
+	marked := 0
+	for _, event := range capture.events {
+		if event.EventType != contracts.EventAnswerDelta {
+			continue
+		}
+		payload := eventPayload(t, event)
+		if _, ok := payload["first_token_latency_ms"]; ok {
+			marked++
+		}
+	}
+	if marked != 1 {
+		t.Fatalf("first token marker count = %d, want 1", marked)
+	}
+	if second := publisher.AgentRunTiming(runID); second.FirstTokenAt != nil {
+		t.Fatal("timing must be consumed to avoid retaining completed runs")
 	}
 }

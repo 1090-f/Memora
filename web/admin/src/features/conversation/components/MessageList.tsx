@@ -6,6 +6,7 @@ import SmartToyOutlined from '@mui/icons-material/SmartToyOutlined';
 import { Box, Button, IconButton, Paper, Stack, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
 import type { ReactNode } from 'react';
 import { useState, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { InlineAgentRun } from '@/features/agent-run/components/InlineAgentRun';
@@ -77,8 +78,9 @@ function getEffectiveAgentRunId(message: Message): string | null {
   return message.agent_run_id;
 }
 
-export function MessageList({ messages, streamingAnswer, agentRunState, agentRunId, agentRunStates, retryingMessageId, resumingRun, emptyComposer, onSuggestion, onRetry, onSwitchVersion }: {
+export function MessageList({ messages, knowledgeBaseId, streamingAnswer, agentRunState, agentRunId, agentRunStates, retryingMessageId, resumingRun, emptyComposer, onSuggestion, onRetry, onSwitchVersion }: {
   messages: Message[];
+  knowledgeBaseId: string;
   streamingAnswer: string;
   agentRunState: AgentRunViewState;
   agentRunId: string | null;
@@ -90,6 +92,7 @@ export function MessageList({ messages, streamingAnswer, agentRunState, agentRun
   onRetry?: (agentRunId: string) => void;
   onSwitchVersion?: (messageId: string, versionIdx: number) => void;
 }) {
+  const navigate = useNavigate();
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const handleCopy = useCallback(async (text: string, messageId: string) => {
@@ -162,7 +165,24 @@ export function MessageList({ messages, streamingAnswer, agentRunState, agentRun
               </Box>
               {message.citations && message.citations.length > 0 && (
                 <Stack direction="row" useFlexGap flexWrap="wrap" spacing={0.8} sx={{ mt: 1.2 }}>
-                  {message.citations.slice(0, 3).map((citation, index) => <Button key={`${message.id}-${index}`} size="small" variant="outlined" sx={{ fontSize: 11, borderRadius: 1.5 }}>{citation.document_title || citation.title || `引用 ${index + 1}`}</Button>)}
+                  {message.citations.slice(0, 3).map((citation, index) => (
+                    <Button
+                      key={`${message.id}-${index}`}
+                      size="small"
+                      variant="outlined"
+                      onClick={() => {
+                        if (citation.document_id) {
+                          navigate(`/kb/${citation.knowledge_base_id || knowledgeBaseId}/docs/${citation.document_id}`);
+                        } else if (citation.url) {
+                          window.open(citation.url, '_blank', 'noopener');
+                        }
+                      }}
+                      disabled={!citation.document_id && !citation.url}
+                      sx={{ fontSize: 11, borderRadius: 1.5 }}
+                    >
+                      {citation.document_title || citation.title || `引用 ${index + 1}`}
+                    </Button>
+                  ))}
                 </Stack>
               )}
               {/* Version switcher — only for assistant messages with versions */}

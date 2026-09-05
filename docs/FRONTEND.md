@@ -31,6 +31,7 @@ cd web
 corepack enable
 pnpm install --frozen-lockfile
 pnpm dev
+pnpm --filter memora-admin test
 pnpm lint
 pnpm typecheck
 pnpm build

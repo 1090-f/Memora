@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -190,8 +189,36 @@ func (r *documentPreviewRepository) RecoverStale(ctx context.Context, staleBefor
 	return count, err
 }
 
+func (r *documentPreviewRepository) HealthSnapshot(ctx context.Context, stalledBefore time.Time) (PreviewTaskHealthSnapshot, error) {
+	var row struct {
+		Pending       int64
+		Running       int64
+		Failed        int64
+		Retried       int64
+		Stalled       int64
+		OldestPending *time.Time
+	}
+	err := dbFromContext(ctx, r.db).WithContext(ctx).Model(&entity.DocumentPreview{}).
+		Select(`
+			COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+			COUNT(*) FILTER (WHERE status = 'processing') AS running,
+			COUNT(*) FILTER (WHERE status = 'failed') AS failed,
+			COUNT(*) FILTER (WHERE attempt > 1) AS retried,
+			COUNT(*) FILTER (WHERE status = 'processing' AND started_at IS NOT NULL AND started_at < ?) AS stalled,
+			MIN(created_at) FILTER (WHERE status = 'pending') AS oldest_pending
+		`, stalledBefore).Scan(&row).Error
+	if err != nil {
+		return PreviewTaskHealthSnapshot{}, fmt.Errorf("查询预览任务健康状态失败: %w", err)
+	}
+	snapshot := PreviewTaskHealthSnapshot{Pending: row.Pending, Running: row.Running, Failed: row.Failed, Retried: row.Retried, Stalled: row.Stalled}
+	if row.OldestPending != nil {
+		snapshot.OldestPendingAgeSeconds = max(0, int64(time.Since(*row.OldestPending).Seconds()))
+	}
+	return snapshot, nil
+}
+
 func createPreviewOutbox(tx *gorm.DB, previewID string) error {
-	payload, err := json.Marshal(map[string]string{"preview_id": previewID})
+	payload, err := marshalOutboxPayload(tx.Statement.Context, map[string]string{"preview_id": previewID})
 	if err != nil {
 		return err
 	}

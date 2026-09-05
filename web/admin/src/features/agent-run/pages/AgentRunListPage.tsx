@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import ArrowBackOutlined from '@mui/icons-material/ArrowBackOutlined';
 import CheckCircleOutlined from '@mui/icons-material/CheckCircleOutlined';
 import ContentCopyOutlined from '@mui/icons-material/ContentCopyOutlined';
@@ -37,8 +37,10 @@ import { Link, useNavigate } from 'react-router-dom';
 import { listKnowledgeBases } from '@/features/knowledge-base/api';
 import { listConversations } from '@/features/conversation/api';
 import { streamAgentEvents } from '@/features/conversation/events';
-import { getAgentRunToolCalls, listAgentRuns } from '../api';
+import { getAgentRunToolCalls, getAgentRunTrace, listAgentRuns } from '../api';
+import { SpanExplorer } from '../components/SpanExplorer';
 import { initialAgentRunState, reduceAgentEvent } from '../eventReducer';
+import { knowledgeStatusLabel } from '../knowledgeStatus';
 import { timelineEntries } from '../timeline';
 import type { AgentRun, AgentRunViewState, AgentTimelineEntry, AgentToolCall } from '../types';
 
@@ -139,8 +141,14 @@ function inputSummary(value?: string) {
 }
 
 function stepStatusText(status: string) {
-  return status === 'completed' || status === 'succeeded' ? '已完成' : status === 'failed' ? '失败' : status === 'running' ? '进行中' : '等待中';
+  return status === 'completed' || status === 'succeeded' ? '已完成' : status === 'skipped' ? '已跳过' : status === 'failed' ? '失败' : status === 'running' ? '进行中' : '等待中';
 }
+
+const stageLabels: Record<string, string> = {
+  route: '执行路径选择', query_rewrite: '查询改写', keyword_retrieve: '关键词检索', vector_retrieve: '向量检索',
+  fusion: '结果融合', rerank: '结果重排', knowledge_check: '知识充分性判断', context_build: '上下文构造',
+  model_generate: '模型生成', tool_call: '工具调用', answer: '回答完成',
+};
 
 function RunTimeline({ run, toolCalls, liveState }: { run: AgentRun; toolCalls: AgentToolCall[]; liveState: AgentRunViewState }) {
   const entries = timelineEntries(liveState);
@@ -191,6 +199,12 @@ function RunTimeline({ run, toolCalls, liveState }: { run: AgentRun; toolCalls: 
               title = entry.title;
               circleStatus = entry.status === 'running' ? 'running' : 'pending';
             }
+            break;
+          case 'stage':
+            title = stageLabels[entry.stage] ?? entry.stage;
+            detail = [entry.summary, entry.error_code, entry.error_message].filter(Boolean).join(' · ');
+            duration = entry.duration_ms;
+            circleStatus = entry.status === 'failed' ? 'failed' : entry.status === 'succeeded' || entry.status === 'skipped' ? 'completed' : entry.status === 'running' ? 'running' : 'pending';
             break;
           case 'router':
             title = '分析问题并确定执行模式';
@@ -285,22 +299,46 @@ function RunTimeline({ run, toolCalls, liveState }: { run: AgentRun; toolCalls: 
 
 export function RunDetail({ run }: { run: AgentRun }) {
   const [liveState, dispatch] = useReducer(reduceAgentEvent, initialAgentRunState);
+  const highestSequenceRef = useRef(0);
   const toolCallsQuery = useQuery({
     queryKey: ['agent-run-tool-calls', run.id],
     queryFn: () => getAgentRunToolCalls(run.id),
   });
+  const traceQuery = useQuery({
+    queryKey: ['agent-run-trace', run.id],
+    queryFn: () => getAgentRunTrace(run.id),
+    refetchInterval: run.status === 'running' || run.status === 'queued' ? 2_000 : false,
+  });
   useEffect(() => {
     dispatch({ type: 'HYDRATE_AGENT_RUN_STATE', run });
+    highestSequenceRef.current = 0;
     const controller = new AbortController();
-    void streamAgentEvents(`${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${run.id}/events`, {
-      signal: controller.signal,
-      afterSequence: 0,
-      timeout: run.status === 'running' || run.status === 'queued' ? 0 : 30_000,
-      onEvent: (event) => dispatch(event),
-    }).catch(() => {
-      // 运行详情仍可依赖 GET /runs 和 tool-calls 展示，事件回放失败不阻断页面。
-    });
-    return () => controller.abort();
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let terminal = run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled';
+    const connect = async () => {
+      try {
+        await streamAgentEvents(`${import.meta.env.VITE_API_BASE_URL || '/api/v1'}/agent/runs/${run.id}/events`, {
+          signal: controller.signal,
+          afterSequence: highestSequenceRef.current,
+          timeout: terminal ? 30_000 : 0,
+          onEvent: (event) => {
+            highestSequenceRef.current = Math.max(highestSequenceRef.current, event.sequence);
+            if (event.type === 'agent.run.completed' || event.type === 'agent.run.failed' || event.type === 'agent.run.cancelled') terminal = true;
+            dispatch(event);
+          },
+        });
+      } catch {
+        // 运行详情仍可依赖 GET /runs 和 tool-calls 展示，事件回放失败不阻断页面。
+      }
+      if (!controller.signal.aborted && !terminal) {
+        retryTimer = setTimeout(() => void connect(), 1_000);
+      }
+    };
+    void connect();
+    return () => {
+      controller.abort();
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
+    };
   }, [run]);
   const copyRunId = () => void navigator.clipboard?.writeText(run.id);
   const toolCalls = toolCallsQuery.data ?? [];
@@ -320,10 +358,12 @@ export function RunDetail({ run }: { run: AgentRun }) {
           </Stack>
           <Divider />
           <Grid container spacing={1.5}>
-            <Grid size={{ xs: 6, sm: 3 }}><Metric label="执行模式" value={run.execution_mode || '等待路由'} /></Grid>
-            <Grid size={{ xs: 6, sm: 3 }}><Metric label="总耗时" value={formatDuration(run.duration_ms)} /></Grid>
-            <Grid size={{ xs: 6, sm: 3 }}><Metric label="总 Token" value={`${run.total_tokens ?? 0}`} /></Grid>
-            <Grid size={{ xs: 6, sm: 3 }}><Metric label="工具调用" value={`${Math.max(toolCalls.length, liveState.tools.length)} 次`} /></Grid>
+            <Grid size={{ xs: 6, sm: 2 }}><Metric label="执行模式" value={run.execution_mode || '等待路由'} /></Grid>
+            <Grid size={{ xs: 6, sm: 2 }}><Metric label="总耗时" value={formatDuration(run.duration_ms)} /></Grid>
+            <Grid size={{ xs: 6, sm: 2 }}><Metric label="首字延迟" value={formatDuration(run.first_token_latency_ms)} /></Grid>
+            <Grid size={{ xs: 6, sm: 2 }}><Metric label="模型生成" value={formatDuration(run.model_generate_duration_ms)} /></Grid>
+            <Grid size={{ xs: 6, sm: 2 }}><Metric label="总 Token" value={`${run.total_tokens ?? 0}`} /></Grid>
+            <Grid size={{ xs: 6, sm: 2 }}><Metric label="工具调用" value={`${Math.max(toolCalls.length, liveState.tools.length)} 次`} /></Grid>
           </Grid>
           <Typography variant="caption" color="text.secondary">
             Token 明细：输入 {run.input_tokens ?? 0} · 输出 {run.output_tokens ?? 0}
@@ -331,8 +371,8 @@ export function RunDetail({ run }: { run: AgentRun }) {
           <Typography variant="body2" color="text.secondary">
             {formatDate(run.started_at)} → {formatDate(run.ended_at)}
           </Typography>
-          <Alert severity={run.knowledge_status === 'insufficient' ? 'warning' : 'info'}>
-            知识充分性：{run.knowledge_status === 'sufficient' ? '充分' : run.knowledge_status === 'insufficient' ? '不足' : run.knowledge_status === 'ambiguous' ? '不确定' : '未记录'}
+          <Alert severity={run.knowledge_status === 'insufficient' || run.knowledge_status === 'ambiguous' ? 'warning' : 'info'}>
+            知识充分性：{knowledgeStatusLabel(run.knowledge_status)}
             {run.router_reason ? ` · ${run.router_reason}` : ''}
             {run.router_fallback_used ? ' · 已使用降级路由' : ''}
           </Alert>
@@ -351,12 +391,16 @@ export function RunDetail({ run }: { run: AgentRun }) {
             </Box>
           )}
           <Box>
-            <Typography variant="h6" fontWeight={700} mb={1.5}>阶段时间线</Typography>
+            <Typography variant="h6" fontWeight={700} mb={1.5}>技术链路</Typography>
+            <SpanExplorer spans={traceQuery.data ?? []} loading={traceQuery.isLoading} error={Boolean(traceQuery.error)} />
+          </Box>
+          <Box>
+            <Typography variant="h6" fontWeight={700} mb={1.5}>业务阶段时间线</Typography>
             {toolCallsQuery.error && <Alert severity="warning" sx={{ mb: 1.5 }}>工具调用详情加载失败，但仍可查看运行结果。</Alert>}
             <RunTimeline run={run} toolCalls={toolCalls} liveState={liveState} />
           </Box>
           {toolCalls.length > 0 && <Typography variant="body2" color="text.secondary">工具调用共 {toolCalls.length} 次；输入、输出均为脱敏摘要，详细结果可在时间线中展开。</Typography>}
-          {run.error_message && <Alert severity="error"><strong>{run.error_code || 'RUN_FAILED'}</strong>：{run.error_message}<br />建议重试；若问题持续，请复制下方 Trace ID 进行诊断。</Alert>}
+          {run.error_message && <Alert severity="error"><strong>{run.error_code || 'RUN_FAILED'}</strong>{run.failure_stage ? `（${stageLabels[run.failure_stage] ?? run.failure_stage}）` : ''}：{run.error_message}<br />{run.recovery_advice || (run.retryable === false ? '请检查配置后再试。' : '建议重试；若问题持续，请复制下方 Trace ID 进行诊断。')}</Alert>}
           {run.final_result && (
             <Paper variant="outlined" sx={{ p: 2, bgcolor: 'background.default' }}>
               <Typography fontWeight={700} mb={1.5}>最终回答</Typography>

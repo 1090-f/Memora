@@ -34,6 +34,7 @@ const conversationStorageKey = (kbId: string) => `memora:conversation:${kbId}`;
 function normalizeCitations(values: Array<Record<string, unknown>>): Citation[] {
   return values.map((value) => ({
     source_type: value.source_type === 'network' ? 'network' : 'knowledge_base',
+    knowledge_base_id: typeof value.knowledge_base_id === 'string' ? value.knowledge_base_id : undefined,
     document_id: typeof value.document_id === 'string' ? value.document_id : undefined,
     document_title: typeof value.document_title === 'string' ? value.document_title : undefined,
     quoted_text: typeof value.quoted_text === 'string' ? value.quoted_text : undefined,
@@ -564,7 +565,7 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
       )}
       {errorMessage && <Alert severity="error" sx={{ m: 2, mb: 0 }}>{errorMessage}</Alert>}
       {messagesQuery.error && <Alert severity="warning" sx={{ m: 2, mb: 0 }}>历史消息加载失败，请稍后重试。</Alert>}
-      <MessageList messages={messages} streamingAnswer={submitting && !resumingRun ? runState.answer : ''} agentRunState={runState} agentRunId={activeRunId} agentRunStates={allRunStates} retryingMessageId={retryingMessageId} resumingRun={resumingRun} emptyComposer={empty ? composer : undefined} onSuggestion={setDraft} onRetry={retry} onSwitchVersion={switchVersion} />
+      <MessageList messages={messages} knowledgeBaseId={kbId} streamingAnswer={submitting && !resumingRun ? runState.answer : ''} agentRunState={runState} agentRunId={activeRunId} agentRunStates={allRunStates} retryingMessageId={retryingMessageId} resumingRun={resumingRun} emptyComposer={empty ? composer : undefined} onSuggestion={setDraft} onRetry={retry} onSwitchVersion={switchVersion} />
     </Stack>
   );
 

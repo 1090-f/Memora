@@ -9,6 +9,9 @@ import (
 
 	"github.com/1090-f/Memora/internal/agent/core"
 	"github.com/1090-f/Memora/internal/contracts"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 // Service 是基于 Eino ADK ChatModelAgent 和 Router 的 AgentRunService。
@@ -80,10 +83,14 @@ func (s *Service) Run(ctx context.Context, request contracts.AgentRunRequest) (c
 	_ = s.eventPublisher.PublishRunStarted(ctx, request.RunID)
 
 	// 1. Router 决策（此时 cancel 函数已注册，Cancel() 可以生效）
-	decision, err := s.router.Route(runCtx, request.Context)
+	routeCtx, routeSpan := otel.Tracer("github.com/1090-f/Memora/agent").Start(runCtx, "agent.route")
+	decision, err := s.router.Route(routeCtx, request.Context)
 	if err != nil {
+		routeSpan.RecordError(err)
 		if errors.Is(err, context.Canceled) {
 			// context 已被 Cancel() 取消，且尚未决策出模式，不再继续执行
+			routeSpan.SetStatus(codes.Error, "router cancelled")
+			routeSpan.End()
 			return contracts.AgentRunResult{}, context.Canceled
 		}
 		// Router 其他失败时降级为 React
@@ -95,6 +102,11 @@ func (s *Service) Run(ctx context.Context, request contracts.AgentRunRequest) (c
 			CreatedAt:     time.Now(),
 		}
 	}
+	routeSpan.SetAttributes(attribute.String("memora.execution_mode", string(decision.ExecutionMode)), attribute.Bool("memora.fallback_used", decision.FallbackUsed))
+	if err != nil {
+		routeSpan.SetStatus(codes.Error, "router fallback used")
+	}
+	routeSpan.End()
 
 	// 记录已确定的执行模式，供 Cancel 在取消时回填 execution_mode。
 	s.mu.Lock()
@@ -137,7 +149,15 @@ func (s *Service) runReact(ctx context.Context, request contracts.AgentRunReques
 		}
 	}
 
-	result, err := s.reactRunner.Run(ctx, request, s.eventPublisher, s.citationCollector)
+	runCtx, span := otel.Tracer("github.com/1090-f/Memora/agent").Start(ctx, "agent.react")
+	span.SetAttributes(attribute.String("memora.run_id", string(request.RunID)))
+	result, err := s.reactRunner.Run(runCtx, request, s.eventPublisher, s.citationCollector)
+	span.SetAttributes(attribute.Int("gen_ai.usage.input_tokens", result.Usage.InputTokens), attribute.Int("gen_ai.usage.output_tokens", result.Usage.OutputTokens))
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "react execution failed")
+	}
+	span.End()
 	if err != nil {
 		if ctx.Err() != nil {
 			_ = s.eventPublisher.PublishRunCancelled(ctx, request.RunID)
@@ -167,7 +187,15 @@ func (s *Service) runPlanExecute(ctx context.Context, request contracts.AgentRun
 		}
 	}
 
-	result, err := s.planGraph.Run(ctx, request)
+	runCtx, span := otel.Tracer("github.com/1090-f/Memora/agent").Start(ctx, "agent.plan_execute")
+	span.SetAttributes(attribute.String("memora.run_id", string(request.RunID)))
+	result, err := s.planGraph.Run(runCtx, request)
+	span.SetAttributes(attribute.Int("gen_ai.usage.input_tokens", result.Usage.InputTokens), attribute.Int("gen_ai.usage.output_tokens", result.Usage.OutputTokens))
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "plan execution failed")
+	}
+	span.End()
 	if err != nil {
 		if ctx.Err() != nil {
 			_ = s.eventPublisher.PublishRunCancelled(ctx, request.RunID)

@@ -16,7 +16,7 @@ type AgentRunRepository interface {
 	CreateQueued(ctx context.Context, run *entity.AgentRun) error
 
 	// CreateQueuedForConversation 锁定会话、重新校验当前 Chat 模型，并原子创建用户消息和 queued Run。
-	CreateQueuedForConversation(ctx context.Context, userID, knowledgeBaseID, conversationID, agentConfigID uuid.UUID, query, traceID, requestID string) (*entity.AgentRun, error)
+	CreateQueuedForConversation(ctx context.Context, userID, knowledgeBaseID, conversationID, agentConfigID uuid.UUID, query, traceID, traceParentSpanID string, traceSampled bool, requestID string) (*entity.AgentRun, error)
 
 	// FindByID 根据运行 ID 和用户 ID 查找运行记录（强制所有者过滤）。
 	FindByID(ctx context.Context, userID, runID uuid.UUID) (*entity.AgentRun, error)
@@ -46,6 +46,8 @@ type AgentRunRepository interface {
 	// MarkFailed 更新运行状态为 failed，记录错误码、错误信息、执行模式、Token 用量、耗时和结束时间。
 	// inputTokens/outputTokens/totalTokens 用于记录失败前已消耗的 Token。
 	MarkFailed(ctx context.Context, runID uuid.UUID, errorCode, errorMessage, executionMode string, durationMs int64, inputTokens, outputTokens, totalTokens int) error
+	// UpdateObservability 写入不影响运行状态机的时延与失败诊断摘要。
+	UpdateObservability(ctx context.Context, runID uuid.UUID, update AgentRunObservabilityUpdate) error
 
 	// MarkCancelled 更新运行状态为 cancelled（需同时验证用户 ID 确保所有者可取消）。
 	// executionMode 为空表示在 Router 决策出模式前取消，此时不写入执行模式。
@@ -62,4 +64,13 @@ type AgentRunRepository interface {
 
 	// DeleteByConversationID 删除指定会话的所有 Agent 运行记录。
 	DeleteByConversationID(ctx context.Context, conversationID uuid.UUID) error
+}
+
+type AgentRunObservabilityUpdate struct {
+	FirstTokenAt            *time.Time
+	FirstTokenLatencyMS     *int64
+	ModelGenerateDurationMS *int64
+	FailureStage            *string
+	Retryable               *bool
+	RecoveryAdvice          *string
 }

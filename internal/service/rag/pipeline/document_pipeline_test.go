@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/model/entity"
 	"github.com/1090-f/Memora/internal/service/rag/canonical"
 	"github.com/1090-f/Memora/internal/service/rag/chunking"
@@ -22,6 +24,7 @@ import (
 
 // fakeStore 是内存版 ObjectStore。
 type fakeStore struct {
+	mu      sync.Mutex
 	objects map[string][]byte
 	content map[string]string
 	opens   map[string]int
@@ -32,6 +35,8 @@ func newFakeStore() *fakeStore {
 }
 
 func (f *fakeStore) OpenObject(_ context.Context, objectKey string) (io.ReadCloser, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.opens[objectKey]++
 	data, ok := f.objects[objectKey]
 	if !ok {
@@ -45,12 +50,16 @@ func (f *fakeStore) PutObject(_ context.Context, objectKey string, reader io.Rea
 	if err != nil {
 		return err
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.objects[objectKey] = data
 	f.content[objectKey] = contentType
 	return nil
 }
 
 func (f *fakeStore) StatObject(_ context.Context, objectKey string) (*parser.ObjectInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	data, ok := f.objects[objectKey]
 	if !ok {
 		return nil, parser.ErrObjectNotFound
@@ -59,6 +68,8 @@ func (f *fakeStore) StatObject(_ context.Context, objectKey string) (*parser.Obj
 }
 
 func (f *fakeStore) RemoveObject(_ context.Context, objectKey string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	delete(f.objects, objectKey)
 	return nil
 }
@@ -67,10 +78,13 @@ func (f *fakeStore) Bucket() string { return "memora" }
 
 // fakeChunkWriter 记录批量插入。
 type fakeChunkWriter struct {
+	mu      sync.Mutex
 	inserts [][]*entity.DocumentChunk
 }
 
 func (w *fakeChunkWriter) BatchInsert(_ context.Context, chunks []*entity.DocumentChunk) ([]string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.inserts = append(w.inserts, chunks)
 	ids := make([]string, len(chunks))
 	for i := range chunks {
@@ -147,6 +161,35 @@ func TestPipelineParsesTextPersistsChunksAndArtifact(t *testing.T) {
 	}
 	if _, ok := store.objects["derived/u1/d1/content-1/parse-"+hashOfParseOptions()+"/parsed-document.json.zst"]; !ok {
 		t.Error("ParsedDocument 未保存")
+	}
+}
+
+func TestPipelineReportsRealDocumentStageBoundaries(t *testing.T) {
+	store := newFakeStore()
+	content := "# 标题\n\n用于阶段观测的正文。"
+	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.md", strings.NewReader(content), int64(len(content)), "text/markdown")
+	p, err := NewDocumentPipeline(testPipelineConfig(store, `{}`))
+	if err != nil {
+		t.Fatalf("构造 pipeline 失败: %v", err)
+	}
+	observations := make(map[contracts.DocumentStage][]contracts.StageObservation)
+	ctx := contracts.WithDocumentStageReporter(context.Background(), func(_ context.Context, stage contracts.DocumentStage, observation contracts.StageObservation) {
+		observations[stage] = append(observations[stage], observation)
+	})
+	if _, err := p.Run(ctx, processInput(store, "a.md")); err != nil {
+		t.Fatalf("运行 pipeline 失败: %v", err)
+	}
+	for _, stage := range []contracts.DocumentStage{contracts.DocumentStageParse, contracts.DocumentStageNormalize, contracts.DocumentStageChunk} {
+		items := observations[stage]
+		if len(items) != 2 || items[0].Status != contracts.StageRunning || items[1].Status != contracts.StageSucceeded {
+			t.Fatalf("阶段 %s 的生命周期不完整: %#v", stage, items)
+		}
+		if items[1].StartedAt == nil || items[1].EndedAt == nil || items[1].DurationMS == nil {
+			t.Fatalf("阶段 %s 缺少时间字段: %#v", stage, items[1])
+		}
+	}
+	if items := observations[contracts.DocumentStageEmbed]; len(items) != 1 || items[0].Status != contracts.StageSkipped {
+		t.Fatalf("未配置向量时应明确跳过 embed: %#v", items)
 	}
 }
 
@@ -301,49 +344,36 @@ func TestPipelineChunkEntityFields(t *testing.T) {
 	}
 }
 
-func TestPipelineCanonicalChunkerMatchesLegacyForStructuredDocument(t *testing.T) {
+func TestPipelineCanonicalStructuredMatchesLegacy(t *testing.T) {
 	store := newFakeStore()
 	content := "# 标题\n\n第一段正文。\n\n## 小节\n\n第二段正文。"
 	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.md", strings.NewReader(content), int64(len(content)), "text/markdown")
 
-	legacyWriter := &fakeChunkWriter{}
-	legacyCfg := testPipelineConfig(store, `{}`)
-	legacyCfg.Chunks = legacyWriter
-	legacy, err := NewDocumentPipeline(legacyCfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := legacy.Run(context.Background(), processInput(store, "a.md")); err != nil {
-		t.Fatalf("legacy pipeline: %v", err)
-	}
-
 	canonicalWriter := &fakeChunkWriter{}
 	canonicalCfg := testPipelineConfig(store, `{}`)
 	canonicalCfg.Chunks = canonicalWriter
-	canonicalCfg.UseCanonicalChunker = true
+	canonicalCfg.ChunkStrategy = chunking.StrategyStructured
+	canonicalCfg.EnableCanonicalChunkDiff = true
 	canonicalPipeline, err := NewDocumentPipeline(canonicalCfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := canonicalPipeline.Run(context.Background(), processInput(store, "a.md")); err != nil {
+	out, err := canonicalPipeline.Run(context.Background(), processInput(store, "a.md"))
+	if err != nil {
 		t.Fatalf("canonical pipeline: %v", err)
 	}
-	if legacy.ChunkConfigHash() == canonicalPipeline.ChunkConfigHash() {
-		t.Error("canonical chunker feature flag must participate in chunk_config_hash")
+	if out.ChunkDiffReport == nil {
+		t.Fatal("未生成 Canonical 与 Legacy 的差异报告")
 	}
-	legacyChunks := legacyWriter.inserts[0]
-	canonicalChunks := canonicalWriter.inserts[0]
-	if len(legacyChunks) != len(canonicalChunks) {
-		t.Fatalf("chunk count changed: %d != %d", len(legacyChunks), len(canonicalChunks))
+	if out.ChunkDiffReport.CandidateChunkCount != out.ChunkCount {
+		t.Fatalf("持久化结果应来自 Canonical candidate: diff=%+v output=%+v", out.ChunkDiffReport, out)
 	}
-	for i := range legacyChunks {
-		if legacyChunks[i].Content != canonicalChunks[i].Content {
-			t.Errorf("chunk %d changed:\nlegacy=%q\ncanonical=%q", i, legacyChunks[i].Content, canonicalChunks[i].Content)
-		}
+	if out.ChunkDiffReport.BoundaryDifferenceRate != 0 || out.ChunkDiffReport.SourceDifferenceRate != 0 {
+		t.Fatalf("兼容迁移文档不应产生差异: %+v", out.ChunkDiffReport)
 	}
 }
 
-func TestPipelineCanonicalChunkDiffRunsInShadowMode(t *testing.T) {
+func TestPipelineLegacyChunkDiffRunsInShadowMode(t *testing.T) {
 	store := newFakeStore()
 	content := "# 标题\n\n第一段正文。\n\n## 小节\n\n第二段正文。"
 	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.md", strings.NewReader(content), int64(len(content)), "text/markdown")
@@ -352,7 +382,7 @@ func TestPipelineCanonicalChunkDiffRunsInShadowMode(t *testing.T) {
 	cfg := testPipelineConfig(store, `{}`)
 	cfg.Chunks = writer
 	cfg.EnableCanonicalChunkDiff = true
-	cfg.UseCanonicalChunker = false
+	cfg.ChunkStrategy = chunking.StrategyStructured
 	p, err := NewDocumentPipeline(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -364,8 +394,8 @@ func TestPipelineCanonicalChunkDiffRunsInShadowMode(t *testing.T) {
 	if out.ChunkDiffReport == nil {
 		t.Fatal("影子双跑未输出 ChunkDiffReport")
 	}
-	if out.ChunkDiffReport.LegacyChunkCount != out.ChunkCount ||
-		out.ChunkDiffReport.CandidateChunkCount == 0 {
+	if out.ChunkDiffReport.CandidateChunkCount != out.ChunkCount ||
+		out.ChunkDiffReport.LegacyChunkCount == 0 {
 		t.Fatalf("差异报告计数异常: %+v output=%+v", out.ChunkDiffReport, out)
 	}
 	if out.ChunkDiffReport.BoundaryDifferenceRate != 0 || out.ChunkDiffReport.SourceDifferenceRate != 0 {
@@ -373,14 +403,13 @@ func TestPipelineCanonicalChunkDiffRunsInShadowMode(t *testing.T) {
 	}
 }
 
-func TestPipelineAutoRoutesParagraphDocument(t *testing.T) {
+func TestPipelineDefaultAutoRoutesParagraphDocument(t *testing.T) {
 	store := newFakeStore()
 	content := "第一段正文。\n\n第二段正文。\n\n第三段正文。\n\n第四段正文。"
 	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.txt", strings.NewReader(content), int64(len(content)), "text/plain")
 	writer := &fakeChunkWriter{}
 	cfg := testPipelineConfig(store, `{}`)
 	cfg.Chunks = writer
-	cfg.ChunkStrategy = chunking.StrategyAuto
 	p, err := NewDocumentPipeline(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -401,6 +430,173 @@ func TestPipelineAutoRoutesParagraphDocument(t *testing.T) {
 	}
 	if source["strategy"] != chunking.StrategyParagraph {
 		t.Fatalf("persisted strategy = %v", source)
+	}
+}
+
+func TestPipelineDefaultAutoRoutesStructuredDocument(t *testing.T) {
+	store := newFakeStore()
+	content := "# 标题\n\n第一段正文。\n\n## 小节\n\n第二段正文。"
+	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.md", strings.NewReader(content), int64(len(content)), "text/markdown")
+	writer := &fakeChunkWriter{}
+	cfg := testPipelineConfig(store, `{}`)
+	cfg.Chunks = writer
+	p, err := NewDocumentPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := p.Run(context.Background(), processInput(store, "a.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ChunkStrategy != chunking.StrategyStructured || out.ChunkStrategyVersion != chunking.RouterVersion {
+		t.Fatalf("unexpected route: %+v", out)
+	}
+}
+
+func TestPipelineDefaultAutoRoutesRecursiveDocument(t *testing.T) {
+	store := newFakeStore()
+	content := "没有可靠结构的短文本。"
+	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.txt", strings.NewReader(content), int64(len(content)), "text/plain")
+	writer := &fakeChunkWriter{}
+	cfg := testPipelineConfig(store, `{}`)
+	cfg.Chunks = writer
+	p, err := NewDocumentPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := p.Run(context.Background(), processInput(store, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ChunkStrategy != chunking.StrategyRecursive || out.ChunkStrategyVersion != chunking.RouterVersion {
+		t.Fatalf("unexpected route: %+v", out)
+	}
+}
+
+func TestPipelineUsesTaskTokenizerAndHashesModelIdentity(t *testing.T) {
+	store := newFakeStore()
+	content := "hello world. tokenizer aligned embedding content."
+	_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/a.txt", strings.NewReader(content), int64(len(content)), "text/plain")
+
+	writer := &fakeChunkWriter{}
+	cfg := testPipelineConfig(store, `{}`)
+	cfg.Chunks = writer
+	p, err := NewDocumentPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	baseline, err := p.Run(context.Background(), processInput(store, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolution, err := chunking.ResolveEmbeddingTokenizer("openai", "text-embedding-3-small")
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelInput := processInput(store, "a.txt")
+	modelInput.DocMeta.IndexVersion = 2
+	modelInput.Tokenizer = resolution.Tokenizer
+	modelInput.EmbeddingModelID = "model-config-1"
+	modelInput.EmbeddingProvider = "openai"
+	modelInput.EmbeddingModelName = "text-embedding-3-small"
+	modelInput.TokenizerExact = true
+	modelOutput, err := p.Run(context.Background(), modelInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseline.ChunkConfigHash == modelOutput.ChunkConfigHash {
+		t.Fatal("任务级 tokenizer 与模型身份必须改变 chunk_config_hash")
+	}
+	modelChunk := writer.inserts[1][0]
+	wantTokens, err := resolution.Tokenizer.Count(modelChunk.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modelChunk.TokenCount != wantTokens {
+		t.Fatalf("token count = %d, want model tokenizer count %d", modelChunk.TokenCount, wantTokens)
+	}
+	var source map[string]any
+	if err := json.Unmarshal(modelChunk.SourceLocation, &source); err != nil {
+		t.Fatal(err)
+	}
+	decision, ok := source["decision"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing decision metadata: %v", source)
+	}
+	features, ok := decision["features"].(map[string]any)
+	if !ok || features["tokenizer"] != resolution.Tokenizer.Name() {
+		t.Fatalf("missing tokenizer observability: %v", decision)
+	}
+}
+
+func TestPipelineTaskTokenizerIsolationConcurrent(t *testing.T) {
+	store := newFakeStore()
+	content := "hello world. tokenizer isolation must survive concurrent document processing."
+	for _, name := range []string{"a.txt", "b.txt"} {
+		_ = store.PutObject(context.Background(), "documents/u1/kb1/t1/"+name, strings.NewReader(content), int64(len(content)), "text/plain")
+	}
+	writer := &fakeChunkWriter{}
+	cfg := testPipelineConfig(store, `{}`)
+	cfg.Chunks = writer
+	p, err := NewDocumentPipeline(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolution, err := chunking.ResolveEmbeddingTokenizer("openai", "text-embedding-3-large")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	heuristicInput := processInput(store, "a.txt")
+	heuristicInput.DocMeta.DocumentID = "heuristic-doc"
+	modelInput := processInput(store, "b.txt")
+	modelInput.DocMeta.DocumentID = "model-doc"
+	modelInput.Tokenizer = resolution.Tokenizer
+	modelInput.TokenizerExact = true
+	modelInput.EmbeddingModelID = "model-config-1"
+	modelInput.EmbeddingProvider = "openai"
+	modelInput.EmbeddingModelName = "text-embedding-3-large"
+
+	errCh := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, input := range []ProcessInput{heuristicInput, modelInput} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, runErr := p.Run(context.Background(), input)
+			errCh <- runErr
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for runErr := range errCh {
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+	}
+
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	seen := map[string]bool{}
+	for _, batch := range writer.inserts {
+		for _, chunk := range batch {
+			var tokenizer chunking.Tokenizer = chunking.NewHeuristicTokenizer()
+			if chunk.DocumentID == "model-doc" {
+				tokenizer = resolution.Tokenizer
+			}
+			want, countErr := tokenizer.Count(chunk.Content)
+			if countErr != nil {
+				t.Fatal(countErr)
+			}
+			if chunk.TokenCount != want {
+				t.Fatalf("document %s token count = %d, want %d", chunk.DocumentID, chunk.TokenCount, want)
+			}
+			seen[chunk.DocumentID] = true
+		}
+	}
+	if !seen["heuristic-doc"] || !seen["model-doc"] {
+		t.Fatalf("missing concurrent results: %v", seen)
 	}
 }
 

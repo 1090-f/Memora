@@ -44,13 +44,19 @@ export function DocumentViewer({ document, processing }: { document: Document; p
     queryFn: () => getDocumentPreview(document.id),
     retry: false,
     refetchInterval: (query) => {
-      const status = query.state.data?.status;
-      return status === 'pending' || status === 'processing' ? query.state.data?.retry_after_ms ?? 2000 : false;
+      const descriptor = query.state.data;
+      const isGenerating = descriptor?.status === 'pending'
+        || descriptor?.status === 'processing'
+        || descriptor?.fallbacks.some((fallback) => fallback.status === 'pending' || fallback.status === 'processing');
+      return isGenerating ? descriptor?.retry_after_ms ?? 2000 : false;
     },
   });
   const retryPreview = useMutation({
     mutationFn: () => retryDocumentPreview(document.id),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.documentContent(document.id) }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.documentPreview(document.id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.documentContent(document.id) });
+    },
   });
   const originalMutation = useMutation({
     mutationFn: () => getOriginalDocument(document.id),

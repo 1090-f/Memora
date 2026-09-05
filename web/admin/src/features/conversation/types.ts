@@ -9,6 +9,7 @@ export interface Conversation {
 
 export interface Citation {
   source_type: 'knowledge_base' | 'network';
+  knowledge_base_id?: string;
   document_id?: string;
   document_title?: string;
   quoted_text?: string;
