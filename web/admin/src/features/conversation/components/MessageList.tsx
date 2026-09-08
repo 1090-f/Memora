@@ -3,9 +3,10 @@ import ContentCopyOutlined from '@mui/icons-material/ContentCopyOutlined';
 import CheckOutlined from '@mui/icons-material/CheckOutlined';
 import ReplayOutlined from '@mui/icons-material/ReplayOutlined';
 import SmartToyOutlined from '@mui/icons-material/SmartToyOutlined';
-import { Box, Button, IconButton, Paper, Stack, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
+import { Box, Button, CircularProgress, IconButton, Paper, Stack, ToggleButton, ToggleButtonGroup, Typography } from '@mui/material';
 import type { ReactNode } from 'react';
 import { useState, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { InlineAgentRun } from '@/features/agent-run/components/InlineAgentRun';
@@ -77,12 +78,39 @@ function getEffectiveAgentRunId(message: Message): string | null {
   return message.agent_run_id;
 }
 
-export function MessageList({ messages, streamingAnswer, agentRunState, agentRunId, agentRunStates, retryingMessageId, resumingRun, emptyComposer, onSuggestion, onRetry, onSwitchVersion }: {
+/** 历史 run 正在回放时的占位骨架，提供「完整详情」兜底入口。 */
+function AgentRunLoading({ runId }: { runId: string }) {
+  return (
+    <Box
+      sx={{
+        width: 'calc(100% - 46px)',
+        ml: '46px',
+        border: '1px dashed #dde3ec',
+        borderRadius: 2.5,
+        bgcolor: '#fafbfd',
+        px: 1.5,
+        py: 1,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 1.2,
+      }}
+    >
+      <CircularProgress size={14} sx={{ color: '#586de8' }} />
+      <Typography sx={{ color: '#7b8799', fontSize: 12 }}>正在加载 Agent 运行过程…</Typography>
+      <Button component={Link} to={`/runs/${runId}`} size="small" sx={{ ml: 'auto', whiteSpace: 'nowrap' }}>
+        完整详情
+      </Button>
+    </Box>
+  );
+}
+
+export function MessageList({ messages, streamingAnswer, agentRunState, agentRunId, agentRunStates, pendingRunIds, retryingMessageId, resumingRun, emptyComposer, onSuggestion, onRetry, onSwitchVersion }: {
   messages: Message[];
   streamingAnswer: string;
   agentRunState: AgentRunViewState;
   agentRunId: string | null;
   agentRunStates?: Record<string, AgentRunViewState>;
+  pendingRunIds?: Record<string, boolean>;
   retryingMessageId: string | null;
   resumingRun: boolean;
   emptyComposer?: ReactNode;
@@ -143,12 +171,22 @@ export function MessageList({ messages, streamingAnswer, agentRunState, agentRun
         {(() => {
           const effectiveRunId = getEffectiveAgentRunId(message);
           const runState = effectiveRunId ? agentRunStates?.[effectiveRunId] : undefined;
-          return message.role === 'assistant' && effectiveRunId && message.id !== retryingMessageId
-            && runState && runState.status !== 'idle' && (
-            <Box sx={{ mb: 1.5 }}>
-              <InlineAgentRun state={runState} runId={effectiveRunId ?? undefined} />
-            </Box>
-          );
+          if (message.role !== 'assistant' || !effectiveRunId || message.id === retryingMessageId) return null;
+          if (runState && runState.status !== 'idle') {
+            return (
+              <Box sx={{ mb: 1.5 }}>
+                <InlineAgentRun state={runState} runId={effectiveRunId} />
+              </Box>
+            );
+          }
+          if (pendingRunIds?.[effectiveRunId]) {
+            return (
+              <Box sx={{ mb: 1.5 }}>
+                <AgentRunLoading runId={effectiveRunId} />
+              </Box>
+            );
+          }
+          return null;
         })()}
         {message.role === 'assistant' && message.id === retryingMessageId && <InlineAgentRun state={agentRunState} runId={agentRunId ?? undefined} />}
         {message.id !== retryingMessageId && !(hidePreviousAssistantReply && message.id === lastAssistantMsg?.id) && <Stack direction={message.role === 'user' ? 'row-reverse' : 'row'} spacing={1.2} alignItems="flex-start" sx={{ mt: message.role === 'assistant' && message.id === retryingMessageId ? 1.2 : 0, width: message.role === 'assistant' ? '100%' : 'fit-content', ml: message.role === 'user' ? 'auto' : 0, maxWidth: message.role === 'user' ? '78%' : '100%' }}> 
