@@ -74,6 +74,15 @@ func (s *retrievalService) Retrieve(ctx context.Context, request contracts.Retri
 	if rerankerModelID != nil {
 		request.Config.RerankerModelID = contracts.ID(*rerankerModelID)
 	}
+	if request.ConfigOverride != nil {
+		request.Config = *request.ConfigOverride
+		if request.Config.RerankerModelID == "" {
+			rerankerModelID = nil
+		} else {
+			value := string(request.Config.RerankerModelID)
+			rerankerModelID = &value
+		}
+	}
 
 	var embedder embedding.Embedder
 	var modelCfgID string
@@ -113,6 +122,7 @@ func (s *retrievalService) Retrieve(ctx context.Context, request contracts.Retri
 		}
 		return contracts.RetrievalResult{}, apperrors.New(contracts.ErrInternal, err)
 	}
+	result.SearchConfig = request.Config
 	return result, nil
 }
 

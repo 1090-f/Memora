@@ -12,6 +12,9 @@ web/admin/dev-server.log
 configs/config.yaml
 logs/
 
+# Offline evaluation outputs may contain tenant IDs and retrieved content.
+evaluation/**/baseline*.json
+
 # Go build artifacts
 bin/
 *.test

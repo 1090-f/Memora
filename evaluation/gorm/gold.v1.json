@@ -1,0 +1,329 @@
+{
+  "schema_version": "retrieval-gold-v1",
+  "name": "GORM 中文文档检索金标集",
+  "version": "2026-09-08-v1",
+  "metadata": {
+    "corpus": "用户导入的 20 篇 GORM Markdown 文档",
+    "labeling": "人工问题与精确证据原文"
+  },
+  "cases": [
+    {
+      "id": "gorm-query-first-001",
+      "question": "GORM 中如何查询主键升序的第一条记录？",
+      "expected_answerable": true,
+      "reference_answer": "使用 db.First(&user)。",
+      "tags": ["query", "First", "single-source"],
+      "difficulty": "easy",
+      "relevant_sources": [{"document_title": "查询.md", "source_text": "db.First(&user)        // 主键升序第一条", "relevance": 3}]
+    },
+    {
+      "id": "gorm-query-in-002",
+      "question": "如何使用 GORM 查询 id 属于 1、2、3 的记录？",
+      "expected_answerable": true,
+      "reference_answer": "使用 Where 的 IN 条件：db.Where(\"id IN ?\", []int{1,2,3}).Find(&users)。",
+      "tags": ["query", "IN", "single-source"],
+      "difficulty": "easy",
+      "relevant_sources": [{"document_title": "查询.md", "source_text": "db.Where(\"id IN ?\", []int{1,2,3}).Find(&users)", "relevance": 3}]
+    },
+    {
+      "id": "gorm-query-map-003",
+      "question": "GORM 中推荐如何用 map 表达查询条件？",
+      "expected_answerable": true,
+      "reference_answer": "使用 db.Where(map[string]interface{}{...})。",
+      "tags": ["query", "Where", "map", "single-source"],
+      "difficulty": "easy",
+      "relevant_sources": [{"document_title": "查询.md", "source_text": "db.Where(map[string]interface{}{", "relevance": 2}]
+    },
+    {
+      "id": "gorm-query-zero-value-004",
+      "question": "使用 struct 条件查询 Age=0 时，GORM 会直接按 Age=0 过滤吗？",
+      "expected_answerable": true,
+      "reference_answer": "不会；struct 条件中的零值默认会被忽略。",
+      "tags": ["query", "zero-value", "single-source"],
+      "difficulty": "medium",
+      "relevant_sources": [{"document_title": "查询.md", "source_text": "db.Where(&User{Age: 0}).Find(&users)", "relevance": 3}]
+    },
+    {
+      "id": "gorm-create-pointer-005",
+      "question": "创建单条 GORM 记录时，示例使用值还是指针传给 Create？",
+      "expected_answerable": true,
+      "reference_answer": "传入指针，例如 db.Create(&user)。",
+      "tags": ["create", "pointer", "single-source"],
+      "difficulty": "easy",
+      "relevant_sources": [{"document_title": "创建.md", "source_text": "result := db.Create(&user)", "relevance": 3}]
+    },
+    {
+      "id": "gorm-create-batch-006",
+      "question": "GORM 如何批量创建多条 User 记录？",
+      "expected_answerable": true,
+      "reference_answer": "将 User 放入切片并传给 Create，例如 db.Create(&users)。",
+      "tags": ["create", "batch", "single-source"],
+      "difficulty": "easy",
+      "relevant_sources": [{"document_title": "创建.md", "source_text": "users := []User{", "relevance": 3}]
+    },
+    {
+      "id": "gorm-create-conflict-007",
+      "question": "如何在创建时处理冲突并更新全部字段？",
+      "expected_answerable": true,
+      "reference_answer": "使用 clause.OnConflict{UpdateAll: true}，再调用 Create。",
+      "tags": ["create", "upsert", "OnConflict", "single-source"],
+      "difficulty": "medium",
+      "relevant_sources": [{"document_title": "创建.md", "source_text": "UpdateAll: true,", "relevance": 3}]
+    },
+    {
+      "id": "gorm-update-field-008",
+      "question": "如何用 GORM 更新单个字段 name？",
+      "expected_answerable": true,
+      "reference_answer": "使用 db.Model(&user).Update(\"name\", \"Alice\")。",
+      "tags": ["update", "Update", "single-source"],
+      "difficulty": "easy",
+      "relevant_sources": [{"document_title": "更新.md", "source_text": "db.Model(&user).Update(\"name\", \"Alice\")", "relevance": 3}]
+    },
+    {
+      "id": "gorm-map-zero-value-009",
+      "question": "用 struct 调用 Updates 更新 Age=0 会发生什么？",
+      "expected_answerable": true,
+      "reference_answer": "Age 是零值，会被忽略，不会更新。",
+      "tags": ["update", "struct", "zero-value", "single-source"],
+      "difficulty": "easy",
+      "relevant_sources": [{"document_title": "map.md", "source_text": "Age:  0, // ❌ 不会更新！", "relevance": 3}]
+    },
+    {
+      "id": "gorm-save-full-update-010",
+      "question": "GORM 的 Save 属于全量更新还是部分更新？",
+      "expected_answerable": true,
+      "reference_answer": "Save 是全量更新。",
+      "tags": ["update", "Save", "single-source"],
+      "difficulty": "easy",
+      "relevant_sources": [{"document_title": "map.md", "source_text": "db.Save(&user)", "relevance": 3}]
+    },
+    {
+      "id": "gorm-global-update-011",
+      "question": "如何显式允许 GORM 执行无 WHERE 的全表更新？",
+      "expected_answerable": true,
+      "reference_answer": "在 Session 中设置 AllowGlobalUpdate: true。",
+      "tags": ["update", "global-update", "Session", "single-source"],
+      "difficulty": "medium",
+      "relevant_sources": [{"document_title": "更新.md", "source_text": "AllowGlobalUpdate: true,", "relevance": 3}]
+    },
+    {
+      "id": "gorm-soft-delete-012",
+      "question": "GORM 默认软删除生效的前提是什么？",
+      "expected_answerable": true,
+      "reference_answer": "模型中包含 gorm.DeletedAt。",
+      "tags": ["delete", "soft-delete", "single-source"],
+      "difficulty": "easy",
+      "relevant_sources": [{"document_title": "删除.md", "source_text": "GORM 默认支持软删除（前提是模型里有 `gorm.DeletedAt`）", "relevance": 3}]
+    },
+    {
+      "id": "gorm-hard-delete-013",
+      "question": "如何在 GORM 中执行物理删除？",
+      "expected_answerable": true,
+      "reference_answer": "使用 db.Unscoped().Delete(&user)。",
+      "tags": ["delete", "Unscoped", "single-source"],
+      "difficulty": "easy",
+      "relevant_sources": [{"document_title": "删除.md", "source_text": "db.Unscoped().Delete(&user)", "relevance": 3}]
+    },
+    {
+      "id": "gorm-delete-safety-014",
+      "question": "GORM 是否默认允许无条件删除？",
+      "expected_answerable": true,
+      "reference_answer": "不允许，GORM 默认禁止无条件删除。",
+      "tags": ["delete", "safety", "single-source"],
+      "difficulty": "easy",
+      "relevant_sources": [{"document_title": "删除.md", "source_text": "GORM 默认**禁止无条件删除**", "relevance": 3}]
+    },
+    {
+      "id": "gorm-transaction-recommended-015",
+      "question": "GORM 推荐的事务写法是什么？",
+      "expected_answerable": true,
+      "reference_answer": "使用 db.Transaction(func(tx *gorm.DB) error { ... })。",
+      "tags": ["transaction", "Transaction", "single-source"],
+      "difficulty": "easy",
+      "relevant_sources": [{"document_title": "事务.md", "source_text": "db.Transaction(func(tx *gorm.DB) error {", "relevance": 3}]
+    },
+    {
+      "id": "gorm-savepoint-016",
+      "question": "GORM 手动事务中如何实现部分回滚？",
+      "expected_answerable": true,
+      "reference_answer": "使用 SavePoint 创建保存点，并可回滚到该保存点。",
+      "tags": ["transaction", "SavePoint", "single-source"],
+      "difficulty": "medium",
+      "relevant_sources": [{"document_title": "事务.md", "source_text": "事务中的“回滚检查点”", "relevance": 2}]
+    },
+    {
+      "id": "gorm-session-dry-run-017",
+      "question": "Session 的 DryRun=true 有什么作用？",
+      "expected_answerable": true,
+      "reference_answer": "只生成 SQL，不实际执行。",
+      "tags": ["Session", "DryRun", "single-source"],
+      "difficulty": "easy",
+      "relevant_sources": [{"document_title": "Session.md", "source_text": "DryRun: true,", "relevance": 3}]
+    },
+    {
+      "id": "gorm-session-prepare-018",
+      "question": "如何通过 Session 开启预编译 SQL？",
+      "expected_answerable": true,
+      "reference_answer": "设置 PrepareStmt: true。",
+      "tags": ["Session", "PrepareStmt", "performance", "single-source"],
+      "difficulty": "easy",
+      "relevant_sources": [{"document_title": "Session.md", "source_text": "PrepareStmt: true,", "relevance": 3}]
+    },
+    {
+      "id": "gorm-context-query-019",
+      "question": "如何把 Context 传给 GORM 查询？",
+      "expected_answerable": true,
+      "reference_answer": "使用 db.WithContext(ctx).Find(&users)。",
+      "tags": ["context", "query", "single-source"],
+      "difficulty": "easy",
+      "relevant_sources": [{"document_title": "context.md", "source_text": "db.WithContext(ctx).Find(&users)", "relevance": 3}]
+    },
+    {
+      "id": "gorm-context-timeout-020",
+      "question": "如何为 GORM 操作设置 2 秒超时？",
+      "expected_answerable": true,
+      "reference_answer": "使用 context.WithTimeout(context.Background(), 2*time.Second)，并将 ctx 传给 GORM。",
+      "tags": ["context", "timeout", "single-source"],
+      "difficulty": "medium",
+      "relevant_sources": [{"document_title": "context.md", "source_text": "ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)", "relevance": 3}]
+    },
+    {
+      "id": "gorm-preload-n-plus-one-021",
+      "question": "不使用预加载查询关联数据的典型性能问题是什么？",
+      "expected_answerable": true,
+      "reference_answer": "N+1 查询问题。",
+      "tags": ["Preload", "N+1", "performance", "single-source"],
+      "difficulty": "easy",
+      "relevant_sources": [{"document_title": "预加载.md", "source_text": "N+1 查询问题", "relevance": 3}]
+    },
+    {
+      "id": "gorm-preload-condition-022",
+      "question": "条件预加载的作用是什么？",
+      "expected_answerable": true,
+      "reference_answer": "只加载满足条件的关联数据。",
+      "tags": ["Preload", "condition", "single-source"],
+      "difficulty": "easy",
+      "relevant_sources": [{"document_title": "预加载.md", "source_text": "只加载满足条件的数据。", "relevance": 2}]
+    },
+    {
+      "id": "gorm-auto-migrate-023",
+      "question": "如何对 User 模型执行 GORM 自动迁移？",
+      "expected_answerable": true,
+      "reference_answer": "调用 db.AutoMigrate(&User{})。",
+      "tags": ["migration", "AutoMigrate", "single-source"],
+      "difficulty": "easy",
+      "relevant_sources": [{"document_title": "迁移.md", "source_text": "db.AutoMigrate(&User{})", "relevance": 3}]
+    },
+    {
+      "id": "gorm-hook-error-024",
+      "question": "Hook 返回 error 会有什么效果？",
+      "expected_answerable": true,
+      "reference_answer": "会阻止数据库操作。",
+      "tags": ["hook", "error", "single-source"],
+      "difficulty": "easy",
+      "relevant_sources": [{"document_title": "钩子.md", "source_text": "return err // 会阻止数据库操作", "relevance": 3}]
+    },
+    {
+      "id": "gorm-save-vs-updates-025",
+      "question": "如果只想更新非零字段，应使用 Save 还是 Updates？",
+      "expected_answerable": true,
+      "reference_answer": "应使用 Updates；Save 是全量更新，可能覆盖未预期字段。",
+      "tags": ["Save", "Updates", "zero-value", "confusing"],
+      "difficulty": "medium",
+      "relevant_sources": [{"document_title": "更新.md", "source_text": "db.Save(&user)", "relevance": 3}]
+    },
+    {
+      "id": "gorm-default-transaction-performance-026",
+      "question": "关闭默认事务主要是为了安全性还是性能？",
+      "expected_answerable": true,
+      "reference_answer": "主要为了性能；关闭后需自行承担事务一致性管理。",
+      "tags": ["Session", "transaction", "performance", "confusing"],
+      "difficulty": "hard",
+      "relevant_sources": [{"document_title": "Session.md", "source_text": "SkipDefaultTransaction: true", "relevance": 3}]
+    },
+    {
+      "id": "gorm-preload-vs-join-027",
+      "question": "Preload 和 Join 都能查关联数据，它们是否执行方式相同？",
+      "expected_answerable": true,
+      "reference_answer": "不相同；Preload 通常分开查询关联数据，Join 使用联表查询。",
+      "tags": ["Preload", "Join", "association", "confusing"],
+      "difficulty": "hard",
+      "relevant_sources": [{"document_title": "预加载.md", "source_text": "Preload 与 Join 的区别", "relevance": 3}]
+    },
+    {
+      "id": "gorm-belongs-to-vs-has-one-028",
+      "question": "Belongs To 最容易与哪种关联关系混淆？",
+      "expected_answerable": true,
+      "reference_answer": "Has One。",
+      "tags": ["association", "BelongsTo", "HasOne", "confusing"],
+      "difficulty": "medium",
+      "relevant_sources": [{"document_title": "关联关系.md", "source_text": "这个最容易和 Has One 混。", "relevance": 2}]
+    },
+    {
+      "id": "gorm-on-conflict-clause-029",
+      "question": "OnConflict 在 GORM 中是普通查询条件、行锁，还是冲突处理子句？",
+      "expected_answerable": true,
+      "reference_answer": "是冲突处理子句，可用于 Upsert 或忽略冲突。",
+      "tags": ["Clauses", "OnConflict", "upsert", "confusing"],
+      "difficulty": "medium",
+      "relevant_sources": [{"document_title": "Clauses.md", "source_text": "db.Clauses(clause.OnConflict{", "relevance": 3}]
+    },
+    {
+      "id": "gorm-hook-transaction-030",
+      "question": "Hook 在事务中执行，是否意味着 Hook 自己一定开启了一个独立事务？",
+      "expected_answerable": true,
+      "reference_answer": "不意味着；Hook 使用当前数据库操作事务上下文执行，不等于独立开启事务。",
+      "tags": ["hook", "transaction", "confusing"],
+      "difficulty": "hard",
+      "relevant_sources": [{"document_title": "钩子.md", "source_text": "默认在同一个事务里", "relevance": 3}]
+    },
+    {
+      "id": "gorm-unanswerable-migration-risk-031",
+      "question": "GORM 的 AutoMigrate 是否会自动把字段类型从 string 改成 JSONB，并保证生产数据零风险？",
+      "expected_answerable": false,
+      "tags": ["migration", "unsupported-claim", "unanswerable"],
+      "difficulty": "hard",
+      "relevant_sources": []
+    },
+    {
+      "id": "gorm-unanswerable-preload-benchmark-032",
+      "question": "在 PostgreSQL 中，GORM Preload 对一百万条订单的确切耗时是多少？",
+      "expected_answerable": false,
+      "tags": ["Preload", "benchmark", "missing-data", "unanswerable"],
+      "difficulty": "hard",
+      "relevant_sources": []
+    },
+    {
+      "id": "gorm-unanswerable-logger-default-033",
+      "question": "GORM Logger 的默认 SlowThreshold 在所有数据库驱动和版本中都固定为 200ms 吗？",
+      "expected_answerable": false,
+      "tags": ["Logger", "version-specific", "unanswerable"],
+      "difficulty": "hard",
+      "relevant_sources": []
+    },
+    {
+      "id": "gorm-unanswerable-save-concurrency-034",
+      "question": "GORM 是否保证 Save 在并发更新场景下绝不会覆盖其他事务的修改？",
+      "expected_answerable": false,
+      "tags": ["Save", "concurrency", "unsupported-guarantee", "unanswerable"],
+      "difficulty": "hard",
+      "relevant_sources": []
+    },
+    {
+      "id": "gorm-unanswerable-locking-dialect-035",
+      "question": "GORM 的所有数据库方言对 clause.Locking{Strength:\"UPDATE\"} 都生成完全相同的 SQL 吗？",
+      "expected_answerable": false,
+      "tags": ["Clauses", "locking", "dialect", "unanswerable"],
+      "difficulty": "hard",
+      "relevant_sources": []
+    },
+    {
+      "id": "gorm-unanswerable-project-hooks-036",
+      "question": "仅凭这 20 个文档，能否确定当前项目每个模型都实现了 BeforeCreate，并且 Hook 覆盖率达到 100%？",
+      "expected_answerable": false,
+      "tags": ["hook", "project-state", "missing-data", "unanswerable"],
+      "difficulty": "medium",
+      "relevant_sources": []
+    }
+  ]
+}

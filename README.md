@@ -267,6 +267,7 @@ Memora/
 
 ```powershell
 go run ./cmd/server   # 启动后端
+go run ./cmd/eval-retrieval --help # 查看离线检索评估参数
 go test ./...         # 运行测试
 go vet ./...          # 静态检查
 go build ./cmd/...    # 构建命令
@@ -290,7 +291,7 @@ uv run mypy app.py schemas.py docling_adapter.py
 uv run pytest
 ```
 
-仓库也提供 `make build`、`make run-server`、`make migrate`、`make test`、`make fmt` 和 `make vet` 等命令。
+仓库也提供 `make build`、`make run-server`、`make migrate`、`make eval-retrieval ARGS="..."`、`make test`、`make fmt` 和 `make vet` 等命令。离线检索评估的数据集格式、指标语义和运行方式见[离线检索评估指南](docs/RETRIEVAL_EVALUATION.md)。
 
 ## 项目文档
 
@@ -298,6 +299,7 @@ uv run pytest
 - [前端说明](docs/FRONTEND.md)
 - [后端架构](docs/ARCHITECTURE.md)
 - [开发规范](docs/DEVELOPMENT.md)
+- [离线检索评估指南](docs/RETRIEVAL_EVALUATION.md)
 - [Docling 解析服务](services/document-parser/README.md)
 - [Docling 文档解析执行方案](docs/2026-08-08-docling-document-parsing-execution-plan.md)
 

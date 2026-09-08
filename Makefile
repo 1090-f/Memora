@@ -1,4 +1,4 @@
-.PHONY: build run-server migrate bootstrap-admin reset-admin-password test fmt vet
+.PHONY: build run-server migrate bootstrap-admin reset-admin-password eval-retrieval test fmt vet
 
 build:
 	go build ./cmd/...
@@ -14,6 +14,9 @@ bootstrap-admin:
 
 reset-admin-password:
 	go run ./cmd/migrate reset-admin-password
+
+eval-retrieval:
+	go run ./cmd/eval-retrieval $(ARGS)
 
 test:
 	go test ./...

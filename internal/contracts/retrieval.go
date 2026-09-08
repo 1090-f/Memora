@@ -59,6 +59,9 @@ type RetrievalRequest struct {
 	DocumentIDs     []ID          `json:"document_ids,omitempty"` // 可选：限定检索的文档集合
 	TopK            int           `json:"top_k"`                  // 最终返回条数
 	Config          SearchConfig  `json:"config"`                 // 检索参数
+	// ConfigOverride 仅供离线评估等可信内部调用覆盖知识库的持久化检索配置。
+	// HTTP 请求不会绑定该字段，避免普通搜索绕过知识库配置。
+	ConfigOverride *SearchConfig `json:"-"`
 }
 
 // RetrievalItem 表示带有相关性分数的单个检索文档块。
@@ -95,6 +98,7 @@ type RetrievalResult struct {
 	RewrittenQuery  string          `json:"rewritten_query,omitempty"`
 	KnowledgeStatus string          `json:"knowledge_status"`
 	ElapsedMS       int64           `json:"elapsed_ms,omitempty"`
+	SearchConfig    SearchConfig    `json:"-"`
 }
 
 // RetrievalService 从知识库中检索相关文档。
