@@ -27,7 +27,7 @@ Memora 不是一个只负责上传和搜索文件的网盘。它提供从原始�
 | Agent 对话 | 提供知识库对话、Agent Run 列表与详情、记忆管理及运行过程查看 |
 | MCP 工具 | 管理 MCP Server 和工具状态，为 Agent 扩展外部能力 |
 | 异步任务 | 使用 Outbox 与 Redis Streams 处理文档解析、预览、索引等后台任务 |
-| 可观测性 | 提供请求追踪、审计日志、健康检查、Worker 状态和 Prometheus 指标 |
+| 可观测性 | 提供请求追踪、审计日志、健康检查、Worker 状态和内置指标端点（Prometheus 文本格式，无需外部监控组件） |
 
 ## 界面与工作流
 
@@ -142,7 +142,7 @@ Compose 会启动 PostgreSQL、Redis、MinIO、API 和管理端，并自动执�
 | Liveness | `GET http://localhost:8080/health/live` |
 | Readiness | `GET http://localhost:8080/health/ready` |
 | 后台消费者状态 | `GET http://localhost:8080/health/workers` |
-| Prometheus 指标 | `GET http://localhost:8080/metrics` |
+| 指标端点（Prometheus 文本格式） | `GET http://localhost:8080/metrics` |
 
 默认管理员邮箱是 `admin@example.com`，密码为你在 `.env` 中设置的 `MEMORA_BOOTSTRAP_ADMIN_PASSWORD`。
 
