@@ -23,8 +23,8 @@ import (
 	"github.com/1090-f/Memora/pkg/logger"
 	"github.com/1090-f/Memora/pkg/metrics"
 	"github.com/1090-f/Memora/pkg/objectstore"
-	"github.com/cloudwego/eino/components/embedding"
 	"go.uber.org/zap"
+	"gorm.io/datatypes"
 )
 
 // documentProcessService 是 DocumentProcessService 接口的实现。
@@ -412,6 +412,18 @@ func observationsFromDocumentEvents(events []entity.DocumentProcessingEvent) []c
 	latest := make(map[string]contracts.StageObservation)
 	for _, event := range events {
 		item := contracts.StageObservation{Stage: event.Stage, Status: contracts.StageStatus(event.Status), StartedAt: event.StartedAt, EndedAt: event.EndedAt, DurationMS: event.DurationMS}
+		if len(event.Metadata) > 0 {
+			var metadata map[string]any
+			if json.Unmarshal(event.Metadata, &metadata) == nil {
+				if summary, ok := metadata["summary"].(string); ok {
+					item.Summary = summary
+					delete(metadata, "summary")
+				}
+				if len(metadata) > 0 {
+					item.Metadata = metadata
+				}
+			}
+		}
 		if event.ErrorCode != nil {
 			item.ErrorCode = contracts.ErrorCode(*event.ErrorCode)
 		}
@@ -608,7 +620,6 @@ func (s *documentProcessService) ProcessImportTask(ctx context.Context, taskID c
 // 注意：active_index_version 只在新版本全部成功落库后才更新，构建期间旧版本继续可用。
 func (s *documentProcessService) processDocument(ctx context.Context, task *entity.ImportTask, doc *entity.Document) error {
 	pipelineStarted := time.Now().UTC()
-	s.appendDocumentEvent(ctx, task, doc, contracts.DocumentStageParse, contracts.StageRunning, pipelineStarted, nil, nil)
 	// 在数据库行锁内领取候选版本。owner 使用稳定的任务 ID：同任务重试复用版本，
 	// 并发任务不能清理当前候选；过期任务被接管时会分配更高版本。
 	indexVersion, err := s.docs.BeginIndexBuild(ctx, doc.ID, task.ID, time.Now().UTC().Add(-repository.ImportTaskLease()))
@@ -626,11 +637,10 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 			return fmt.Errorf("清理旧版本向量失败: %w", err)
 		}
 	}
-	var embeddingModelID string
-	var embedder embedding.Embedder
+	var embeddingResolution *ResolvedDocumentEmbedding
 	if s.embeddings != nil {
 		var err error
-		embeddingModelID, embedder, err = s.embeddings.Resolve(ctx, task.UserID, task.KnowledgeBaseID)
+		embeddingResolution, err = s.embeddings.Resolve(ctx, task.UserID, task.KnowledgeBaseID)
 		if err != nil {
 			return fmt.Errorf("解析文档 Embedding 模型失败: %w", err)
 		}
@@ -638,16 +648,14 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 
 	// 执行 Eino 文档加工 Graph：
 	// resolve_artifact → parse_if_missing → validate → persist_artifact → normalize
-	// → enrich → structure_chunk → clean → token_count → persist → index。
+	// → enrich → canonical_chunk → clean → token_count → persist → index。
 	// 节点顺序由 pipeline 编译期固定，此处仅传入对象与元数据触发整条流水线。
 	input := pipeline.ProcessInput{
-		ObjectKey:        valueOrEmpty(task.MinIOObjectKey),
-		SourceURL:        valueOrEmpty(task.SourceURL),
-		FileName:         valueOrEmpty(task.FileName),
-		MIMEType:         valueOrEmpty(task.MIMEType),
-		Attachments:      task.Attachments,
-		Embedder:         embedder,
-		EmbeddingModelID: embeddingModelID,
+		ObjectKey:   valueOrEmpty(task.MinIOObjectKey),
+		SourceURL:   valueOrEmpty(task.SourceURL),
+		FileName:    valueOrEmpty(task.FileName),
+		MIMEType:    valueOrEmpty(task.MIMEType),
+		Attachments: task.Attachments,
 		DocMeta: transformer.DocMeta{
 			UserID:          task.UserID,
 			KnowledgeBaseID: task.KnowledgeBaseID,
@@ -664,6 +672,14 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 			},
 		},
 	}
+	if embeddingResolution != nil {
+		input.Embedder = embeddingResolution.Embedder
+		input.EmbeddingModelID = embeddingResolution.ModelID
+		input.EmbeddingProvider = embeddingResolution.Provider
+		input.EmbeddingModelName = embeddingResolution.ModelName
+		input.Tokenizer = embeddingResolution.Tokenizer
+		input.TokenizerExact = embeddingResolution.TokenizerExact
+	}
 	input.ChunkStrategyOverride = s.resolveChunkStrategyOverride(ctx, doc, task)
 	// 手工文档：正文存于 documents.content，直接交给流水线（不访问 MinIO）。
 	if task.SourceType == string(contracts.DocumentSourceManual) {
@@ -676,25 +692,45 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 			input.FileName = manualTaskFileName(doc)
 		}
 	}
-	out, err := s.processor.Run(ctx, input)
+	reportedAny := false
+	activeStage := contracts.DocumentStageParse
+	activeStarted := pipelineStarted
+	pipelineCtx := contracts.WithDocumentStageReporter(ctx, func(reportCtx context.Context, stage contracts.DocumentStage, observation contracts.StageObservation) {
+		reportedAny = true
+		if observation.Status == contracts.StageRunning {
+			activeStage = stage
+			if observation.StartedAt != nil {
+				activeStarted = *observation.StartedAt
+			}
+		}
+		s.appendDocumentObservation(reportCtx, task, doc, stage, observation)
+	})
+	out, err := s.processor.Run(pipelineCtx, input)
 	if err != nil {
 		ended := time.Now().UTC()
-		duration := ended.Sub(pipelineStarted).Milliseconds()
-		s.appendDocumentEvent(ctx, task, doc, inferDocumentFailureStage(err), contracts.StageFailed, pipelineStarted, &ended, &duration)
+		if !reportedAny {
+			activeStage = inferDocumentFailureStage(err)
+			activeStarted = pipelineStarted
+		}
+		duration := ended.Sub(activeStarted).Milliseconds()
+		s.appendDocumentObservation(ctx, task, doc, activeStage, contracts.StageObservation{Stage: string(activeStage), Status: contracts.StageFailed, StartedAt: &activeStarted, EndedAt: &ended, DurationMS: &duration, ErrorCode: contracts.ErrDocumentProcessing, ErrorMessage: err.Error(), Summary: "文档处理阶段失败"})
 		return fmt.Errorf("文档加工失败: %w", err)
 	}
 	ended := time.Now().UTC()
-	for _, stage := range []contracts.DocumentStage{contracts.DocumentStageParse, contracts.DocumentStageNormalize, contracts.DocumentStageChunk} {
-		s.appendDocumentEvent(ctx, task, doc, stage, contracts.StageSucceeded, pipelineStarted, &ended, nil)
-	}
-	if embedder != nil {
-		s.appendDocumentEvent(ctx, task, doc, contracts.DocumentStageEmbed, contracts.StageSucceeded, pipelineStarted, &ended, nil)
-	} else {
-		s.appendDocumentEvent(ctx, task, doc, contracts.DocumentStageEmbed, contracts.StageSkipped, pipelineStarted, &ended, nil)
+	// 兼容不支持阶段回调的自定义 Processor；生产 Graph 会上报真实阶段边界。
+	if !reportedAny {
+		for _, stage := range []contracts.DocumentStage{contracts.DocumentStageParse, contracts.DocumentStageNormalize, contracts.DocumentStageChunk} {
+			s.appendDocumentEvent(ctx, task, doc, stage, contracts.StageSucceeded, pipelineStarted, &ended, nil)
+		}
+		if embeddingResolution != nil && embeddingResolution.Embedder != nil {
+			s.appendDocumentEvent(ctx, task, doc, contracts.DocumentStageEmbed, contracts.StageSucceeded, pipelineStarted, &ended, nil)
+		} else {
+			s.appendDocumentEvent(ctx, task, doc, contracts.DocumentStageEmbed, contracts.StageSkipped, pipelineStarted, &ended, nil)
+		}
 	}
 	s.appendDocumentEvent(ctx, task, doc, contracts.DocumentStageIndex, contracts.StageRunning, ended, nil, nil)
 	// 纯图片文档允许 0 Chunk 成功导入（无文字图片无可索引内容，资产与原文件保留）；
-	// 有正文却分不出 Chunk 的情况由流水线 structure_chunk 节点拒绝。
+	// 有正文却分不出 Chunk 的情况由流水线 canonical_chunk 节点拒绝。
 	// 加工成功：切换 active_index_version，并记录 Embedding 模型与分段配置哈希。
 	effectiveChunkConfigHash := out.ChunkConfigHash
 	if effectiveChunkConfigHash == "" && s.processor != nil {
@@ -737,8 +773,8 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 			return fmt.Errorf("保存 URL 导入结果失败: %w", err)
 		}
 	}
-	if embeddingModelID != "" {
-		updates["embedding_model_id"] = embeddingModelID
+	if embeddingResolution != nil && embeddingResolution.ModelID != "" {
+		updates["embedding_model_id"] = embeddingResolution.ModelID
 	} else if modelID := s.processor.EmbeddingModelID(); modelID != "" {
 		updates["embedding_model_id"] = modelID
 	} else {
@@ -774,17 +810,39 @@ func (s *documentProcessService) processDocument(ctx context.Context, task *enti
 }
 
 func (s *documentProcessService) appendDocumentEvent(ctx context.Context, task *entity.ImportTask, doc *entity.Document, stage contracts.DocumentStage, status contracts.StageStatus, started time.Time, ended *time.Time, duration *int64) {
+	s.appendDocumentObservation(ctx, task, doc, stage, contracts.StageObservation{Stage: string(stage), Status: status, StartedAt: &started, EndedAt: ended, DurationMS: duration})
+}
+
+func (s *documentProcessService) appendDocumentObservation(ctx context.Context, task *entity.ImportTask, doc *entity.Document, stage contracts.DocumentStage, observation contracts.StageObservation) {
 	if s.processingEvents == nil || task == nil || doc == nil {
 		return
 	}
 	traceID, requestID := contracts.CorrelationFromContext(ctx)
-	event := &entity.DocumentProcessingEvent{KnowledgeBaseID: doc.KnowledgeBaseID, DocumentID: doc.ID, TaskID: &task.ID, Stage: string(stage), Status: string(status), StartedAt: &started, EndedAt: ended, DurationMS: duration, Attempt: max(task.Attempt, 1)}
-	if status == contracts.StageFailed {
-		code := string(contracts.ErrDocumentProcessing)
+	event := &entity.DocumentProcessingEvent{KnowledgeBaseID: doc.KnowledgeBaseID, DocumentID: doc.ID, TaskID: &task.ID, Stage: string(stage), Status: string(observation.Status), StartedAt: observation.StartedAt, EndedAt: observation.EndedAt, DurationMS: observation.DurationMS, Attempt: max(task.Attempt, 1)}
+	if observation.Status == contracts.StageFailed {
+		code := string(observation.ErrorCode)
+		if code == "" {
+			code = string(contracts.ErrDocumentProcessing)
+		}
 		event.ErrorCode = &code
 	}
-	if duration != nil {
-		metrics.StageFinished("document_process", string(stage), string(status), time.Duration(*duration)*time.Millisecond)
+	if observation.ErrorMessage != "" {
+		event.ErrorMessage = &observation.ErrorMessage
+	}
+	metadata := observation.Metadata
+	if observation.Summary != "" {
+		if metadata == nil {
+			metadata = make(map[string]any)
+		}
+		metadata["summary"] = observation.Summary
+	}
+	if len(metadata) > 0 {
+		if raw, err := json.Marshal(metadata); err == nil {
+			event.Metadata = datatypes.JSON(raw)
+		}
+	}
+	if observation.DurationMS != nil {
+		metrics.StageFinished("document_process", string(stage), string(observation.Status), time.Duration(*observation.DurationMS)*time.Millisecond)
 	}
 	if traceID != "" {
 		event.TraceID = &traceID

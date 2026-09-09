@@ -207,13 +207,14 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 	}
 
 	return contracts.AgentRunResult{
-		RunID:         request.RunID,
-		ExecutionMode: contracts.ExecutionReact,
-		FinalResult:   finalContent,
-		Citations:     citationCollector.Get(),
-		Usage:         accumulatedUsage, // AfterAgent 只在成功路径被调用，此处等效
-		StartedAt:     startedAt,
-		EndedAt:       time.Now().UTC(),
+		RunID:           request.RunID,
+		ExecutionMode:   contracts.ExecutionReact,
+		KnowledgeStatus: middleware.knowledgeStatus.value(),
+		FinalResult:     finalContent,
+		Citations:       citationCollector.Get(),
+		Usage:           accumulatedUsage, // AfterAgent 只在成功路径被调用，此处等效
+		StartedAt:       startedAt,
+		EndedAt:         time.Now().UTC(),
 	}, nil
 }
 

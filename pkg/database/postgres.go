@@ -17,6 +17,9 @@ func InitPostgres(ctx context.Context, cfg *config.DatabaseConfig) (*gorm.DB, er
 	if err != nil {
 		return nil, fmt.Errorf("打开 PostgreSQL 连接失败: %w", err)
 	}
+	if err := registerGormTracing(db); err != nil {
+		return nil, fmt.Errorf("注册 PostgreSQL Trace 回调失败: %w", err)
+	}
 	sqlDB, err := db.DB()
 	if err != nil {
 		return nil, fmt.Errorf("获取 PostgreSQL 连接池失败: %w", err)

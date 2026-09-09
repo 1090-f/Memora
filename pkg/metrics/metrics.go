@@ -27,6 +27,9 @@ var (
 	workerHeartbeat   atomic.Int64
 	queueDepth        sync.Map
 	stageDuration     sync.Map
+	oldestPendingAge  sync.Map
+	retriedTasks      sync.Map
+	stalledTasks      sync.Map
 )
 
 // HTTPStarted 记录一个新HTTP请求开始，增加活跃请求计数
@@ -56,6 +59,16 @@ func WorkerHeartbeat() { workerHeartbeat.Store(time.Now().UTC().Unix()) }
 func QueueDepth(jobType, kind string, value int64) {
 	gauge, _ := queueDepth.LoadOrStore(queueKey{jobType: jobType, kind: kind}, &atomic.Int64{})
 	gauge.(*atomic.Int64).Store(value)
+}
+
+// QueueHealth 更新任务队列年龄和重试任务数；jobType 必须为低基数类型。
+func QueueHealth(jobType string, oldestAgeSeconds, retried, stalled int64) {
+	age, _ := oldestPendingAge.LoadOrStore(jobType, &atomic.Int64{})
+	age.(*atomic.Int64).Store(oldestAgeSeconds)
+	retries, _ := retriedTasks.LoadOrStore(jobType, &atomic.Int64{})
+	retries.(*atomic.Int64).Store(retried)
+	stalledGauge, _ := stalledTasks.LoadOrStore(jobType, &atomic.Int64{})
+	stalledGauge.(*atomic.Int64).Store(stalled)
 }
 
 type durationAggregate struct {
@@ -98,6 +111,18 @@ func Handler() http.Handler {
 				fmt.Sprintf("memora_worker_stage_duration_seconds_sum{job_type=%q,stage=%q,result=%q} %.6f", labels.jobType, labels.stage, labels.result, float64(aggregate.nanos.Load())/float64(time.Second)),
 				fmt.Sprintf("memora_worker_stage_duration_seconds_count{job_type=%q,stage=%q,result=%q} %d", labels.jobType, labels.stage, labels.result, aggregate.count.Load()),
 			)
+			return true
+		})
+		oldestPendingAge.Range(func(key, value any) bool {
+			lines = append(lines, fmt.Sprintf("memora_worker_oldest_pending_age_seconds{job_type=%q} %d", key.(string), value.(*atomic.Int64).Load()))
+			return true
+		})
+		retriedTasks.Range(func(key, value any) bool {
+			lines = append(lines, fmt.Sprintf("memora_worker_retried_tasks{job_type=%q} %d", key.(string), value.(*atomic.Int64).Load()))
+			return true
+		})
+		stalledTasks.Range(func(key, value any) bool {
+			lines = append(lines, fmt.Sprintf("memora_worker_stalled_tasks{job_type=%q} %d", key.(string), value.(*atomic.Int64).Load()))
 			return true
 		})
 		sort.Strings(lines)

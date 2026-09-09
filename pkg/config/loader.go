@@ -115,7 +115,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("preview.consumer.processing_timeout", "10m")
 	v.SetDefault("preview.consumer.claim_idle", "15m")
 	v.SetDefault("preview.consumer.max_attempts", 3)
-	v.SetDefault("preview.office.enabled", true)
+	// Office 文件默认由浏览器直接预览；启用后额外生成 LibreOffice PDF 高保真回退。
+	v.SetDefault("preview.office.enabled", false)
 	v.SetDefault("preview.office.max_concurrency", 1)
 	v.SetDefault("preview.office.timeout", "5m")
 	v.SetDefault("preview.xlsx.enabled", true)
@@ -143,9 +144,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("document_parser.table_structure", true)
 	v.SetDefault("document_parser.extract_pictures", true)
 	v.SetDefault("document_parser.include_bboxes", true)
-	v.SetDefault("chunking.strategy", "structured")
+	v.SetDefault("chunking.strategy", "auto")
 	v.SetDefault("chunking.strategy_version", "structure-v1")
-	v.SetDefault("chunking.use_canonical_chunker", false)
 	v.SetDefault("chunking.enable_canonical_chunk_diff", false)
 	v.SetDefault("chunking.max_tokens", 1000)
 	v.SetDefault("chunking.min_tokens", 100)
@@ -161,7 +161,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("observability.capture_sensitive_content", false)
 	v.SetDefault("observability.trace_sample_ratio", 1.0)
 	v.SetDefault("observability.retention_days", 30)
-	v.SetDefault("observability.otlp_endpoint", "")
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.filename", "")
 	v.SetDefault("log.max_size", 100)
@@ -234,7 +233,6 @@ func bindEnvironment(v *viper.Viper) {
 		"document_parser.include_bboxes":               "MEMORA_DOCUMENT_PARSER_INCLUDE_BBOXES",
 		"chunking.strategy":                            "MEMORA_CHUNKING_STRATEGY",
 		"chunking.strategy_version":                    "MEMORA_CHUNKING_STRATEGY_VERSION",
-		"chunking.use_canonical_chunker":               "MEMORA_CHUNKING_USE_CANONICAL_CHUNKER",
 		"chunking.enable_canonical_chunk_diff":         "MEMORA_CHUNKING_ENABLE_CANONICAL_CHUNK_DIFF",
 		"chunking.max_tokens":                          "MEMORA_CHUNKING_MAX_TOKENS",
 		"chunking.min_tokens":                          "MEMORA_CHUNKING_MIN_TOKENS",
@@ -250,7 +248,6 @@ func bindEnvironment(v *viper.Viper) {
 		"observability.capture_sensitive_content":      "MEMORA_OBSERVABILITY_CAPTURE_SENSITIVE_CONTENT",
 		"observability.trace_sample_ratio":             "MEMORA_OBSERVABILITY_TRACE_SAMPLE_RATIO",
 		"observability.retention_days":                 "MEMORA_OBSERVABILITY_RETENTION_DAYS",
-		"observability.otlp_endpoint":                  "MEMORA_OBSERVABILITY_OTLP_ENDPOINT",
 		"log.level":                                    "MEMORA_LOG_LEVEL", "log.filename": "MEMORA_LOG_FILENAME",
 		"log.max_size": "MEMORA_LOG_MAX_SIZE", "log.max_backups": "MEMORA_LOG_MAX_BACKUPS",
 		"log.max_age": "MEMORA_LOG_MAX_AGE", "log.compress": "MEMORA_LOG_COMPRESS",

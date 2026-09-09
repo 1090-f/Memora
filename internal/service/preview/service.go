@@ -89,10 +89,18 @@ func (s *service) GetDescriptor(ctx context.Context, userID, documentID string) 
 		}
 		descriptor.ContentURL = documentURL(doc.ID, "/original?inline=true")
 		descriptor.Fallbacks = appendReady(descriptor.Fallbacks, textFallback, downloadFallback)
-	case kindDOCX, kindPPTX:
-		descriptor.PreviewType, descriptor.MediaType = TypePDF, "application/pdf"
-		s.applyArtifactState(ctx, descriptor, doc, TypePDF, s.office, documentURL(doc.ID, "/preview/rendered"))
-		descriptor.Fallbacks = appendReady(descriptor.Fallbacks, textFallback, downloadFallback)
+	case kindDOCX:
+		descriptor.PreviewType, descriptor.Status = TypeDOCX, StatusReady
+		descriptor.MediaType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+		descriptor.ContentURL = documentURL(doc.ID, "/original?inline=true")
+		pdfFallback := s.artifactFallback(ctx, doc, TypePDF, s.office, documentURL(doc.ID, "/preview/rendered"), "application/pdf")
+		descriptor.Fallbacks = appendReady(descriptor.Fallbacks, pdfFallback, textFallback, downloadFallback)
+	case kindPPTX:
+		descriptor.PreviewType, descriptor.Status = TypePPTX, StatusReady
+		descriptor.MediaType = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+		descriptor.ContentURL = documentURL(doc.ID, "/original?inline=true")
+		pdfFallback := s.artifactFallback(ctx, doc, TypePDF, s.office, documentURL(doc.ID, "/preview/rendered"), "application/pdf")
+		descriptor.Fallbacks = appendReady(descriptor.Fallbacks, pdfFallback, textFallback, downloadFallback)
 	case kindXLSX:
 		descriptor.PreviewType, descriptor.MediaType = TypeTable, "application/json"
 		s.applyArtifactState(ctx, descriptor, doc, TypeTable, s.xlsx, documentURL(doc.ID, "/preview/table"))

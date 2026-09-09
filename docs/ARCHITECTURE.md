@@ -98,11 +98,12 @@ RequestID → AccessLog → Recovery → CORS → Auth → Controller
 - 数据访问（SQL、GORM、pgvector、全文检索、`SKIP LOCKED`）只允许在 `internal/repository`；自定义 Eino Indexer/Retriever 通过最小 Repository 接口访问数据，组件本身不持有 GORM 查询逻辑。
 - 文档处理长任务由 `internal/worker/document` 的 Source/Handler 驱动；Eino Compose 负责任务内部的确定性数据流，PostgreSQL 任务领取、状态持久化、重试、幂等与恢复仍由 `internal/worker` 通用 Runner/Registry 负责。
 - 长耗时解析、分段、Embedding 和索引必须进入 Worker，不能阻塞 HTTP 请求；数据库是业务事实来源，Redis 不保存唯一业务状态。
-- 文档视觉预览与 RAG 加工解耦：`document_previews` 保存当前内容版本的派生任务状态，
-  Outbox 按 `document.preview.render` 事件投递到独立 Redis Stream。预览消费者领取任务后，
-  DOCX/PPTX 通过受并发和超时约束的 LibreOffice 生成 PDF，XLSX 同时生成结构化 Sheet
-  Artifact 和 PDF 回退。产物写入 MinIO 的 `derived/{user}/{document}/content-{version}/`
-  版本目录，并在对象成功后最后发布 manifest；API 只读取并校验已经完成的产物。
+- 文档视觉预览与 RAG 加工解耦：DOCX/PPTX 原文件默认交由浏览器端专用 Viewer 直接读取，
+  XLSX 使用结构化 Sheet Artifact。`document_previews` 保存当前内容版本的派生任务状态，
+  Outbox 按 `document.preview.render` 事件投递到独立 Redis Stream。启用可选 LibreOffice
+  渲染器时，预览消费者额外生成 Office PDF 高保真回退。派生产物写入 MinIO 的
+  `derived/{user}/{document}/content-{version}/` 版本目录，并在对象成功后最后发布 manifest；
+  API 只读取并校验已经完成的产物。
 - 预览失败不回滚或阻塞文档解析、分块与索引。前端通过统一 Descriptor 轮询预览状态，
   并按服务端返回的 fallback 顺序降级到解析正文或原文件下载。
 - 检索在应用启动时编译单一 Eino Graph：参数校验 → keyword/vector Retriever（hybrid 并发）→ RRF → 可降级 Reranker → 知识充分性 → Citation。生产 API 不存在绕过 Graph 的第二条检索路径。

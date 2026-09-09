@@ -193,6 +193,32 @@ export function InlineAgentRun({ state, runId }: { state: AgentRunViewState; run
                           <Typography sx={{ color: entry.status === 'failed' ? '#bd4a4a' : '#6d788a', fontSize: 11.5, fontWeight: entry.status === 'failed' ? 650 : 500 }}>{entry.title}</Typography>
                         </Stack>
                       );
+                    case 'stage': {
+                      const labels: Record<string, string> = {
+                        route: '执行路径选择', query_rewrite: '查询改写', keyword_retrieve: '关键词检索', vector_retrieve: '向量检索',
+                        fusion: '结果融合', rerank: '结果重排', knowledge_check: '知识充分性判断', context_build: '上下文构造',
+                        model_generate: '模型生成', tool_call: '工具调用', answer: '回答完成',
+                      };
+                      const hasDetail = Boolean(entry.summary || entry.duration_ms != null || entry.error_code || entry.error_message);
+                      return (
+                        <Stack key={key} spacing={0.2} sx={{ pl: 0.5 }}>
+                          <Stack direction="row" alignItems="center" spacing={0.5} onClick={() => hasDetail && handleEntryClick(key)} sx={{ cursor: hasDetail ? 'pointer' : 'default' }}>
+                            <TimelineDot status={entry.status === 'succeeded' || entry.status === 'skipped' ? 'completed' : entry.status} index={index} />
+                            <Typography sx={{ color: entry.status === 'failed' ? '#bd4a4a' : entry.status === 'running' ? '#4358d0' : '#4e5a6f', fontSize: 12.5, flex: 1 }}>
+                              {labels[entry.stage] ?? entry.stage}
+                            </Typography>
+                            <Typography sx={{ color: '#8c96a7', fontSize: 10.5 }}>{entry.status === 'succeeded' ? '已完成' : entry.status === 'skipped' ? '已跳过' : entry.status === 'failed' ? '失败' : entry.status === 'running' ? '进行中' : '等待中'}</Typography>
+                          </Stack>
+                          {expandedEntryKey === key && hasDetail && (
+                            <Stack spacing={0.35} sx={{ ml: 1.5, mt: 0.4 }}>
+                              {entry.summary && <Typography sx={{ color: '#6d788a', fontSize: 11 }}>{entry.summary}</Typography>}
+                              {entry.duration_ms != null && <Typography sx={{ color: '#8c96a7', fontSize: 10.5 }}>耗时 {formatDuration(entry.duration_ms)}</Typography>}
+                              {(entry.error_code || entry.error_message) && <Typography sx={{ color: '#bd4a4a', fontSize: 10.5 }}>{[entry.error_code, entry.error_message].filter(Boolean).join('：')}</Typography>}
+                            </Stack>
+                          )}
+                        </Stack>
+                      );
+                    }
                     case 'router':
                       return (
                         <Stack key={key} spacing={0.2} sx={{ pl: 0.5 }}>

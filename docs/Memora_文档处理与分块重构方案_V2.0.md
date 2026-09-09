@@ -4,6 +4,8 @@
 >
 > 基于现有 Memora 实现及 Qavor / DocMind 参考方案修订
 > 版本：V2.0 · 2026-08-24
+>
+> 实施状态：自 2026-09-04 起，Canonical Chunker 已成为唯一生产分块主链路，默认策略为 `auto`；Legacy Chunker 仅用于可选差异对照。分块 Tokenizer 按知识库绑定的 Embedding 模型逐任务解析，已识别的 OpenAI Embedding 使用本地 `cl100k_base`，未知模型显式回退 `heuristic-v1`。
 
 ## 摘要
 
@@ -55,7 +57,7 @@ Keyword Index + Embedding / pgvector
 - 超长文本拆分后，各子块复制整组 BlockIDs，缺少块内字符范围；
 - `repeat_table_header` 配置参与哈希，但当前实现始终重复表头；
 - 超长表格单行按完整 MaxTokens 拆分后再追加表头，最终仍可能超限；
-- 当前启发式 tokenizer 未与实际 Embedding 模型严格对齐；
+- 未知或使用自定义部署名的 Embedding 模型无法可靠推断词表，当前显式回退启发式 tokenizer；
 - 同一文档并发重处理可能竞争相同的下一索引版本。
 
 ## 2. 设计目标与非目标
@@ -570,9 +572,8 @@ Expected Answerability
 
 ### 13.1 Feature Flags
 
-- `canonical_renderer_enabled`；
-- `canonical_chunker_enabled`；
-- `chunk_strategy=structured|paragraph|recursive|auto`；
+- `chunk_strategy=structured|paragraph|recursive_fallback|auto`；
+- `enable_canonical_chunk_diff`：仅影子运行 Legacy Chunker 并生成差异报告；
 - `parent_child_enabled`。
 
 支持按环境、知识库和文档覆盖。
@@ -602,7 +603,7 @@ Expected Answerability
 | Canonical 层过度设计 | 重构时间长、接口复杂 | 首版只覆盖现有稳定 Block 类型，不建立通用文档编辑模型 |
 | Markdown 与 Node 不一致 | Chunk 边界和来源漂移 | 单一 Renderer 同时生成二者；Validator 校验 offset 与内容 |
 | SourceMap 体积较大 | Artifact 和 JSONB 增长 | 合并连续同源 span；Chunk 只保存相交片段；必要时压缩 Artifact |
-| Router 误判 | 召回下降 | 默认 Structured、支持手动覆盖、先影子评估后启用 auto |
+| Router 误判 | 召回下降 | 使用确定性规则、支持文档/知识库手动覆盖，并持续对照离线指标 |
 | 双跑成本增加 | 导入延迟和资源占用 | 只在灰度环境或抽样文档双跑，设置采样率 |
 | 表格/图片语义退化 | 专业文档检索质量下降 | Node 保留 Table/Asset 引用，禁止只从 Markdown 恢复 |
 | 版本链不清晰 | 错误复用旧产物 | 分离 parse/canonical/chunk/index hash 并记录构建依赖 |

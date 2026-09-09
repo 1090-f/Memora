@@ -9,74 +9,21 @@ import type { ReactNode } from 'react';
 import { errorMessage } from '@/api/errors';
 import { queryKeys } from '@/api/queryKeys';
 import { getDocumentTextPreviewById } from '../../api';
-import type { DocumentPreview, PreviewFallback, PreviewStatus, PreviewType } from '../../types';
+import type { DocumentPreview, PreviewStatus } from '../../types';
 import { ImageViewer } from './ImageViewer';
 import { MarkdownViewer } from './MarkdownViewer';
+import { OfficeViewer } from './OfficeViewer';
 import { PdfViewer } from './PdfViewer';
 import { PresentationViewer } from './PresentationViewer';
 import { TableViewer } from './TableViewer';
 import { TextViewer } from './TextViewer';
-
-interface PreviewMode {
-  key: string;
-  type: PreviewType;
-  status: PreviewStatus;
-  contentUrl?: string;
-}
-
-type TabKind = 'source' | 'table' | 'parsed';
-
-interface PreviewTab {
-  key: string;
-  kind: TabKind;
-  title: string;
-  mode?: PreviewMode;
-  sourceImage?: PreviewMode;
-}
+import { buildTabs, collectModes, type PreviewMode } from './previewTabs';
 
 const PROCESSING_KEY = '__processing';
 
 const statusSuffix = (status: PreviewStatus) =>
   status === 'pending' || status === 'processing' ? '（生成中）' : status === 'failed' ? '（失败）' : '';
 
-// collectModes 汇总 primary 与回退模式，跳过 download/none 与重复类型。
-function collectModes(descriptor: DocumentPreview): PreviewMode[] {
-  const result: PreviewMode[] = [{
-    key: `primary-${descriptor.preview_type}`,
-    type: descriptor.preview_type,
-    status: descriptor.status,
-    contentUrl: descriptor.content_url,
-  }];
-  const seen = new Set([descriptor.preview_type]);
-  descriptor.fallbacks.forEach((fallback: PreviewFallback) => {
-    if (fallback.preview_type === 'download' || fallback.preview_type === 'none' || seen.has(fallback.preview_type)) return;
-    seen.add(fallback.preview_type);
-    result.push({ key: `fallback-${fallback.preview_type}`, type: fallback.preview_type, status: fallback.status, contentUrl: fallback.content_url });
-  });
-  return result;
-}
-
-// buildTabs 统一所有文档类型的 Tab 结构：原版预览/原文预览 → 解析正文 → 处理详情（固定追加）。
-//   xlsx 优先用「原版预览」（直接从原文件读取单元格渲染，数据层最忠实），
-//   其余类型用「原文预览」（PDF 原文经 LibreOffice 转印 / 原图，txt/md 原文即正文）。
-//   解析正文：一律展示解析文本；txt/md 原文与解析正文相同，仍作为独立 tab 保持结构统一。
-function buildTabs(modes: PreviewMode[]): PreviewTab[] {
-  const byType = (type: PreviewType) => modes.find((mode) => mode.type === type);
-  const table = byType('table');
-  const pdf = byType('pdf');
-  const image = byType('image');
-  const text = byType('markdown') ?? byType('text');
-
-  const tabs: PreviewTab[] = [];
-  const source = table ?? pdf ?? image ?? text;
-  if (source) {
-    tabs.push({ key: 'source', kind: 'source', title: source.type === 'table' ? '原版预览' : '原文预览', mode: source });
-  }
-  if (text) {
-    tabs.push({ key: 'parsed', kind: 'parsed', title: '解析正文', mode: text, sourceImage: image });
-  }
-  return tabs;
-}
 
 export function PreviewHost({ descriptor, title, onRetry, retrying, processingContent }: {
   descriptor: DocumentPreview;
@@ -168,6 +115,8 @@ function ModeContent({ documentId, mode, title, error, onRetry, retrying }: {
   if (!mode.contentUrl) return <Typography color="text.secondary">没有可读取的预览资源。</Typography>;
   switch (mode.type) {
     case 'pdf': return <PdfViewer documentId={documentId} contentUrl={mode.contentUrl} title={title} />;
+    case 'docx':
+    case 'pptx': return <OfficeViewer documentId={documentId} contentUrl={mode.contentUrl} type={mode.type} />;
     case 'image': return <ImageViewer documentId={documentId} contentUrl={mode.contentUrl} title={title} />;
     case 'table': return <TableViewer documentId={documentId} contentUrl={mode.contentUrl} />;
     case 'markdown': return <TextResourceViewer documentId={documentId} markdown />;

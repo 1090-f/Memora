@@ -252,6 +252,8 @@ created_at
 - 保留并传播现有 W3C `traceparent`。
 - 在 Redis Stream producer/consumer、Go → Python Parser、模型请求和 MCP 请求间传播上下文。
 - 将 `trace_id` 写入 `agent_runs` 和文档任务记录，建立产品记录与底层 Trace 的关联。
+- 将经过白名单裁剪的关键 Span 写入现有 PostgreSQL，不依赖额外观测服务。
+- Span 保存 `span_id/parent_span_id`、类型、起止时间、状态、安全属性与事件，并按统一保留期清理。
 
 ## 7. 前端实施计划
 
@@ -273,8 +275,8 @@ created_at
 1. 保留 `/runs` 列表和 `/runs/{runId}` 详情路由。
 2. 将当前由一个页面同时承担的列表与详情拆成真正独立的页面组件，共享查询和展示组件。
 3. 列表增加知识库、会话、状态、耗时和时间筛选，保留分页。
-4. 详情按“摘要 → 引用 → 阶段时间线 → 工具调用 → 错误信息”组织。
-5. 默认显示用户可理解的阶段名称；原始事件和 Trace ID 放在折叠的技术信息中。
+4. 详情按“摘要 → 引用 → 技术链路 → 业务阶段时间线 → 工具调用 → 错误信息”组织。
+5. 技术链路提供 Span 耗时瀑布、父子调用树、错误过滤和安全属性详情；业务时间线继续显示用户可理解的阶段名称。
 6. 聊天页 `InlineAgentRun` 只展示实时进度、失败摘要、引用和跳转入口，避免与详情页重复。
 7. 从运行详情中的引用文档跳回知识库文档；从文档详情可选跳转到引用该文档的运行记录。
 
@@ -344,13 +346,14 @@ observability:
 
 **验收：** Worker 卡死或任务不再流动时，系统能够被指标或状态检查发现。
 
-### 阶段 E：OpenTelemetry 与底层诊断
+### 阶段 E：OpenTelemetry 与内置底层诊断
 
-- 接入 Go/Python OTel。
+- 接入 Go OTel；Go → Python 调用边界由 Go 客户端 Span 表示，暂不要求 Python 内部 Span 进入默认存储。
 - 跨 HTTP、Redis、数据库、模型和 MCP 传播 Trace。
-- 配置可选 Collector、Tempo/Jaeger 和 Prometheus/Grafana。
+- 关键 Span 默认持久化到 PostgreSQL，并与运行记录使用相同保留策略。
+- 在现有运行详情中提供内置 Trace Explorer，不新增 Collector、Tempo/Jaeger、Prometheus 或 Grafana 运行依赖。
 
-**验收：** 可以从运行记录的 Trace ID 定位完整跨服务调用链。
+**验收：** 无需启动额外服务，即可从运行详情查看 Span 瀑布图、父子调用关系和安全属性。
 
 ## 10. 测试计划
 
@@ -361,6 +364,7 @@ observability:
 - 问答运行成功、知识不足、检索降级、模型失败和工具失败测试。
 - SSE 断线回放与事件顺序测试。
 - `trace_id` 跨 HTTP、Redis 和 Python 服务传播测试。
+- Span PostgreSQL 持久化、父子关系、用户归属与保留期测试。
 - 脱敏规则和敏感字段禁止输出测试。
 - Metrics 标签基数测试，禁止用户 ID、文档 ID 和 Run ID 进入指标标签。
 
@@ -370,6 +374,7 @@ observability:
 - 失败重试、重新索引及状态刷新测试。
 - 运行列表筛选、分页和详情深链测试。
 - 实时事件与持久化详情一致性测试。
+- Span 调用树、瀑布比例、错误筛选和空状态测试。
 - 空状态、加载状态、长文本和错误状态测试。
 
 ### 10.3 端到端
@@ -397,6 +402,6 @@ observability:
 2. 文档可观测 MVP。
 3. 运行记录改版。
 4. 文档阶段历史与任务指标。
-5. OpenTelemetry 和可选外部观测栈。
+5. OpenTelemetry 和 PostgreSQL 内置 Trace Explorer。
 
 这个顺序优先解决用户可见的状态与恢复问题，再建设跨服务技术诊断能力，避免在产品价值尚未验证前投入完整监控平台。

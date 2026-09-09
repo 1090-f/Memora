@@ -35,6 +35,8 @@ export interface AgentEvent {
   sequence: number;
   timestamp: string;
   type: AgentEventType;
+  stage?: string;
+  status?: string;
   payload: Record<string, unknown>;
 }
 
@@ -84,6 +86,12 @@ export interface AgentRun {
   output_tokens?: number;
   total_tokens?: number;
   duration_ms?: number | null;
+  first_token_at?: string | null;
+  first_token_latency_ms?: number | null;
+  model_generate_duration_ms?: number | null;
+  failure_stage?: string | null;
+  retryable?: boolean | null;
+  recovery_advice?: string | null;
   started_at?: string | null;
   ended_at?: string | null;
   created_at?: string;
@@ -100,6 +108,7 @@ export interface CreateAgentRunResponse {
 // 渲染端按数组顺序严格还原真实执行顺序（工具与步骤/轮次穿插展示）。
 export type AgentTimelineEntry =
   | { kind: 'status'; sequence: number; title: string; status: string; error_message?: string }
+  | { kind: 'stage'; sequence: number; stage: string; status: 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped'; summary?: string; started_at?: string; ended_at?: string; duration_ms?: number; error_code?: string; error_message?: string; metadata?: Record<string, unknown> }
   | { kind: 'router'; sequence: number; execution_mode: 'react' | 'plan_execute'; reason_summary: string; input_summary?: string; confidence?: number; fallback_used?: boolean }
   | { kind: 'plan_created'; sequence: number; version: number; goal: string; step_count: number; replanned?: boolean; input_summary?: string; steps_detail?: Array<{ step_no: number; title: string; description?: string; recommended_tool?: string; depends_on?: string[]; status: string }> }
   | { kind: 'plan_step'; sequence: number; version: number; step_no: number; title: string; status: string; error_message?: string; input_summary?: string; output_summary?: string; duration_ms?: number; token_usage?: { input_tokens: number; output_tokens: number; total_tokens: number } }
@@ -167,6 +176,23 @@ export interface AgentToolCall {
   duration_ms?: number | null;
   started_at: string;
   ended_at?: string | null;
+}
+
+export interface TraceSpan {
+  trace_id: string;
+  span_id: string;
+  parent_span_id?: string | null;
+  name: string;
+  kind: string;
+  status_code: 'Unset' | 'Ok' | 'Error' | string;
+  status_message?: string | null;
+  started_at: string;
+  ended_at: string;
+  duration_ms: number;
+  attributes: Record<string, unknown>;
+  events: Array<Record<string, unknown>>;
+  service_name?: string | null;
+  instrumentation_scope?: string | null;
 }
 
 export type AgentToolCallStatus = AgentToolCall['status'];

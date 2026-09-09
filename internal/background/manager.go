@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -22,6 +23,8 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -169,6 +172,26 @@ func (m *Manager) heartbeatLoop(ctx context.Context) {
 		if err := m.redis.Set(ctx, "worker:heartbeat:"+m.name, time.Now().UTC().Unix(), 30*time.Second).Err(); err != nil && ctx.Err() == nil {
 			logger.Warn("更新 Worker 心跳失败", zap.String("worker", m.name), zap.Error(err))
 		}
+		documentStalledBefore := time.Now().UTC().Add(-m.consumer.ProcessingTimeout)
+		if snapshot, err := m.tasks.HealthSnapshot(ctx, documentStalledBefore); err == nil {
+			metrics.QueueDepth("document_process", "pending", snapshot.Pending)
+			metrics.QueueDepth("document_process", "running", snapshot.Running)
+			metrics.QueueDepth("document_process", "failed", snapshot.Failed)
+			metrics.QueueHealth("document_process", snapshot.OldestPendingAgeSeconds, snapshot.Retried, snapshot.Stalled)
+		} else if ctx.Err() == nil {
+			logger.Warn("读取文档任务健康指标失败", zap.Error(err))
+		}
+		if m.previewEnabled && m.previews != nil {
+			previewStalledBefore := time.Now().UTC().Add(-m.previewConsumer.ProcessingTimeout)
+			if snapshot, err := m.previews.HealthSnapshot(ctx, previewStalledBefore); err == nil {
+				metrics.QueueDepth("document_preview", "pending", snapshot.Pending)
+				metrics.QueueDepth("document_preview", "running", snapshot.Running)
+				metrics.QueueDepth("document_preview", "failed", snapshot.Failed)
+				metrics.QueueHealth("document_preview", snapshot.OldestPendingAgeSeconds, snapshot.Retried, snapshot.Stalled)
+			} else if ctx.Err() == nil {
+				logger.Warn("读取预览任务健康指标失败", zap.Error(err))
+			}
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -280,6 +303,16 @@ func (m *Manager) publishBatch(ctx context.Context) {
 			continue
 		}
 		values := map[string]any{"event_id": event.ID, "event_type": event.EventType, idField: event.AggregateID}
+		var payload map[string]string
+		if err := json.Unmarshal([]byte(event.Payload), &payload); err != nil {
+			logger.Error("解析 Outbox 事件负载失败，保留待发布", zap.String("event_id", event.ID), zap.Error(err))
+			continue
+		}
+		for _, key := range []string{"traceparent", "tracestate", "baggage"} {
+			if value := payload[key]; value != "" {
+				values[key] = value
+			}
+		}
 		_, err := m.redis.XAdd(ctx, &redis.XAddArgs{Stream: stream, MaxLen: 100000, Approx: true, Values: values}).Result()
 		if err != nil {
 			logger.Error("发布文档任务到 Redis Stream 失败", zap.String("event_id", event.ID), zap.Error(err))
@@ -311,6 +344,7 @@ func (m *Manager) previewConsumeLoop(ctx context.Context, consumerName string) {
 }
 
 func (m *Manager) handlePreviewMessage(parent context.Context, message redis.XMessage) {
+	parent = extractStreamContext(parent, message)
 	startedAt := time.Now()
 	result := "succeeded"
 	defer func() { metrics.WorkerFinished("document_preview", result, time.Since(startedAt)) }()
@@ -337,7 +371,14 @@ func (m *Manager) handlePreviewMessage(parent context.Context, message redis.XMe
 	}
 	metrics.StageFinished("document_preview", "queue_wait", "succeeded", time.Since(item.CreatedAt))
 	ctx, cancel := context.WithTimeout(parent, m.previewConsumer.ProcessingTimeout)
+	ctx, span := otel.Tracer("github.com/1090-f/Memora/background").Start(ctx, "document.preview")
+	span.SetAttributes(attribute.String("memora.preview_id", previewID), attribute.String("memora.document_id", item.DocumentID))
 	err = m.previewProcessor.Process(ctx, previewID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "document preview failed")
+	}
+	span.End()
 	cancel()
 	if err != nil {
 		result = "failed"
@@ -403,6 +444,7 @@ func (m *Manager) consumeLoop(ctx context.Context, consumerName string) {
 }
 
 func (m *Manager) handleMessage(parent context.Context, message redis.XMessage) {
+	parent = extractStreamContext(parent, message)
 	startedAt := time.Now()
 	result := "succeeded"
 	defer func() { metrics.WorkerFinished("document_process", result, time.Since(startedAt)) }()
@@ -433,7 +475,9 @@ func (m *Manager) handleMessage(parent context.Context, message redis.XMessage) 
 		requestID = *task.RequestID
 	}
 	ctx = contracts.WithCorrelation(ctx, traceID, requestID)
-	ctx = appobservability.ContextWithTraceID(ctx, traceID)
+	if !trace.SpanContextFromContext(ctx).IsValid() {
+		ctx = appobservability.ContextWithTraceID(ctx, traceID)
+	}
 	ctx, span := otel.Tracer("github.com/1090-f/Memora/background").Start(ctx, "document.process")
 	documentID := ""
 	if task.DocumentID != nil {
@@ -462,6 +506,16 @@ func (m *Manager) handleMessage(parent context.Context, message redis.XMessage) 
 	if err := m.redis.XAck(parent, m.consumer.Stream, m.consumer.Group, message.ID).Err(); err != nil && parent.Err() == nil {
 		logger.Error("确认 Redis Stream 文档任务失败", zap.String("task_id", taskID), zap.Error(err))
 	}
+}
+
+func extractStreamContext(ctx context.Context, message redis.XMessage) context.Context {
+	carrier := propagation.MapCarrier{}
+	for _, key := range []string{"traceparent", "tracestate", "baggage"} {
+		if value, ok := message.Values[key].(string); ok && value != "" {
+			carrier[key] = value
+		}
+	}
+	return otel.GetTextMapPropagator().Extract(ctx, carrier)
 }
 
 func (m *Manager) reclaimLoop(ctx context.Context) {

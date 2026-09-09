@@ -57,6 +57,8 @@ type ServerApp struct {
 	background      *background.Manager
 	documentParser  *documentParserProcess
 	workerCancel    context.CancelFunc // Agent Worker 生命周期取消函数
+	agentWorker     *worker.AgentWorker
+	workerDone      chan struct{}
 	traceShutdown   func(context.Context) error
 }
 
@@ -88,6 +90,17 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	a.db, err = database.InitPostgres(initCtx, &cfg.Database)
 	if err != nil {
 		return err
+	}
+	if cfg.Observability.Enabled {
+		sqlDB, sqlErr := a.db.DB()
+		if sqlErr != nil {
+			_ = database.ClosePostgres(a.db)
+			return fmt.Errorf("获取 Trace 存储连接失败: %w", sqlErr)
+		}
+		if err := appobservability.AttachPostgresSpanExporter(sqlDB); err != nil {
+			_ = database.ClosePostgres(a.db)
+			return fmt.Errorf("初始化内置 Trace 存储失败: %w", err)
+		}
 	}
 	audit.SetStore(repository.NewAuditRepository(a.db))
 	if err := bootstrapAdmin(initCtx, a.db, cfg.App.Mode); err != nil {
@@ -180,7 +193,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	previewRepo := repository.NewDocumentPreviewRepository(a.db)
 	officeRenderer, officeErr := previewrenderer.NewLibreOffice(cfg.Preview.Enabled && cfg.Preview.Office.Enabled, cfg.Preview.Office.MaxConcurrency, cfg.Preview.Office.Timeout)
 	if officeErr != nil {
-		// LibreOffice 缺失不阻断启动：Descriptor 会返回 parsed text/download fallback。
+		// LibreOffice 缺失不阻断启动：Office 原文件仍由浏览器直接预览，并保留解析正文/下载回退。
 		logger.Warnf("Office 异步预览不可用，请安装 LibreOffice: %v", officeErr)
 		officeRenderer, _ = previewrenderer.NewLibreOffice(false, 1, cfg.Preview.Office.Timeout)
 	}
@@ -227,7 +240,8 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		return err
 	}
 	retentionRepo := repository.NewObservabilityRetentionRepository(a.db)
-	a.background = background.NewManager(a.backgroundRedis, importTasks, previewRepo, repository.NewTaskOutboxRepository(a.db), documentProcessService, previewProcessor, retentionRepo, cfg.DocumentConsumer, cfg.Preview, cfg.Outbox, cfg.IndexCleanup, cfg.Observability)
+	taskOutbox := repository.NewTaskOutboxRepository(a.db)
+	a.background = background.NewManager(a.backgroundRedis, importTasks, previewRepo, taskOutbox, documentProcessService, previewProcessor, retentionRepo, cfg.DocumentConsumer, cfg.Preview, cfg.Outbox, cfg.IndexCleanup, cfg.Observability)
 
 	// 初始化 ContextBuilder（Phase 3）
 	messages := repository.NewMessageRepository(a.db)
@@ -297,6 +311,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	// 初始化 Agent 运行和工具调用 Repository
 	agentRunRepo := repository.NewAgentRunRepository(a.db)
 	toolCallRepo := repository.NewToolCallRepository(a.db)
+	traceSpanRepo := repository.NewTraceSpanRepository(a.db)
 
 	// 注入 ADK 工具配置构建器：每次构建 AgentContext 时从最新的注册表快照生成 ToolsConfig。
 	// 这样 MCP 工具刷新后会自动反映到下一次 Agent 执行中。
@@ -341,6 +356,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		agentCoreService,
 		agentRunRepo,
 		toolCallRepo,
+		traceSpanRepo,
 		agentConfigs,
 		eventSub,
 		agentEventRepo,
@@ -370,6 +386,7 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		sequencedEvents,
 		worker.DefaultAgentWorkerConfig(),
 	)
+	a.agentWorker = agentWorker
 	// 启动前恢复上次未完成的 running 任务为 failed
 	if err := agentWorker.RecoverStaleRuns(context.Background()); err != nil {
 		logger.Error("恢复孤儿 running 任务失败", zap.Error(err))
@@ -377,7 +394,9 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	// 使用独立生命周期上下文启动 Worker，服务器关闭时主动取消该上下文。
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	a.workerCancel = workerCancel
+	a.workerDone = make(chan struct{})
 	go func() {
+		defer close(a.workerDone)
 		if err := agentWorker.Run(workerCtx); err != nil {
 			logger.Error("Agent Worker 运行异常", zap.Error(err))
 		}
@@ -399,8 +418,50 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 		RedisHealth:     func(ctx context.Context) error { return database.CheckRedis(ctx, a.redis) },
 		MinIOHealth:     a.store.Health,
 		ParserHealth:    a.documentParser.Health,
-		WorkerCount: func(ctx context.Context) (int64, error) {
-			return database.CountWorkerHeartbeats(ctx, a.redis)
+		WorkerHealth: func(ctx context.Context) (api.WorkerHealthSnapshot, error) {
+			activeWorkers, err := database.CountWorkerHeartbeats(ctx, a.redis)
+			if err != nil {
+				return api.WorkerHealthSnapshot{}, err
+			}
+			documentHealth, err := importTasks.HealthSnapshot(ctx, time.Now().UTC().Add(-cfg.DocumentConsumer.ProcessingTimeout))
+			if err != nil {
+				return api.WorkerHealthSnapshot{ActiveWorkers: activeWorkers}, err
+			}
+			previewHealth, err := previewRepo.HealthSnapshot(ctx, time.Now().UTC().Add(-cfg.Preview.Consumer.ProcessingTimeout))
+			if err != nil {
+				return api.WorkerHealthSnapshot{ActiveWorkers: activeWorkers}, err
+			}
+			outboxBacklog, err := taskOutbox.CountUnpublished(ctx)
+			if err != nil {
+				return api.WorkerHealthSnapshot{ActiveWorkers: activeWorkers}, err
+			}
+			var documentRedisPending, previewRedisPending int64
+			if cfg.DocumentConsumer.Enabled {
+				pending, pendingErr := a.redis.XPending(ctx, cfg.DocumentConsumer.Stream, cfg.DocumentConsumer.Group).Result()
+				if pendingErr != nil {
+					return api.WorkerHealthSnapshot{ActiveWorkers: activeWorkers}, pendingErr
+				}
+				documentRedisPending = pending.Count
+			}
+			if cfg.Preview.Enabled {
+				pending, pendingErr := a.redis.XPending(ctx, cfg.Preview.Consumer.Stream, cfg.Preview.Consumer.Group).Result()
+				if pendingErr != nil {
+					return api.WorkerHealthSnapshot{ActiveWorkers: activeWorkers}, pendingErr
+				}
+				previewRedisPending = pending.Count
+			}
+			return api.WorkerHealthSnapshot{
+				ActiveWorkers: activeWorkers,
+				Document: api.WorkerQueueHealth{
+					Pending: documentHealth.Pending, Running: documentHealth.Running, Failed: documentHealth.Failed,
+					Retried: documentHealth.Retried, Stalled: documentHealth.Stalled, OldestPendingAgeSeconds: documentHealth.OldestPendingAgeSeconds, RedisPending: documentRedisPending,
+				},
+				Preview: api.WorkerQueueHealth{
+					Pending: previewHealth.Pending, Running: previewHealth.Running, Failed: previewHealth.Failed,
+					Retried: previewHealth.Retried, Stalled: previewHealth.Stalled, OldestPendingAgeSeconds: previewHealth.OldestPendingAgeSeconds, RedisPending: previewRedisPending,
+				},
+				OutboxBacklog: outboxBacklog,
+			}, nil
 		},
 	})
 	a.server = &http.Server{
@@ -494,6 +555,24 @@ func (a *ServerApp) Close() error {
 		a.workerCancel()
 		a.workerCancel = nil
 	}
+	workerWait := 10 * time.Second
+	if a.cfg != nil && a.cfg.App.ShutdownTimeout > 0 {
+		workerWait = a.cfg.App.ShutdownTimeout
+	}
+	workerCtx, workerCancel := context.WithTimeout(context.Background(), workerWait)
+	if a.workerDone != nil {
+		select {
+		case <-a.workerDone:
+		case <-workerCtx.Done():
+			closeErr = errors.Join(closeErr, fmt.Errorf("等待 Agent Worker 主循环停止超时: %w", workerCtx.Err()))
+		}
+		a.workerDone = nil
+	}
+	if a.agentWorker != nil {
+		closeErr = errors.Join(closeErr, a.agentWorker.Wait(workerCtx))
+		a.agentWorker = nil
+	}
+	workerCancel()
 	if a.documentParser != nil {
 		closeErr = errors.Join(closeErr, a.documentParser.Close())
 	}
@@ -506,13 +585,13 @@ func (a *ServerApp) Close() error {
 	if a.redis != nil {
 		closeErr = errors.Join(closeErr, a.redis.Close())
 	}
-	closeErr = errors.Join(closeErr, database.ClosePostgres(a.db))
 	if a.traceShutdown != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		closeErr = errors.Join(closeErr, a.traceShutdown(shutdownCtx))
 		cancel()
 		a.traceShutdown = nil
 	}
+	closeErr = errors.Join(closeErr, database.ClosePostgres(a.db))
 	if logger.GetLogger() != nil {
 		closeErr = errors.Join(closeErr, logger.Sync())
 	}

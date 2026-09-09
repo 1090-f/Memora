@@ -33,6 +33,11 @@ func (r *observabilityRetentionRepository) DeleteBefore(ctx context.Context, cut
 			return fmt.Errorf("清理文档阶段事件失败: %w", result.Error)
 		}
 		deleted += result.RowsAffected
+		result = tx.Where("created_at < ?", cutoff).Delete(&entity.TraceSpan{})
+		if result.Error != nil {
+			return fmt.Errorf("清理 Trace Span 失败: %w", result.Error)
+		}
+		deleted += result.RowsAffected
 		return nil
 	})
 	return deleted, err

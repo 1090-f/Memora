@@ -103,6 +103,8 @@ type ImportTaskRepository interface {
 	FindByIDInternal(ctx context.Context, taskID string) (*entity.ImportTask, error)
 	// FindLatestByDocument 查询文档最近一次处理任务，用于关联页面状态、日志与重试。
 	FindLatestByDocument(ctx context.Context, userID, documentID string) (*entity.ImportTask, error)
+	// HealthSnapshot 返回低基数队列健康摘要，用于指标与健康检查。
+	HealthSnapshot(ctx context.Context, stalledBefore time.Time) (ImportTaskHealthSnapshot, error)
 	// ListByKB 分页查询知识库导入任务。
 	ListByKB(ctx context.Context, userID, kbID string, page, pageSize int) ([]*entity.ImportTask, int64, error)
 	// UpdateObjectInfo 更新任务的 MinIO 对象信息与源哈希。
@@ -144,8 +146,18 @@ type ImportTaskRepository interface {
 	DeleteCompletedByKB(ctx context.Context, userID, kbID string) (int64, error)
 }
 
+type ImportTaskHealthSnapshot struct {
+	Pending                 int64
+	Running                 int64
+	Failed                  int64
+	Retried                 int64
+	Stalled                 int64
+	OldestPendingAgeSeconds int64
+}
+
 // TaskOutboxRepository 管理可靠 Redis Stream 发布事件。
 type TaskOutboxRepository interface {
 	ListUnpublished(ctx context.Context, limit int) ([]*entity.TaskOutbox, error)
+	CountUnpublished(ctx context.Context) (int64, error)
 	MarkPublished(ctx context.Context, eventID string) error
 }

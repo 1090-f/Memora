@@ -10,6 +10,10 @@ export function AgentRunDetailPage() {
     queryKey: ['agent-run', runId],
     queryFn: () => getAgentRun(runId as string),
     enabled: Boolean(runId),
+    refetchInterval: (result) => {
+      const status = result.state.data?.status;
+      return status === 'queued' || status === 'running' ? 2_000 : false;
+    },
   });
 
   if (!runId) return <Alert severity="error">运行 ID 缺失。</Alert>;
