@@ -49,20 +49,35 @@ function mergeConsecutiveAssistantMessages(messages: Message[]): Message[] {
 }
 
 /**
+ * 从 runAction 中提取 runId：
+ * - AgentEvent 自带 run_id；
+ * - HYDRATE_AGENT_RUN_STATE 从 run.id 取；
+ * - RESET / SET_QUEUED / SET_CANCELLED 等生命周期 action 无 run_id，需调用方显式传入 runId。
+ */
+function extractRunId(runAction: AgentRunAction, explicitRunId?: string): string | undefined {
+  if ('run_id' in runAction && typeof runAction.run_id === 'string') return runAction.run_id;
+  if (runAction.type === 'HYDRATE_AGENT_RUN_STATE') return runAction.run?.id;
+  return explicitRunId;
+}
+
+/**
  * agentRunSlice 保存跨路由存活的会话与 Agent 运行状态，按 conversationId 键控。
  * 组件卸载/路由切换时数据仍然保留，回到会话时直接续用，避免状态丢失与中间加载态。
  */
 interface AgentRunSliceState {
-  // conversationId -> 该会话当前活跃 run 的 Agent 运行状态
+  // conversationId -> 该会话当前活跃 run 的 Agent 运行状态（用于续传、暂停按钮、流式回答）
   runStates: Record<string, AgentRunViewState>;
   // conversationId -> 消息列表（已合并连续的助手消息）
   messages: Record<string, Message[]>;
   // conversationId -> 该会话最新 run_id
   conversationRunIds: Record<string, string>;
-  // conversationId -> runId -> 历史运行状态（版本切换用）
-  historicalRunStates: Record<string, Record<string, AgentRunViewState>>;
-  // conversationId -> 是否已完成历史运行状态回放
-  historicalHydratedIds: Record<string, boolean>;
+  // conversationId -> runId -> 该 run 的完整运行状态（实时事件累积 + 历史回放写入），
+  // 用于让每一条 AI 回复都能展示其对应的运行过程。
+  runStatesByRunId: Record<string, Record<string, AgentRunViewState>>;
+  // conversationId -> runId -> 是否已完成历史回放（按 runId 幂等，替代会话级布尔闸门）
+  hydratedRunIds: Record<string, Record<string, boolean>>;
+  // conversationId -> runId -> 是否正在回放（防重复请求 + 渲染骨架用）
+  pendingRunIds: Record<string, Record<string, boolean>>;
   // conversationId -> 已完成完整回放的活跃 run_id（终态 run 再次进入时直接跳过，避免中间加载态）
   activeHydratedRunIds: Record<string, string>;
 }
@@ -71,8 +86,9 @@ const initialState: AgentRunSliceState = {
   runStates: {},
   messages: {},
   conversationRunIds: {},
-  historicalRunStates: {},
-  historicalHydratedIds: {},
+  runStatesByRunId: {},
+  hydratedRunIds: {},
+  pendingRunIds: {},
   activeHydratedRunIds: {},
 };
 
@@ -80,12 +96,23 @@ const agentRunSlice = createSlice({
   name: 'agentRun',
   initialState,
   reducers: {
-    /** 将 Agent 运行 action（事件或生命周期动作）应用到指定会话的运行状态 */
-    applyRunAction(state, action: PayloadAction<{ conversationId: string; runAction: AgentRunAction }>) {
-      const { conversationId, runAction } = action.payload;
+    /** 将 Agent 运行 action（事件或生命周期动作）应用到指定会话的运行状态，并按 runId 同步存档 */
+    applyRunAction(
+      state,
+      action: PayloadAction<{ conversationId: string; runId?: string; runAction: AgentRunAction }>,
+    ) {
+      const { conversationId, runId: explicitRunId, runAction } = action.payload;
       if (!conversationId) return;
       const current = state.runStates[conversationId] ?? initialAgentRunState;
-      state.runStates[conversationId] = reduceAgentEvent(current, runAction);
+      const next = reduceAgentEvent(current, runAction);
+      state.runStates[conversationId] = next;
+
+      // 按 runId 存档：每次事件都同步写入，run 终态后该存档即为完整过程，本会话内零请求即可展示。
+      const runId = extractRunId(runAction, explicitRunId);
+      if (runId && next.status !== 'idle') {
+        if (!state.runStatesByRunId[conversationId]) state.runStatesByRunId[conversationId] = {};
+        state.runStatesByRunId[conversationId][runId] = next;
+      }
     },
     /** 整体覆盖指定会话的消息列表（首次从 API 加载时使用） */
     setMessages(state, action: PayloadAction<{ conversationId: string; messages: Message[] }>) {
@@ -149,16 +176,33 @@ const agentRunSlice = createSlice({
       if (!conversationId) return;
       state.conversationRunIds[conversationId] = runId;
     },
-    /** 缓存某会话历史 run 的运行状态 */
-    setHistoricalRunState(state, action: PayloadAction<{ conversationId: string; runId: string; runState: AgentRunViewState }>) {
+    /** 按 runId 写入某个 run 的完整运行状态（历史回放完成后使用） */
+    setRunStateByRunId(state, action: PayloadAction<{ conversationId: string; runId: string; runState: AgentRunViewState }>) {
       const { conversationId, runId, runState } = action.payload;
-      if (!conversationId) return;
-      if (!state.historicalRunStates[conversationId]) state.historicalRunStates[conversationId] = {};
-      state.historicalRunStates[conversationId][runId] = runState;
+      if (!conversationId || !runId) return;
+      if (!state.runStatesByRunId[conversationId]) state.runStatesByRunId[conversationId] = {};
+      state.runStatesByRunId[conversationId][runId] = runState;
     },
-    /** 标记会话的历史运行状态已完成回放 */
-    markHistoricalHydrated(state, action: PayloadAction<string>) {
-      state.historicalHydratedIds[action.payload] = true;
+    /** 标记某个 run 已完成历史回放（按 runId 幂等） */
+    markRunHydrated(state, action: PayloadAction<{ conversationId: string; runId: string }>) {
+      const { conversationId, runId } = action.payload;
+      if (!conversationId || !runId) return;
+      if (!state.hydratedRunIds[conversationId]) state.hydratedRunIds[conversationId] = {};
+      state.hydratedRunIds[conversationId][runId] = true;
+    },
+    /** 标记某个 run 正在回放 */
+    markRunPending(state, action: PayloadAction<{ conversationId: string; runId: string }>) {
+      const { conversationId, runId } = action.payload;
+      if (!conversationId || !runId) return;
+      if (!state.pendingRunIds[conversationId]) state.pendingRunIds[conversationId] = {};
+      state.pendingRunIds[conversationId][runId] = true;
+    },
+    /** 清除某个 run 的回放中标记 */
+    clearRunPending(state, action: PayloadAction<{ conversationId: string; runId: string }>) {
+      const { conversationId, runId } = action.payload;
+      if (!conversationId || !runId) return;
+      const map = state.pendingRunIds[conversationId];
+      if (map) delete map[runId];
     },
     /** 标记会话的活跃 run 已完成完整回放（终态） */
     markActiveRunHydrated(state, action: PayloadAction<{ conversationId: string; runId: string }>) {
@@ -172,8 +216,9 @@ const agentRunSlice = createSlice({
       delete state.runStates[conversationId];
       delete state.messages[conversationId];
       delete state.conversationRunIds[conversationId];
-      delete state.historicalRunStates[conversationId];
-      delete state.historicalHydratedIds[conversationId];
+      delete state.runStatesByRunId[conversationId];
+      delete state.hydratedRunIds[conversationId];
+      delete state.pendingRunIds[conversationId];
       delete state.activeHydratedRunIds[conversationId];
     },
   },
@@ -186,8 +231,10 @@ export const {
   appendAssistantMessage,
   switchMessageVersion,
   setConversationRunId,
-  setHistoricalRunState,
-  markHistoricalHydrated,
+  setRunStateByRunId,
+  markRunHydrated,
+  markRunPending,
+  clearRunPending,
   markActiveRunHydrated,
   clearConversation,
 } = agentRunSlice.actions;

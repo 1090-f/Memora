@@ -21,11 +21,13 @@ import {
   applyRunAction,
   appendAssistantMessage,
   appendUserMessage,
+  clearRunPending,
   markActiveRunHydrated,
-  markHistoricalHydrated,
+  markRunHydrated,
+  markRunPending,
   setConversationRunId,
-  setHistoricalRunState,
   setMessages,
+  setRunStateByRunId,
   switchMessageVersion,
 } from '@/store/agentRunSlice';
 
@@ -60,8 +62,9 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
   const agentRunStatesStore = useAppSelector((state) => state.agentRun.runStates);
   const storeMessages = useAppSelector((state) => state.agentRun.messages);
   const conversationRunIds = useAppSelector((state) => state.agentRun.conversationRunIds);
-  const storeHistoricalRunStates = useAppSelector((state) => state.agentRun.historicalRunStates);
-  const storeHistoricalHydrated = useAppSelector((state) => state.agentRun.historicalHydratedIds);
+  const storeRunStatesByRunId = useAppSelector((state) => state.agentRun.runStatesByRunId);
+  const storeHydratedRunIds = useAppSelector((state) => state.agentRun.hydratedRunIds);
+  const storePendingRunIds = useAppSelector((state) => state.agentRun.pendingRunIds);
   const activeHydratedRunIds = useAppSelector((state) => state.agentRun.activeHydratedRunIds);
 
   const [draft, setDraft] = useState('');
@@ -85,15 +88,20 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
   agentRunStatesRef.current = agentRunStatesStore;
   const conversationRunIdsRef = useRef(conversationRunIds);
   conversationRunIdsRef.current = conversationRunIds;
-  const historicalHydratedRef = useRef(storeHistoricalHydrated);
-  historicalHydratedRef.current = storeHistoricalHydrated;
+  const hydratedRunIdsRef = useRef(storeHydratedRunIds);
+  hydratedRunIdsRef.current = storeHydratedRunIds;
+  const runStatesByRunIdRef = useRef(storeRunStatesByRunId);
+  runStatesByRunIdRef.current = storeRunStatesByRunId;
+  const pendingRunIdsRef = useRef(storePendingRunIds);
+  pendingRunIdsRef.current = storePendingRunIds;
   const activeHydratedRunIdsRef = useRef(activeHydratedRunIds);
   activeHydratedRunIdsRef.current = activeHydratedRunIds;
 
   // 当前会话的派生状态
   const runState = activeConversationId ? (agentRunStatesStore[activeConversationId] ?? initialAgentRunState) : initialAgentRunState;
   const messages = activeConversationId ? (storeMessages[activeConversationId] ?? []) : [];
-  const historical = activeConversationId ? (storeHistoricalRunStates[activeConversationId] ?? {}) : {};
+  const runStatesByRunId = activeConversationId ? (storeRunStatesByRunId[activeConversationId] ?? {}) : {};
+  const pendingRunIds = activeConversationId ? (storePendingRunIds[activeConversationId] ?? {}) : {};
   const activeRunId = activeConversationId
     ? (conversationRunIds[activeConversationId] ?? [...messages].reverse().find((m) => m.agent_run_id)?.agent_run_id ?? null)
     : null;
@@ -295,56 +303,107 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
     return () => controller.abort();
   }, [messagesQuery.data, activeConversationId, dispatch]);
 
-  // 回放所有历史（非最新）agent run，用于版本切换时展示对应运行轨迹。
+  // 回放所有缺失的历史 agent run（按 runId 幂等 + 并发），让每一条 AI 回复都能展示对应的运行过程。
   useEffect(() => {
-    if (!messagesQuery.data || !activeConversationId) return;
-    if (historicalHydratedRef.current[activeConversationId]) return;
+    if (!activeConversationId) return;
+    const msgs = storeMessages[activeConversationId] ?? [];
+    if (msgs.length === 0) return;
 
-    const sortedMessages = [...messagesQuery.data.items].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-    const allRunIds = [...new Set(sortedMessages
-      .filter((m) => m.role === 'assistant' && m.agent_run_id)
-      .map((m) => m.agent_run_id))] as string[];
-
-    const latestRunId = allRunIds[allRunIds.length - 1];
-    const historicalRunIds = allRunIds.filter((id) => id !== latestRunId);
-
-    if (historicalRunIds.length === 0) {
-      dispatch(markHistoricalHydrated(activeConversationId));
-      return;
-    }
+    // 收集所有需要展示过程的 runId（含重试版本历史里的 agent_run_id）
+    const allRunIds = [...new Set(msgs.flatMap((m) => {
+      if (m.role !== 'assistant') return [];
+      const ids: string[] = [];
+      if (m.agent_run_id) ids.push(m.agent_run_id);
+      if (m.versions) for (const v of m.versions) if (v.agent_run_id) ids.push(v.agent_run_id);
+      return ids;
+    }))] as string[];
 
     const hydrateConversationId = activeConversationId;
-    const controller = new AbortController();
 
-    void (async () => {
-      for (const runId of historicalRunIds) {
-        if (controller.signal.aborted) break;
-        let state = initialAgentRunState;
-        try {
-          await streamAgentEvents(runEventsUrl(runId), {
-            signal: controller.signal,
-            afterSequence: 0,
-            onEvent: (event) => {
-              if (activeConversationIdRef.current === hydrateConversationId) {
-                state = reduceAgentEvent(state, event);
-              }
-            },
-            timeout: 10000,
-          });
-        } catch {
-          // Stream ended or timeout — use whatever state was accumulated
-        }
-        if (activeConversationIdRef.current === hydrateConversationId) {
-          dispatch(setHistoricalRunState({ conversationId: hydrateConversationId, runId, runState: state }));
-        }
+    // 活跃 run 由完整回放 / 续传 effect 负责，这里只回放历史 run，避免重复拉取。
+    const activeRunId = conversationRunIdsRef.current[hydrateConversationId]
+      ?? [...msgs].reverse().find((m) => m.agent_run_id)?.agent_run_id;
+
+    // 需要回放的 run：非活跃、内存存档缺失且未回放且未在回放中
+    const toHydrate = allRunIds.filter((runId) => {
+      if (runId === activeRunId) return false;
+      const cached = runStatesByRunIdRef.current[hydrateConversationId]?.[runId];
+      if (cached && cached.status !== 'idle') return false;
+      if (hydratedRunIdsRef.current[hydrateConversationId]?.[runId]) return false;
+      if (pendingRunIdsRef.current[hydrateConversationId]?.[runId]) return false;
+      return true;
+    });
+
+    if (toHydrate.length === 0) return;
+
+    const controller = new AbortController();
+    toHydrate.forEach((runId) => dispatch(markRunPending({ conversationId: hydrateConversationId, runId })));
+
+    const hydrateOne = async (runId: string) => {
+      let state = initialAgentRunState;
+      try {
+        await streamAgentEvents(runEventsUrl(runId), {
+          signal: controller.signal,
+          afterSequence: 0,
+          onEvent: (event) => {
+            if (activeConversationIdRef.current === hydrateConversationId) {
+              state = reduceAgentEvent(state, event);
+            }
+          },
+          timeout: 10000,
+        });
+      } catch {
+        // Stream ended or timeout — use whatever state was accumulated
       }
+
+      // 兜底：异常中断的 run 可能没有终态事件，用 run 详情补齐 status/usage/error（不覆盖 timeline）
+      try {
+        const run = await getAgentRun(runId);
+        if (controller.signal.aborted) return;
+        const hasUsage = (run.input_tokens ?? 0) > 0 || (run.output_tokens ?? 0) > 0 || (run.total_tokens ?? 0) > 0;
+        state = {
+          ...state,
+          status: run.status,
+          answer: state.answer || run.final_result || '',
+          router: state.router ?? (run.execution_mode ? {
+            execution_mode: run.execution_mode,
+            reason_summary: run.router_reason_summary ?? run.router_reason ?? '',
+          } : null),
+          usage: state.usage ?? (hasUsage ? {
+            input_tokens: run.input_tokens ?? 0,
+            output_tokens: run.output_tokens ?? 0,
+            total_tokens: run.total_tokens ?? 0,
+          } : null),
+          error: state.error ?? (run.error_code || run.error_message ? {
+            code: run.error_code ?? 'RUN_FAILED',
+            message: run.error_message ?? 'Agent 运行失败',
+          } : null),
+          resumable: run.status === 'failed' || run.status === 'cancelled',
+        };
+      } catch {
+        // 忽略详情兜底失败
+      }
+
       if (activeConversationIdRef.current === hydrateConversationId) {
-        dispatch(markHistoricalHydrated(hydrateConversationId));
+        dispatch(setRunStateByRunId({ conversationId: hydrateConversationId, runId, runState: state }));
+        dispatch(markRunHydrated({ conversationId: hydrateConversationId, runId }));
+        dispatch(clearRunPending({ conversationId: hydrateConversationId, runId }));
       }
-    })();
+    };
+
+    // 并发回放，限制并发 3
+    const queue = [...toHydrate];
+    const worker = async () => {
+      while (queue.length && !controller.signal.aborted) {
+        const runId = queue.shift();
+        if (!runId) break;
+        await hydrateOne(runId);
+      }
+    };
+    void Promise.all([worker(), worker(), worker()]);
 
     return () => controller.abort();
-  }, [messagesQuery.data, activeConversationId, dispatch]);
+  }, [activeConversationId, storeMessages, dispatch]);
 
   const getConversationId = async () => {
     if (activeConversationId) return activeConversationId;
@@ -526,7 +585,7 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
     if (currentRunId.current) {
       void cancelAgentRun(currentRunId.current).then(() => {
         if (activeConversationIdRef.current) {
-          dispatch(applyRunAction({ conversationId: activeConversationIdRef.current, runAction: { type: 'SET_AGENT_RUN_CANCELLED' } }));
+          dispatch(applyRunAction({ conversationId: activeConversationIdRef.current, runId: currentRunId.current ?? undefined, runAction: { type: 'SET_AGENT_RUN_CANCELLED' } }));
         }
       });
     }
@@ -548,10 +607,10 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
       onStop={stop}
     />
   );
-  // 合并活跃运行状态和历史运行状态，确保切换版本时能找到对应 agent_run_id 的运行记录。
+  // 合并按 runId 存档的状态与活跃运行状态，确保每条消息（含版本切换）都能找到对应 run 的过程。
   const allRunStates = {
+    ...runStatesByRunId,
     ...(activeRunId && runState.status !== 'idle' ? { [activeRunId]: runState } : {}),
-    ...historical,
   };
 
   const empty = messages.length === 0 && !submitting;
@@ -565,7 +624,7 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
       )}
       {errorMessage && <Alert severity="error" sx={{ m: 2, mb: 0 }}>{errorMessage}</Alert>}
       {messagesQuery.error && <Alert severity="warning" sx={{ m: 2, mb: 0 }}>历史消息加载失败，请稍后重试。</Alert>}
-      <MessageList messages={messages} knowledgeBaseId={kbId} streamingAnswer={submitting && !resumingRun ? runState.answer : ''} agentRunState={runState} agentRunId={activeRunId} agentRunStates={allRunStates} retryingMessageId={retryingMessageId} resumingRun={resumingRun} emptyComposer={empty ? composer : undefined} onSuggestion={setDraft} onRetry={retry} onSwitchVersion={switchVersion} />
+      <MessageList messages={messages} knowledgeBaseId={kbId} streamingAnswer={submitting && !resumingRun ? runState.answer : ''} agentRunState={runState} agentRunId={activeRunId} agentRunStates={allRunStates} pendingRunIds={pendingRunIds} retryingMessageId={retryingMessageId} resumingRun={resumingRun} emptyComposer={empty ? composer : undefined} onSuggestion={setDraft} onRetry={retry} onSwitchVersion={switchVersion} />
     </Stack>
   );
 
