@@ -33,38 +33,17 @@ Memora 不是一个只负责上传和搜索文件的网盘。它提供从原始�
 
 React 管理端围绕知识库工作流组织，包含知识库列表、文档工作区、对话、Agent Run、记忆、检索测试、模型设置、MCP 管理和个人资料等页面。
 
-<table>
-  <tr>
-    <td align="center"><strong>知识库管理</strong></td>
-    <td align="center"><strong>新建问答</strong></td>
-  </tr>
-  <tr>
-    <td><img src="docs/images/screenshots/knowledge-bases.png" alt="Memora 知识库管理界面"></td>
-    <td><img src="docs/images/screenshots/new-chat.png" alt="Memora 新建问答界面"></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Agent 运行记录</strong></td>
-    <td align="center"><strong>长期记忆</strong></td>
-  </tr>
-  <tr>
-    <td><img src="docs/images/screenshots/agent-runs.png" alt="Memora Agent 运行记录界面"></td>
-    <td><img src="docs/images/screenshots/long-term-memory.png" alt="Memora 长期记忆界面"></td>
-  </tr>
-  <tr>
-    <td align="center"><strong>MCP 工具管理</strong></td>
-    <td align="center"><strong>模型设置</strong></td>
-  </tr>
-  <tr>
-    <td><img src="docs/images/screenshots/mcp-tools.png" alt="Memora MCP 工具管理界面"></td>
-    <td><img src="docs/images/screenshots/model-settings.png" alt="Memora 模型设置界面"></td>
-  </tr>
-  <tr>
-    <td align="center" colspan="2"><strong>基于知识库的 Agent 回答</strong></td>
-  </tr>
-  <tr>
-    <td colspan="2"><img src="docs/images/screenshots/agent-answer.png" alt="Memora 基于知识库生成 Agent 回答"></td>
-  </tr>
-</table>
+| 知识库管理 | 新建问答 |
+| :---: | :---: |
+| ![Memora 知识库管理界面](./docs/images/screenshots/knowledge-bases.png) | ![Memora 新建问答界面](./docs/images/screenshots/new-chat.png) |
+| **Agent 运行记录** | **长期记忆** |
+| ![Memora Agent 运行记录界面](./docs/images/screenshots/agent-runs.png) | ![Memora 长期记忆界面](./docs/images/screenshots/long-term-memory.png) |
+| **MCP 工具管理** | **模型设置** |
+| ![Memora MCP 工具管理界面](./docs/images/screenshots/mcp-tools.png) | ![Memora 模型设置界面](./docs/images/screenshots/model-settings.png) |
+
+### 基于知识库的 Agent 回答
+
+![Memora 基于知识库生成 Agent 回答](./docs/images/screenshots/agent-answer.png)
 
 推荐使用顺序：
 
