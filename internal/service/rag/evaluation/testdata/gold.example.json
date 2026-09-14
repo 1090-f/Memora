@@ -1,15 +1,25 @@
 {
   "schema_version": "retrieval-gold-v1",
   "name": "请替换为真实业务金标集名称",
+	"version": "2026-09-08-v1",
+	"metadata": {
+		"owner": "请替换为负责人或团队"
+	},
   "cases": [
     {
       "id": "example-answerable-001",
       "question": "请替换为能够由目标文档回答的问题",
+	  "reference_answer": "请替换为人工核验的参考答案",
+	  "tags": ["直接事实"],
+	  "difficulty": "easy",
       "relevant_sources": [
         {
           "document_id": "请替换为真实 document_id",
           "start_byte": 0,
-          "end_byte": 0
+		  "end_byte": 0,
+		  "relevance": 3,
+		  "document_version": "可选：文档版本",
+		  "document_fingerprint": "可选：内容摘要"
         }
       ],
       "expected_answerable": true

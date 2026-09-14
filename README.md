@@ -4,7 +4,7 @@
 
 Memora 将多格式文档导入、结构化解析、混合检索、引用定位、模型管理和 Agent 对话整合在同一个全栈项目中。后端采用 Go、Gin 与 CloudWeGo Eino，管理端基于 React 与 Vite，数据层由 ParadeDB PostgreSQL、pgvector、Redis 和 MinIO 组成，并通过 Python Docling 提供复杂文档解析能力。
 
-[快速开始](#快速开始) · [核心能力](#核心能力) · [系统架构](#系统架构) · [技术栈](#技术栈) · [项目文档](#项目文档) · [License](#license)
+[快速开始](#快速开始) · [核心能力](#核心能力) · [界面展示与工作流](#界面展示与工作流) · [系统架构](#系统架构) · [技术栈](#技术栈) · [项目文档](#项目文档) · [License](#license)
 
 [GitHub](https://github.com/1090-f/Memora) · [API 说明](docs/API.md) · [后端架构](docs/ARCHITECTURE.md) · [开发指南](docs/DEVELOPMENT.md)
 
@@ -29,9 +29,42 @@ Memora 不是一个只负责上传和搜索文件的网盘。它提供从原始�
 | 异步任务 | 使用 Outbox 与 Redis Streams 处理文档解析、预览、索引等后台任务 |
 | 可观测性 | 提供请求追踪、审计日志、健康检查、Worker 状态和内置指标端点（Prometheus 文本格式，无需外部监控组件） |
 
-## 界面与工作流
+## 界面展示与工作流
 
 React 管理端围绕知识库工作流组织，包含知识库列表、文档工作区、对话、Agent Run、记忆、检索测试、模型设置、MCP 管理和个人资料等页面。
+
+<table>
+  <tr>
+    <td align="center"><strong>知识库管理</strong></td>
+    <td align="center"><strong>新建问答</strong></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/screenshots/knowledge-bases.png" alt="Memora 知识库管理界面"></td>
+    <td><img src="docs/images/screenshots/new-chat.png" alt="Memora 新建问答界面"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Agent 运行记录</strong></td>
+    <td align="center"><strong>长期记忆</strong></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/screenshots/agent-runs.png" alt="Memora Agent 运行记录界面"></td>
+    <td><img src="docs/images/screenshots/long-term-memory.png" alt="Memora 长期记忆界面"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>MCP 工具管理</strong></td>
+    <td align="center"><strong>模型设置</strong></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/screenshots/mcp-tools.png" alt="Memora MCP 工具管理界面"></td>
+    <td><img src="docs/images/screenshots/model-settings.png" alt="Memora 模型设置界面"></td>
+  </tr>
+  <tr>
+    <td align="center" colspan="2"><strong>基于知识库的 Agent 回答</strong></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/images/screenshots/agent-answer.png" alt="Memora 基于知识库生成 Agent 回答"></td>
+  </tr>
+</table>
 
 推荐使用顺序：
 
@@ -267,6 +300,7 @@ Memora/
 
 ```powershell
 go run ./cmd/server   # 启动后端
+go run ./cmd/eval-retrieval --help # 查看离线检索评估参数
 go test ./...         # 运行测试
 go vet ./...          # 静态检查
 go build ./cmd/...    # 构建命令
@@ -290,7 +324,7 @@ uv run mypy app.py schemas.py docling_adapter.py
 uv run pytest
 ```
 
-仓库也提供 `make build`、`make run-server`、`make migrate`、`make test`、`make fmt` 和 `make vet` 等命令。
+仓库也提供 `make build`、`make run-server`、`make migrate`、`make eval-retrieval ARGS="..."`、`make test`、`make fmt` 和 `make vet` 等命令。离线检索评估的数据集格式、指标语义和运行方式见[离线检索评估指南](docs/RETRIEVAL_EVALUATION.md)。
 
 ## 项目文档
 
@@ -298,6 +332,7 @@ uv run pytest
 - [前端说明](docs/FRONTEND.md)
 - [后端架构](docs/ARCHITECTURE.md)
 - [开发规范](docs/DEVELOPMENT.md)
+- [离线检索评估指南](docs/RETRIEVAL_EVALUATION.md)
 - [Docling 解析服务](services/document-parser/README.md)
 - [Docling 文档解析执行方案](docs/2026-08-08-docling-document-parsing-execution-plan.md)
 
