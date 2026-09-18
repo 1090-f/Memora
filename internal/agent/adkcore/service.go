@@ -150,7 +150,13 @@ func (s *Service) runReact(ctx context.Context, request contracts.AgentRunReques
 	}
 
 	runCtx, span := otel.Tracer("github.com/1090-f/Memora/agent").Start(ctx, "agent.react")
-	span.SetAttributes(attribute.String("memora.run_id", string(request.RunID)))
+	span.SetAttributes(
+		attribute.String("memora.run_id", string(request.RunID)),
+		attribute.String("langfuse.trace.name", string(request.RunID)),
+		attribute.String("langfuse.session.id", string(request.Context.ConversationID)),
+		attribute.String("langfuse.user.id", string(request.Context.UserID)),
+		attribute.StringSlice("langfuse.trace.tags", []string{string(contracts.ExecutionReact)}),
+	)
 	result, err := s.reactRunner.Run(runCtx, request, s.eventPublisher, s.citationCollector)
 	span.SetAttributes(attribute.Int("gen_ai.usage.input_tokens", result.Usage.InputTokens), attribute.Int("gen_ai.usage.output_tokens", result.Usage.OutputTokens))
 	if err != nil {
@@ -188,7 +194,13 @@ func (s *Service) runPlanExecute(ctx context.Context, request contracts.AgentRun
 	}
 
 	runCtx, span := otel.Tracer("github.com/1090-f/Memora/agent").Start(ctx, "agent.plan_execute")
-	span.SetAttributes(attribute.String("memora.run_id", string(request.RunID)))
+	span.SetAttributes(
+		attribute.String("memora.run_id", string(request.RunID)),
+		attribute.String("langfuse.trace.name", string(request.RunID)),
+		attribute.String("langfuse.session.id", string(request.Context.ConversationID)),
+		attribute.String("langfuse.user.id", string(request.Context.UserID)),
+		attribute.StringSlice("langfuse.trace.tags", []string{string(contracts.ExecutionPlanExecute)}),
+	)
 	result, err := s.planGraph.Run(runCtx, request)
 	span.SetAttributes(attribute.Int("gen_ai.usage.input_tokens", result.Usage.InputTokens), attribute.Int("gen_ai.usage.output_tokens", result.Usage.OutputTokens))
 	if err != nil {

@@ -256,10 +256,27 @@ func (w *AgentWorker) executeRun(parent context.Context, run *entity.AgentRun) {
 	}
 	queueCtx, queueSpan := otel.Tracer("github.com/1090-f/Memora/worker").Start(execCtx, "queue.wait", trace.WithTimestamp(queueStartedAt))
 	queueSpan.SetAttributes(attribute.String("memora.run_id", run.ID.String()), attribute.Int64("memora.queue_wait_ms", queueEndedAt.Sub(queueStartedAt).Milliseconds()))
+	// Langfuse 里 queue.wait 是实际可见的根节点：它的父 Span 是触发该 run 的 HTTP 请求，
+	// 而 HTTP Span 被导出白名单挡掉了，父节点缺失 → Langfuse 把 queue.wait 当作根。
+	// 所以 trace 级元数据必须在这里也设一份，否则 trace 名可能退回成 "queue.wait"。
+	queueSpan.SetAttributes(
+		attribute.String("langfuse.trace.name", run.ID.String()),
+		attribute.String("langfuse.session.id", run.ConversationID.String()),
+		attribute.String("langfuse.user.id", run.UserID.String()),
+	)
 	queueSpan.End(trace.WithTimestamp(queueEndedAt))
 	execCtx, span := otel.Tracer("github.com/1090-f/Memora/worker").Start(queueCtx, "agent.run")
 	defer span.End()
-	span.SetAttributes(attribute.String("memora.run_id", run.ID.String()), attribute.String("memora.knowledge_base_id", run.KnowledgeBaseID.String()))
+	span.SetAttributes(
+		attribute.String("memora.run_id", run.ID.String()),
+		attribute.String("memora.knowledge_base_id", run.KnowledgeBaseID.String()),
+		// Langfuse 的 trace 级元数据必须设在执行链的**根 Span** 上：
+		// 这样一条 Trace 就是一次 Agent run，名字即 run_id，并带上会话/用户维度。
+		// （此前误设在 agent.react 这类非根 Span 上，导致 trace 名不生效、被 db Span 淹没。）
+		attribute.String("langfuse.trace.name", run.ID.String()),
+		attribute.String("langfuse.session.id", run.ConversationID.String()),
+		attribute.String("langfuse.user.id", run.UserID.String()),
+	)
 
 	runID := contracts.ID(run.ID.String())
 	execCtx = contracts.WithAgentStageReporter(execCtx, func(ctx context.Context, stage contracts.AgentStage, status contracts.StageStatus, durationMS int64, summary string, metadata map[string]any) {

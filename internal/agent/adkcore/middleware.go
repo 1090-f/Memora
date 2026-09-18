@@ -12,6 +12,7 @@ import (
 
 	"github.com/1090-f/Memora/internal/agent/core"
 	"github.com/1090-f/Memora/internal/contracts"
+	"github.com/1090-f/Memora/pkg/config"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -131,7 +132,11 @@ func (m *AgentMiddleware) WrapInvokableToolCall(ctx context.Context, endpoint ad
 		toolName := tc.Name
 		callID := tc.CallID
 		toolCtx, span := otel.Tracer("github.com/1090-f/Memora/agent").Start(ctx, "tool."+toolName)
-		span.SetAttributes(attribute.String("memora.run_id", string(m.RunID)), attribute.String("memora.tool_name", toolName), attribute.String("memora.tool_call_id", callID))
+		span.SetAttributes(attribute.String("memora.run_id", string(m.RunID)), attribute.String("memora.tool_name", toolName), attribute.String("memora.tool_call_id", callID), attribute.String("langfuse.observation.type", "tool"))
+		if captureLangfuseContent() {
+			// 工具入参写进 Langfuse —— 这是"点开一条 trace 能看到工具收到什么"的关键
+			span.SetAttributes(attribute.String("langfuse.observation.input", truncateRunesForTrace(argumentsInJSON, langfuseToolIOMaxRunes)))
+		}
 
 		if m.EventPublisher != nil {
 			_ = m.EventPublisher.PublishToolCallStarted(ctx, m.RunID, toolName, contracts.ID(callID))
@@ -143,6 +148,10 @@ func (m *AgentMiddleware) WrapInvokableToolCall(ctx context.Context, endpoint ad
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "tool call failed")
+		}
+		if captureLangfuseContent() {
+			// 工具返回结果同样写进 Langfuse（工具结果可能很长，已按字符截断）
+			span.SetAttributes(attribute.String("langfuse.observation.output", truncateRunesForTrace(result, langfuseToolIOMaxRunes)))
 		}
 		span.End()
 
@@ -175,7 +184,11 @@ func (m *AgentMiddleware) WrapStreamableToolCall(ctx context.Context, endpoint a
 		toolName := tc.Name
 		callID := tc.CallID
 		toolCtx, span := otel.Tracer("github.com/1090-f/Memora/agent").Start(ctx, "tool.stream.open."+toolName)
-		span.SetAttributes(attribute.String("memora.run_id", string(m.RunID)), attribute.String("memora.tool_name", toolName), attribute.String("memora.tool_call_id", callID))
+		span.SetAttributes(attribute.String("memora.run_id", string(m.RunID)), attribute.String("memora.tool_name", toolName), attribute.String("memora.tool_call_id", callID), attribute.String("langfuse.observation.type", "tool"))
+		if captureLangfuseContent() {
+			// 流式工具只记入参：输出是 StreamReader，要消费掉才能拿到结果，代价太大
+			span.SetAttributes(attribute.String("langfuse.observation.input", truncateRunesForTrace(argumentsInJSON, langfuseToolIOMaxRunes)))
+		}
 
 		if m.EventPublisher != nil {
 			_ = m.EventPublisher.PublishToolCallStarted(ctx, m.RunID, toolName, contracts.ID(callID))
@@ -245,6 +258,27 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// langfuseToolIOMaxRunes 是工具输入/输出写入 Langfuse 的单条字符上限。
+// 工具结果可能很大（如整页文档），不截断会让 Span 过肥、拖累导出。
+const langfuseToolIOMaxRunes = 8000
+
+// captureLangfuseContent 返回是否允许把工具正文外发到 Langfuse。
+// 与 internal/ai/traced_chat_model.go 读同一份配置。
+func captureLangfuseContent() bool {
+	return config.Get().Langfuse.CaptureContent
+}
+
+// truncateRunesForTrace 按「字符」而非「字节」截断。
+// 不要复用上面的 truncateString —— 它用 s[:maxLen] 按字节切，
+// 中文会被切在 UTF-8 字符中间产生乱码。
+func truncateRunesForTrace(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "...(已截断)"
 }
 
 // getToolNamesFromInfos 从 ToolInfo 列表获取工具名称
