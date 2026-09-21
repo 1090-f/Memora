@@ -3,9 +3,15 @@ FROM node:24-alpine AS build
 WORKDIR /workspace
 RUN corepack enable
 
+# npm 源：默认官方源；国内在 .env 里覆盖成 https://registry.npmmirror.com
+ARG NPM_REGISTRY=https://registry.npmjs.org
+# store-dir 固定到 /pnpm-store，配合下面的 cache mount 让已下载的包跨构建复用
+RUN pnpm config set registry "${NPM_REGISTRY}" && pnpm config set store-dir /pnpm-store
+
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY admin/package.json admin/package.json
-RUN pnpm install --frozen-lockfile
+# cache id 写死，避免 build args 变化时缓存被换掉（同根目录 Dockerfile 里的道理）
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm-store pnpm install --frozen-lockfile
 
 COPY admin admin
 RUN pnpm --filter memora-admin build

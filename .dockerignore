@@ -1,0 +1,37 @@
+# 构建上下文瘦身：不含本文件时上下文约 1.7GB（含 .git / node_modules / 上传压缩包），
+# 光传输就要 10 分钟。这里只排除确定与构建无关的重目录，Go 源码、services/、scripts/
+# 一律保留（Dockerfile 的 COPY 需要它们）。
+#
+# 注意：本文件只作用于根目录 Dockerfile 的上下文；web 有自己独立的 web/.dockerignore。
+
+# 版本库与本地工具产物
+.git
+.gitignore
+.idea
+.claude
+.superpowers
+.workbuddy
+.worktrees
+
+# 体积大且构建不需要
+docs
+evaluation
+bin
+logs
+*.zip
+*.tar.gz
+*.tgz
+
+# 敏感配置（含真实密钥，不进构建上下文）
+.env
+.env.*
+2.env
+configs/config.yaml
+configs/config2.yaml
+
+# 前端依赖与产物：web 由 web/Dockerfile 单独构建，根上下文不需要
+web/node_modules
+web/**/node_modules
+web/**/dist
+web/**/coverage
+web/.pnpm-store
