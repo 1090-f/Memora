@@ -1,8 +1,17 @@
 name: memora
 
+# 长跑服务共用的日志策略：限制 json 日志体积，避免长期运行时把服务器磁盘写满。
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 services:
   postgres:
     image: paradedb/paradedb:0.24.3-pg17
+    restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_DB: memora
       POSTGRES_USER: memora
@@ -19,6 +28,8 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
+    logging: *default-logging
     ports: ["16379:6379"]
     volumes: ["memora-redis:/data"]
     healthcheck:
@@ -29,6 +40,8 @@ services:
 
   minio:
     image: minio/minio:latest
+    restart: unless-stopped
+    logging: *default-logging
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MEMORA_MINIO_ACCESS_KEY:-minioadmin}
@@ -54,7 +67,22 @@ services:
     restart: "no"
 
   migrate:
-    build: {context: .., dockerfile: Dockerfile}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        # 构建源：默认官方源；国内在 .env 里覆盖成国内镜像。
+        # UV_LOCK_REGISTRY_TO 是关键 —— uv.lock 里逐包写死了 registry，
+        # 不换掉它，配多少索引变量都没用（详见 Dockerfile 注释）。
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        UV_DEFAULT_INDEX: ${UV_DEFAULT_INDEX:-https://pypi.org/simple}
+        UV_LOCK_REGISTRY_TO: ${UV_LOCK_REGISTRY_TO:-}
+        UV_INSECURE_HOST: ${UV_INSECURE_HOST:-}
+        UV_HTTP_TIMEOUT: ${UV_HTTP_TIMEOUT:-120}
+        UV_HTTP_RETRIES: ${UV_HTTP_RETRIES:-5}
+        UV_IMAGE: ${UV_IMAGE:-ghcr.io/astral-sh/uv:0.8}
+        # Debian 源（apt-get install gosu 那步），留空则用官方源
+        APT_MIRROR: ${APT_MIRROR:-}
     command: ["memora-migrate", "up"]
     environment: &memora-environment
       MEMORA_GIN_MODE: ${MEMORA_GIN_MODE:-debug}
@@ -95,6 +123,14 @@ services:
       MEMORA_DOCUMENT_PARSER_INCLUDE_BBOXES: ${MEMORA_DOCUMENT_PARSER_INCLUDE_BBOXES:-true}
       DOCUMENT_PARSER_LOG_LEVEL: ${DOCUMENT_PARSER_LOG_LEVEL:-info}
       DOCUMENT_PARSER_MAX_CONCURRENCY: ${DOCUMENT_PARSER_MAX_CONCURRENCY:-2}
+      # Docling/HuggingFace 模型下载源。首次启动要联网下模型；国内服务器连不上
+      # huggingface.co 时，在 .env 里加 HF_ENDPOINT=https://hf-mirror.com 即可。
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+      # 运行时兜底：Python 依赖已随镜像打包，正常不需要联网解析；
+      # 若容器启动日志里出现 uv 访问 PyPI，这两个变量会让它改走国内镜像。
+      UV_DEFAULT_INDEX: ${UV_DEFAULT_INDEX:-https://pypi.org/simple}
+      UV_INSECURE_HOST: ${UV_INSECURE_HOST:-}
+      UV_HTTP_TIMEOUT: ${UV_HTTP_TIMEOUT:-120}
       MEMORA_CHUNKING_STRATEGY_VERSION: ${MEMORA_CHUNKING_STRATEGY_VERSION:-structure-v1}
       MEMORA_CHUNKING_MAX_TOKENS: ${MEMORA_CHUNKING_MAX_TOKENS:-1000}
       MEMORA_CHUNKING_MIN_TOKENS: ${MEMORA_CHUNKING_MIN_TOKENS:-100}
@@ -105,12 +141,42 @@ services:
       MEMORA_BOOTSTRAP_ADMIN_USERNAME: ${MEMORA_BOOTSTRAP_ADMIN_USERNAME:-admin}
       MEMORA_BOOTSTRAP_ADMIN_EMAIL: ${MEMORA_BOOTSTRAP_ADMIN_EMAIL:-admin@example.com}
       MEMORA_BOOTSTRAP_ADMIN_PASSWORD: ${MEMORA_BOOTSTRAP_ADMIN_PASSWORD:-}
+      # ---- 以下为服务器部署补齐：原先未注入容器，release 模式下缺失会直接启动失败 ----
+      MEMORA_LOG_LEVEL: ${MEMORA_LOG_LEVEL:-info}
+      MEMORA_LOG_FILENAME: ${MEMORA_LOG_FILENAME:-}
+      # release 模式要求：AI ≥16 字符、MCP ≥32 字符，且不能以 change-me 开头
+      MEMORA_AI_ENCRYPTION_KEY: ${MEMORA_AI_ENCRYPTION_KEY:-}
+      MEMORA_MCP_ENCRYPTION_KEY: ${MEMORA_MCP_ENCRYPTION_KEY:-}
+      MEMORA_MCP_ALLOW_LOCAL_HTTP: ${MEMORA_MCP_ALLOW_LOCAL_HTTP:-false}
+      # ---- Agent 链路可视化（Langfuse 自托管）----
+      # HOST 必须从容器视角可达：共享网络用 http://langfuse-web:3000；
+      # 走宿主机映射端口用 http://host.docker.internal:3001（见 api 的 extra_hosts）。
+      MEMORA_LANGFUSE_ENABLED: ${MEMORA_LANGFUSE_ENABLED:-false}
+      MEMORA_LANGFUSE_HOST: ${MEMORA_LANGFUSE_HOST:-}
+      MEMORA_LANGFUSE_PUBLIC_KEY: ${MEMORA_LANGFUSE_PUBLIC_KEY:-}
+      MEMORA_LANGFUSE_SECRET_KEY: ${MEMORA_LANGFUSE_SECRET_KEY:-}
+      MEMORA_LANGFUSE_CAPTURE_CONTENT: ${MEMORA_LANGFUSE_CAPTURE_CONTENT:-false}
     depends_on:
       postgres: {condition: service_healthy}
     restart: "no"
 
   bootstrap-admin:
-    build: {context: .., dockerfile: Dockerfile}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        # 构建源：默认官方源；国内在 .env 里覆盖成国内镜像。
+        # UV_LOCK_REGISTRY_TO 是关键 —— uv.lock 里逐包写死了 registry，
+        # 不换掉它，配多少索引变量都没用（详见 Dockerfile 注释）。
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        UV_DEFAULT_INDEX: ${UV_DEFAULT_INDEX:-https://pypi.org/simple}
+        UV_LOCK_REGISTRY_TO: ${UV_LOCK_REGISTRY_TO:-}
+        UV_INSECURE_HOST: ${UV_INSECURE_HOST:-}
+        UV_HTTP_TIMEOUT: ${UV_HTTP_TIMEOUT:-120}
+        UV_HTTP_RETRIES: ${UV_HTTP_RETRIES:-5}
+        UV_IMAGE: ${UV_IMAGE:-ghcr.io/astral-sh/uv:0.8}
+        # Debian 源（apt-get install gosu 那步），留空则用官方源
+        APT_MIRROR: ${APT_MIRROR:-}
     command: ["memora-migrate", "bootstrap-admin"]
     environment: *memora-environment
     depends_on:
@@ -118,10 +184,30 @@ services:
     restart: "no"
 
   api:
-    build: {context: .., dockerfile: Dockerfile}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        # 构建源：默认官方源；国内在 .env 里覆盖成国内镜像。
+        # UV_LOCK_REGISTRY_TO 是关键 —— uv.lock 里逐包写死了 registry，
+        # 不换掉它，配多少索引变量都没用（详见 Dockerfile 注释）。
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        UV_DEFAULT_INDEX: ${UV_DEFAULT_INDEX:-https://pypi.org/simple}
+        UV_LOCK_REGISTRY_TO: ${UV_LOCK_REGISTRY_TO:-}
+        UV_INSECURE_HOST: ${UV_INSECURE_HOST:-}
+        UV_HTTP_TIMEOUT: ${UV_HTTP_TIMEOUT:-120}
+        UV_HTTP_RETRIES: ${UV_HTTP_RETRIES:-5}
+        UV_IMAGE: ${UV_IMAGE:-ghcr.io/astral-sh/uv:0.8}
+        # Debian 源（apt-get install gosu 那步），留空则用官方源
+        APT_MIRROR: ${APT_MIRROR:-}
     command: ["memora-server"]
     environment: *memora-environment
     ports: ["8080:8080"]
+    logging: *default-logging
+    # Linux 上让容器能用 host.docker.internal 访问宿主机端口（Langfuse 走 3001 时需要；
+    # 若用共享 external network 走 langfuse-web:3000，这段可删）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - docling-models:/models/huggingface
     depends_on: &application-dependencies
@@ -144,8 +230,13 @@ services:
           memory: 4g
 
   web:
-    build: {context: ../web, dockerfile: Dockerfile}
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
     ports: ["3000:8080"]
+    logging: *default-logging
     depends_on:
       api: {condition: service_healthy}
     restart: unless-stopped

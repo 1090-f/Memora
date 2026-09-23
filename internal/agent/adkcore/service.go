@@ -150,7 +150,13 @@ func (s *Service) runReact(ctx context.Context, request contracts.AgentRunReques
 	}
 
 	runCtx, span := otel.Tracer("github.com/1090-f/Memora/agent").Start(ctx, "agent.react")
-	span.SetAttributes(attribute.String("memora.run_id", string(request.RunID)))
+	span.SetAttributes(
+		attribute.String("memora.run_id", string(request.RunID)),
+		attribute.String("langfuse.trace.name", string(request.RunID)),
+		attribute.String("langfuse.session.id", string(request.Context.ConversationID)),
+		attribute.String("langfuse.user.id", string(request.Context.UserID)),
+		attribute.StringSlice("langfuse.trace.tags", []string{string(contracts.ExecutionReact)}),
+	)
 	result, err := s.reactRunner.Run(runCtx, request, s.eventPublisher, s.citationCollector)
 	span.SetAttributes(attribute.Int("gen_ai.usage.input_tokens", result.Usage.InputTokens), attribute.Int("gen_ai.usage.output_tokens", result.Usage.OutputTokens))
 	if err != nil {
@@ -161,14 +167,12 @@ func (s *Service) runReact(ctx context.Context, request contracts.AgentRunReques
 	if err != nil {
 		if ctx.Err() != nil {
 			_ = s.eventPublisher.PublishRunCancelled(ctx, request.RunID)
-		} else {
-			_ = s.eventPublisher.PublishRunFailed(ctx, request.RunID, contracts.ExecutionReact, err)
 		}
+		// 失败终态事件不在这里发布：Worker 会在 MarkFailed 落库之后再发，
+		// 保证「收到终态事件 ⇒ agent_runs 已可读」。见 P2（顺序根治）。
 		return result, &contracts.AgentRunError{ExecutionMode: contracts.ExecutionReact, Err: err}
 	}
-	if err := s.eventPublisher.PublishRunCompleted(ctx, request.RunID, result); err != nil {
-		return contracts.AgentRunResult{}, err
-	}
+	// 成功终态事件同理，由 Worker 在 MarkCompleted 落库之后发布。
 	return result, nil
 }
 
@@ -188,7 +192,13 @@ func (s *Service) runPlanExecute(ctx context.Context, request contracts.AgentRun
 	}
 
 	runCtx, span := otel.Tracer("github.com/1090-f/Memora/agent").Start(ctx, "agent.plan_execute")
-	span.SetAttributes(attribute.String("memora.run_id", string(request.RunID)))
+	span.SetAttributes(
+		attribute.String("memora.run_id", string(request.RunID)),
+		attribute.String("langfuse.trace.name", string(request.RunID)),
+		attribute.String("langfuse.session.id", string(request.Context.ConversationID)),
+		attribute.String("langfuse.user.id", string(request.Context.UserID)),
+		attribute.StringSlice("langfuse.trace.tags", []string{string(contracts.ExecutionPlanExecute)}),
+	)
 	result, err := s.planGraph.Run(runCtx, request)
 	span.SetAttributes(attribute.Int("gen_ai.usage.input_tokens", result.Usage.InputTokens), attribute.Int("gen_ai.usage.output_tokens", result.Usage.OutputTokens))
 	if err != nil {
@@ -199,14 +209,11 @@ func (s *Service) runPlanExecute(ctx context.Context, request contracts.AgentRun
 	if err != nil {
 		if ctx.Err() != nil {
 			_ = s.eventPublisher.PublishRunCancelled(ctx, request.RunID)
-		} else {
-			_ = s.eventPublisher.PublishRunFailed(ctx, request.RunID, contracts.ExecutionPlanExecute, err)
 		}
+		// 见 runReact：失败终态事件由 Worker 在落库后发布。
 		return result, &contracts.AgentRunError{ExecutionMode: contracts.ExecutionPlanExecute, Err: err}
 	}
-	if err := s.eventPublisher.PublishRunCompleted(ctx, request.RunID, result); err != nil {
-		return contracts.AgentRunResult{}, err
-	}
+	// 见 runReact：成功终态事件由 Worker 在落库后发布。
 	return result, nil
 }
 

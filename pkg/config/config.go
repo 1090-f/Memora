@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -30,6 +31,7 @@ type Config struct {
 	AgentWorker      AgentWorkerConfig      `mapstructure:"agent_worker"`
 	AgentEvents      AgentEventsConfig      `mapstructure:"agent_events"`
 	Observability    ObservabilityConfig    `mapstructure:"observability"`
+	Langfuse         LangfuseConfig         `mapstructure:"langfuse"`
 }
 
 // ObservabilityConfig 控制安全观测数据的采样与保留；敏感正文默认永不采集。
@@ -38,6 +40,16 @@ type ObservabilityConfig struct {
 	CaptureSensitiveContent bool    `mapstructure:"capture_sensitive_content"`
 	TraceSampleRatio        float64 `mapstructure:"trace_sample_ratio"`
 	RetentionDays           int     `mapstructure:"retention_days"`
+}
+
+// LangfuseConfig 控制 Agent 链路向 Langfuse 的旁路导出。
+// 默认关闭；开启后仅导出 Span 骨架与用量，正文是否外发由 CaptureContent 决定。
+type LangfuseConfig struct {
+	Enabled        bool   `mapstructure:"enabled"`
+	Host           string `mapstructure:"host"` // 完整地址（含 scheme），例 "https://cloud.langfuse.com" 或 "http://localhost:3001"
+	PublicKey      string `mapstructure:"public_key"`
+	SecretKey      string `mapstructure:"secret_key"`
+	CaptureContent bool   `mapstructure:"capture_content"` // 是否外发 prompt / 补全正文，默认 false
 }
 
 // AppConfig 定义应用程序基础配置，包括名称、版本、运行模式和超时设置
@@ -273,6 +285,9 @@ func (c Config) Validate() error {
 	if c.Observability.RetentionDays < 1 {
 		errs = append(errs, errors.New("observability.retention_days 必须大于 0"))
 	}
+	if err := c.validateLangfuse(); err != nil {
+		errs = append(errs, err)
+	}
 	if c.App.Address == "" {
 		errs = append(errs, errors.New("缺少环境变量 MEMORA_HTTP_ADDRESS"))
 	}
@@ -367,6 +382,36 @@ func (c Config) Validate() error {
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("配置无效: %w", errors.Join(errs...))
+	}
+	return nil
+}
+
+// validateLangfuse 校验 Langfuse 旁路导出配置。
+// 仅当 Enabled 时才校验；Host 的 scheme 决定明文/加密，非法输入必须在此提前拦下，
+// 因为 WithEndpointURL 对非法 URL 静默回退 localhost:4318 而不报错。
+func (c Config) validateLangfuse() error {
+	if !c.Langfuse.Enabled {
+		return nil
+	}
+	var errs []error
+	if c.Langfuse.Host == "" {
+		errs = append(errs, errors.New("langfuse.host 不能为空"))
+	} else {
+		u, err := url.Parse(c.Langfuse.Host)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("langfuse.host 无法解析: %w", err))
+		} else if u.Scheme != "http" && u.Scheme != "https" {
+			errs = append(errs, errors.New("langfuse.host 的 scheme 必须是 http 或 https"))
+		}
+	}
+	if c.Langfuse.PublicKey == "" {
+		errs = append(errs, errors.New("langfuse.public_key 不能为空"))
+	}
+	if c.Langfuse.SecretKey == "" {
+		errs = append(errs, errors.New("langfuse.secret_key 不能为空"))
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("Langfuse 配置无效: %w", errors.Join(errs...))
 	}
 	return nil
 }

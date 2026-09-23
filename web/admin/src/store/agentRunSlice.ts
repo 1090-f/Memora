@@ -157,8 +157,21 @@ const agentRunSlice = createSlice({
         return;
       }
 
-      // 去重：同一 run 的助手消息只保留一份
-      if (current.some((m) => m.agent_run_id === message.agent_run_id && m.role === 'assistant')) return;
+      // 去重：同一 run 的助手消息只保留一份。
+      // 例外：已存在的那条是空内容（竞态下先写入的空占位），而新消息有实质内容时，
+      // 用新消息覆盖它 —— 否则空消息会永久占位，后来送到嘴边的正确回答被丢弃且无法自愈。
+      const existingIdx = current.findIndex((m) => m.agent_run_id === message.agent_run_id && m.role === 'assistant');
+      if (existingIdx !== -1) {
+        const existing = current[existingIdx];
+        const existingIsEmpty = !existing.content || existing.content.trim() === '';
+        const incomingHasContent = Boolean(message.content && message.content.trim() !== '');
+        if (!(existingIsEmpty && incomingHasContent)) return;
+        const next = [...current];
+        // 保留原 id：引用跳转 / 版本切换 / 运行详情入口都按 id 定位，换 id 会让它们失效。
+        next[existingIdx] = { ...existing, ...message, id: existing.id };
+        state.messages[conversationId] = mergeConsecutiveAssistantMessages(next);
+        return;
+      }
       state.messages[conversationId] = mergeConsecutiveAssistantMessages([...current, message]);
     },
     /** 切换消息版本（重试历史版本查看） */

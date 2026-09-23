@@ -179,6 +179,16 @@ observability:
   trace_sample_ratio: 1.0
   retention_days: 30
 
+# Agent 链路可视化（旁路导出到 Langfuse，不影响内置 trace_spans 存储）
+langfuse:
+  enabled: false                  # 默认关闭
+  # 完整地址，必须带 scheme —— http:// 走明文、https:// 走 TLS，无需额外开关
+  # 自托管填宿主机映射端口（注意：本机 3000 已被项目前端占用，故示例用 3001）
+  host: "http://localhost:3001"
+  public_key: ""
+  secret_key: ""
+  capture_content: false          # 代码默认 false（安全默认）；本项目实际部署设为 true —— 见方案 4.6
+
 # Agent 配置
 agent:
   max_tool_calls: 10         # 单次运行最大工具调用次数

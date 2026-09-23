@@ -247,8 +247,12 @@ func (p *SequencedEventPublisher) PublishRunCompleted(ctx context.Context, id co
 			return err
 		}
 	}
+	// answer_available 必须反映真实可用性：此前是硬编码 true，无论有没有回答都为 true，
+	// 前端无法据此判断还有没有必要继续取回答（空回答场景会产生误导）。
+	answerAvailable := strings.TrimSpace(result.FinalResult) != ""
 	completion := map[string]any{
-		"answer_available":           true,
+		"answer_available":           answerAvailable,
+		"answer_length":              len(result.FinalResult),
 		"citation_count":             len(result.Citations),
 		"knowledge_status":           result.KnowledgeStatus,
 		"token_usage":                result.Usage,
@@ -263,10 +267,25 @@ func (p *SequencedEventPublisher) PublishRunCompleted(ctx context.Context, id co
 func (p *SequencedEventPublisher) PublishRunFailed(ctx context.Context, id contracts.ID, mode contracts.ExecutionMode, runErr error) error {
 	now := time.Now().UTC()
 	p.mu.Lock()
+	var modelStarted time.Time
 	if timing := p.timings[id]; timing != nil {
 		timing.modelFinished = now
+		modelStarted = timing.modelStarted
 	}
 	p.mu.Unlock()
+	// 模型阶段已启动却没能走到 PublishRunCompleted 时，必须在这里把它收敛掉，
+	// 否则时间线里 model_generate 会永久停在「进行中」，看起来像卡死。
+	// 失败终态事件优先，故忽略阶段事件的发布错误。
+	if !modelStarted.IsZero() {
+		durationMS := now.Sub(modelStarted).Milliseconds()
+		if durationMS < 0 {
+			durationMS = 0
+		}
+		_ = p.publishStage(ctx, id, contracts.AgentStageModelGenerate, contracts.StageFailed, contracts.StageObservation{
+			Stage: string(contracts.AgentStageModelGenerate), Status: contracts.StageFailed,
+			StartedAt: &modelStarted, EndedAt: &now, DurationMS: &durationMS, Summary: "模型生成未完成",
+		})
+	}
 	return p.publish(ctx, id, contracts.EventRunFailed, map[string]any{
 		"execution_mode":  mode,
 		"error_code":      errorCode(runErr),

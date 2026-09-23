@@ -8,6 +8,12 @@ web/admin/.vite/
 web/admin/dev-server.log
 
 .env
+# 服务器部署配置（含真实密钥，勿提交）
+2.env
+configs/config2.yaml
+# compose 项目目录是 deploy/，Compose 只在该目录找 .env；
+# 用 `ln -sfn ../.env deploy/.env` 建立软链后就能免参数直接 up（软链本身也不必提交）
+deploy/.env
 .idea/
 configs/config.yaml
 logs/

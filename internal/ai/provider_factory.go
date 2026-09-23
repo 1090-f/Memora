@@ -80,8 +80,9 @@ func (f *einoProviderFactory) CreateChatModel(ctx context.Context, config ChatMo
 		return nil, fmt.Errorf("create eino chat model: %w", err)
 	}
 
-	// 包装为 contracts.ChatModel
-	return &einoChatModelAdapter{model: chatModel}, nil
+	// 包装为 contracts.ChatModel；同时给底层 Eino 模型套一层 trace 装饰器，
+	// 一处覆盖全部 LLM 调用（ReAct / Plan-Execute / Router / 后台任务）。
+	return &einoChatModelAdapter{model: WrapChatModelWithTracing(chatModel, config.Model)}, nil
 }
 
 // CreateEmbeddingModel 根据配置创建 EmbeddingModel 客户端。

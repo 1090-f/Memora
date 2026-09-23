@@ -161,6 +161,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("observability.capture_sensitive_content", false)
 	v.SetDefault("observability.trace_sample_ratio", 1.0)
 	v.SetDefault("observability.retention_days", 30)
+	v.SetDefault("langfuse.enabled", false)
+	v.SetDefault("langfuse.host", "")
+	v.SetDefault("langfuse.public_key", "")
+	v.SetDefault("langfuse.secret_key", "")
+	v.SetDefault("langfuse.capture_content", false)
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.filename", "")
 	v.SetDefault("log.max_size", 100)
@@ -248,6 +253,11 @@ func bindEnvironment(v *viper.Viper) {
 		"observability.capture_sensitive_content":      "MEMORA_OBSERVABILITY_CAPTURE_SENSITIVE_CONTENT",
 		"observability.trace_sample_ratio":             "MEMORA_OBSERVABILITY_TRACE_SAMPLE_RATIO",
 		"observability.retention_days":                 "MEMORA_OBSERVABILITY_RETENTION_DAYS",
+		"langfuse.enabled":                             "MEMORA_LANGFUSE_ENABLED",
+		"langfuse.host":                                "MEMORA_LANGFUSE_HOST",
+		"langfuse.public_key":                          "MEMORA_LANGFUSE_PUBLIC_KEY",
+		"langfuse.secret_key":                          "MEMORA_LANGFUSE_SECRET_KEY",
+		"langfuse.capture_content":                     "MEMORA_LANGFUSE_CAPTURE_CONTENT",
 		"log.level":                                    "MEMORA_LOG_LEVEL", "log.filename": "MEMORA_LOG_FILENAME",
 		"log.max_size": "MEMORA_LOG_MAX_SIZE", "log.max_backups": "MEMORA_LOG_MAX_BACKUPS",
 		"log.max_age": "MEMORA_LOG_MAX_AGE", "log.compress": "MEMORA_LOG_COMPRESS",

@@ -47,19 +47,20 @@ import (
 
 // ServerApp 管理 HTTP 服务器应用的生命周期，包括初始化、运行和关闭。
 type ServerApp struct {
-	cfg             *config.Config
-	db              *gorm.DB
-	redis           *redis.Client
-	backgroundRedis *redis.Client
-	eventRedis      *redis.Client
-	store           *objectstore.Client
-	server          *http.Server
-	background      *background.Manager
-	documentParser  *documentParserProcess
-	workerCancel    context.CancelFunc // Agent Worker 生命周期取消函数
-	agentWorker     *worker.AgentWorker
-	workerDone      chan struct{}
-	traceShutdown   func(context.Context) error
+	cfg              *config.Config
+	db               *gorm.DB
+	redis            *redis.Client
+	backgroundRedis  *redis.Client
+	eventRedis       *redis.Client
+	store            *objectstore.Client
+	server           *http.Server
+	background       *background.Manager
+	documentParser   *documentParserProcess
+	workerCancel     context.CancelFunc // Agent Worker 生命周期取消函数
+	agentWorker      *worker.AgentWorker
+	workerDone       chan struct{}
+	traceShutdown    func(context.Context) error
+	langfuseShutdown func(context.Context) error // Langfuse 旁路导出的关闭函数（可选，通常由 Provider.Shutdown 一并接管）
 }
 
 // NewServer 创建一个新的 ServerApp 实例。
@@ -75,9 +76,28 @@ func (a *ServerApp) Initialize(ctx context.Context) error {
 	if err := logger.Init(&cfg.Log); err != nil {
 		return fmt.Errorf("初始化日志器失败: %w", err)
 	}
-	a.traceShutdown, err = appobservability.InitializeTracing(ctx, cfg.Observability, cfg.App.Name)
+	// tracingCfg 是给 Provider 用的副本：只要任一链路开启，就需要真实的 Provider。
+	tracingCfg := cfg.Observability
+	if cfg.Langfuse.Enabled {
+		tracingCfg.Enabled = true
+	}
+	a.traceShutdown, err = appobservability.InitializeTracing(ctx, tracingCfg, cfg.App.Name)
 	if err != nil {
 		return fmt.Errorf("初始化 OpenTelemetry 失败: %w", err)
+	}
+
+	// Langfuse 不依赖数据库，紧接 Provider 初始化就挂载。
+	// 不放进下面那个 cfg.Observability.Enabled 块 —— 否则 DB 初始化失败时，
+	// 会把本来不依赖 DB 的 Langfuse 一起拖死。
+	if cfg.Langfuse.Enabled {
+		langfuseShutdown, shutdownErr := appobservability.AttachLangfuseSpanExporter(ctx, cfg.Langfuse)
+		if shutdownErr != nil {
+			// 设计取舍：Langfuse 导出失败不应阻断服务启动。可观测性是旁路能力，
+			// 不该成为主链路的单点故障。
+			logger.Warn("初始化 Langfuse 导出失败，已降级跳过", zap.Error(shutdownErr))
+		} else {
+			a.langfuseShutdown = langfuseShutdown
+		}
 	}
 	gin.SetMode(cfg.App.Mode)
 	gin.DefaultWriter = io.Discard
