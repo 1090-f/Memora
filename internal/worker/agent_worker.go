@@ -411,6 +411,24 @@ func (w *AgentWorker) executeRun(parent context.Context, run *entity.AgentRun) {
 		result.KnowledgeStatus,
 	); markErr != nil {
 		logger.Error("标记 Agent 运行完成状态出错", zap.String("run_id", run.ID.String()), zap.Error(markErr))
+		// 兜底：不能让运行记录永久停留在 running。MarkCompleted 未生效时显式标记失败并落一条
+		// 失败消息，避免出现「事件已宣告 completed、DB 却停在 running、用户看不到任何输出」的僵尸运行。
+		// 不重试 MarkCompleted —— 写失败通常是 DB 侧问题，立即重试大概率再失败且会阻塞 worker。
+		if failErr := w.runRepo.MarkFailed(
+			context.Background(),
+			run.ID,
+			"persist_error",
+			"运行结果保存失败，请重试",
+			string(result.ExecutionMode),
+			durationMs,
+			result.Usage.InputTokens,
+			result.Usage.OutputTokens,
+			result.Usage.TotalTokens,
+		); failErr != nil {
+			logger.Error("补标记运行失败状态出错", zap.String("run_id", run.ID.String()), zap.Error(failErr))
+		}
+		w.updateRunObservability(context.Background(), run.ID, contracts.AgentStageAnswer, true, "请重试；若持续失败，请检查数据库状态。")
+		w.createFailureMessage(context.Background(), run, "运行结果保存失败，请重试")
 		return
 	}
 	w.updateRunObservability(context.Background(), run.ID, "", false, "")
