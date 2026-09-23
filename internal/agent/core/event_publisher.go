@@ -247,8 +247,12 @@ func (p *SequencedEventPublisher) PublishRunCompleted(ctx context.Context, id co
 			return err
 		}
 	}
+	// answer_available 必须反映真实可用性：此前是硬编码 true，无论有没有回答都为 true，
+	// 前端无法据此判断还有没有必要继续取回答（空回答场景会产生误导）。
+	answerAvailable := strings.TrimSpace(result.FinalResult) != ""
 	completion := map[string]any{
-		"answer_available":           true,
+		"answer_available":           answerAvailable,
+		"answer_length":              len(result.FinalResult),
 		"citation_count":             len(result.Citations),
 		"knowledge_status":           result.KnowledgeStatus,
 		"token_usage":                result.Usage,
