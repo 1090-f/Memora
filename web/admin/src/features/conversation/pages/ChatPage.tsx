@@ -12,6 +12,7 @@ import { ChatWorkspace } from '@/layouts/ChatWorkspace';
 import { ActionNotice } from '@/components/shared/ActionNotice';
 import { createConversation, getConversation, listMessages, updateConversation, updateConversationChatModel } from '../api';
 import { streamAgentEvents } from '../events';
+import { fetchRunAnswer } from '../runAnswer';
 import { ChatComposer } from '../components/ChatComposer';
 import { MessageList } from '../components/MessageList';
 import type { Citation } from '../types';
@@ -114,9 +115,8 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
    * 运行结束后收尾：若缺少助手消息则补上（按 run_id 去重）、标记该 run 已完整回放、触发消息刷新。
    */
   const finalizeRun = async (targetConversationId: string, runId: string) => {
-    const completedRun = await getAgentRun(runId);
     const state = agentRunStatesRef.current[targetConversationId];
-    const answer = completedRun.final_result ?? state?.answer ?? '';
+    const { answer, run } = await fetchRunAnswer(runId, state?.answer);
     if (answer && activeConversationIdRef.current === targetConversationId) {
       dispatch(appendAssistantMessage({
         conversationId: targetConversationId,
@@ -125,13 +125,17 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
           role: 'assistant',
           content: answer,
           agent_run_id: runId,
-          status: completedRun.status || 'completed',
+          status: run.status || 'completed',
           citations: normalizeCitations(state?.citations ?? []),
           created_at: new Date().toISOString(),
         },
       }));
     }
-    dispatch(markActiveRunHydrated({ conversationId: targetConversationId, runId }));
+    // 仅在确实拿到回答时标记已完整回放。为空时不下写，保留重放/重试入口，
+    // 否则空回答会被永久锁死（再次进入会话不再回放）。
+    if (answer) {
+      dispatch(markActiveRunHydrated({ conversationId: targetConversationId, runId }));
+    }
     void queryClient.invalidateQueries({ queryKey: ['conversations', targetConversationId, 'messages'] });
   };
 
@@ -456,9 +460,8 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
         }
       },
     });
-    const completedRun = await getAgentRun(runId);
-    const answer = completedRun.final_result ?? agentRunStatesRef.current[streamConversationId]?.answer ?? '';
-    if (answer !== undefined && answer !== null && activeConversationIdRef.current === streamConversationId) {
+    const { answer, run } = await fetchRunAnswer(runId, agentRunStatesRef.current[streamConversationId]?.answer);
+    if (answer && activeConversationIdRef.current === streamConversationId) {
       dispatch(appendAssistantMessage({
         conversationId: streamConversationId,
         message: {
@@ -466,15 +469,16 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
           role: 'assistant',
           content: answer,
           agent_run_id: runId,
-          status: completedRun.status || 'completed',
+          status: run.status || 'completed',
           citations: normalizeCitations(agentRunStatesRef.current[streamConversationId]?.citations ?? []),
           created_at: new Date().toISOString(),
         },
         replaceMessageId: opts?.replaceMessageId,
       }));
     }
-    // 正常完整跑完（未被中断）时，标记该 run 已完成回放，再次进入会话直接复用 store 状态，避免中间加载态。
-    if (!controller.signal.aborted) {
+    // 正常完整跑完（未被中断）且确实拿到回答时，标记该 run 已完成回放，
+    // 再次进入会话直接复用 store 状态，避免中间加载态。为空时不下写，保留重试入口。
+    if (!controller.signal.aborted && answer) {
       dispatch(markActiveRunHydrated({ conversationId: streamConversationId, runId }));
     }
   };
@@ -515,25 +519,18 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
           }
         },
       });
-      const completedRun = await getAgentRun(response.run_id);
-      // Plan-Execute: SSE 完成事件可能先于 DB 写入，短暂延时后重试
-      let answer = completedRun.final_result || agentRunStatesRef.current[streamConversationId]?.answer;
-      if (!answer) {
-        await new Promise((r) => setTimeout(r, 500));
-        const retried = await getAgentRun(response.run_id);
-        answer = retried.final_result || agentRunStatesRef.current[streamConversationId]?.answer;
-      }
+      const { answer, run } = await fetchRunAnswer(response.run_id, agentRunStatesRef.current[streamConversationId]?.answer);
       if (answer && activeConversationIdRef.current === streamConversationId) {
         dispatch(appendAssistantMessage({
           conversationId: streamConversationId,
           message: {
             id: uuidv4(), role: 'assistant', content: answer, agent_run_id: response.run_id,
-            status: completedRun.status || 'completed', citations: normalizeCitations(agentRunStatesRef.current[streamConversationId]?.citations ?? []), created_at: new Date().toISOString(),
+            status: run.status || 'completed', citations: normalizeCitations(agentRunStatesRef.current[streamConversationId]?.citations ?? []), created_at: new Date().toISOString(),
           },
         }));
       }
-      // 正常完整跑完（未被中断）时，标记该 run 已完成回放，再次进入会话直接复用 store 状态，避免中间加载态。
-      if (!controller.signal.aborted) {
+      // 正常完整跑完（未被中断）且确实拿到回答时，标记该 run 已完成回放。为空时不下写，保留重试入口。
+      if (!controller.signal.aborted && answer) {
         dispatch(markActiveRunHydrated({ conversationId: streamConversationId, runId: response.run_id }));
       }
     } catch (error) {
