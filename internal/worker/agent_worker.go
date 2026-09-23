@@ -312,6 +312,8 @@ func (w *AgentWorker) executeRun(parent context.Context, run *entity.AgentRun) {
 		if markErr := w.runRepo.MarkFailed(execCtx, run.ID, "context_build_error", failureMessage, "", time.Since(startedAt).Milliseconds(), 0, 0, 0); markErr != nil {
 			logger.Error("标记运行失败状态出错", zap.String("run_id", run.ID.String()), zap.Error(markErr))
 		}
+		// 此处尚未路由，执行模式未知，故不携带 mode。补发终态事件，避免前端 SSE 一直等待。
+		w.publishRunFailed(execCtx, runID, "", err)
 		w.updateRunObservability(execCtx, run.ID, contracts.AgentStageContextBuild, true, "请检查知识库、模型与会话配置后重试。")
 		// 创建失败状态的助手消息，确保问答页面能够展示本次运行失败的结果。
 		w.createFailureMessage(context.Background(), run, fmt.Sprintf("抱歉，系统在准备回答时遇到了问题。失败原因：%s", failureMessage))
@@ -343,6 +345,7 @@ func (w *AgentWorker) executeRun(parent context.Context, run *entity.AgentRun) {
 				if markErr := w.runRepo.MarkFailed(context.Background(), run.ID, "worker_stopped", "服务停止，运行已中断", "", durationMS, result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens); markErr != nil {
 					logger.Error("标记被服务停止中断的运行失败", zap.String("run_id", run.ID.String()), zap.Error(markErr))
 				}
+				w.publishRunFailed(execCtx, runID, "", errors.New("服务停止，运行已中断"))
 				logger.Info("Agent 运行因 Worker 停止而中断", zap.String("run_id", run.ID.String()))
 				return
 			}
@@ -367,6 +370,7 @@ func (w *AgentWorker) executeRun(parent context.Context, run *entity.AgentRun) {
 		if markErr := w.runRepo.MarkFailed(context.Background(), run.ID, "agent_run_error", err.Error(), executionMode, time.Since(startedAt).Milliseconds(), result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens); markErr != nil {
 			logger.Error("标记 Agent 运行失败状态出错", zap.String("run_id", run.ID.String()), zap.Error(markErr))
 		}
+		w.publishRunFailed(execCtx, runID, contracts.ExecutionMode(executionMode), err)
 		w.updateRunObservability(context.Background(), run.ID, contracts.AgentStageModelGenerate, true, "请重试；若仍失败，请检查模型服务状态并使用 Trace ID 诊断。")
 		// 创建失败状态的助手消息，向用户反馈本次运行执行失败。
 		w.createFailureMessage(context.Background(), run, w.getFriendlyErrorMessage(err))
@@ -393,6 +397,10 @@ func (w *AgentWorker) executeRun(parent context.Context, run *entity.AgentRun) {
 		); markErr != nil {
 			logger.Error("标记 Agent 运行失败状态出错", zap.String("run_id", run.ID.String()), zap.Error(markErr))
 		}
+		// 空回答在 DB 侧一直是 failed（empty_final_answer）。P2 之前 adkcore 已抢先发过
+		// agent.run.completed，形成「事件说成功、DB 说失败」；现在终态事件收回 Worker，
+		// 这里必须补发 failed，两端语义才一致。
+		w.publishRunFailed(execCtx, runID, result.ExecutionMode, errors.New("任务执行完成但未生成有效最终回答"))
 		w.updateRunObservability(context.Background(), run.ID, contracts.AgentStageAnswer, true, "请重试或简化问题；若持续为空，请检查模型输出配置。")
 		w.createFailureMessage(context.Background(), run, "任务执行完成但未生成有效最终回答，请重试或简化问题")
 		return
@@ -427,10 +435,15 @@ func (w *AgentWorker) executeRun(parent context.Context, run *entity.AgentRun) {
 		); failErr != nil {
 			logger.Error("补标记运行失败状态出错", zap.String("run_id", run.ID.String()), zap.Error(failErr))
 		}
+		w.publishRunFailed(execCtx, runID, result.ExecutionMode, errors.New("运行结果保存失败"))
 		w.updateRunObservability(context.Background(), run.ID, contracts.AgentStageAnswer, true, "请重试；若持续失败，请检查数据库状态。")
 		w.createFailureMessage(context.Background(), run, "运行结果保存失败，请重试")
 		return
 	}
+	// MarkCompleted 已成功落库，此时才发布成功终态事件 ——
+	// 「收到 agent.run.completed ⇒ agent_runs.final_result 已可读」的不变式由此成立。
+	// 必须排在下面的 updateRunObservability 之前（原因见 publishRunCompleted 的注释）。
+	w.publishRunCompleted(execCtx, runID, result)
 	w.updateRunObservability(context.Background(), run.ID, "", false, "")
 
 	// 持久化助手消息（AI 回复）
@@ -553,6 +566,55 @@ func (w *AgentWorker) updateRunObservability(ctx context.Context, runID uuid.UUI
 	}
 	if err := w.runRepo.UpdateObservability(ctx, runID, update); err != nil {
 		logger.Warn("更新 Agent 可观测摘要失败", zap.String("run_id", runID.String()), zap.Error(err))
+	}
+}
+
+// agentRunTerminalPublisher 是 Worker 侧对「终态事件发布能力」的最小抽象。
+// contracts.EventPublisher 只声明了 Publish，终态事件需要类型断言取用；
+// 不把 AgentWorker.events 的字段类型换成 core.EventPublisher —— 那会牵动构造签名与既有测试的 fake。
+type agentRunTerminalPublisher interface {
+	PublishRunCompleted(ctx context.Context, runID contracts.ID, result contracts.AgentRunResult) error
+	PublishRunFailed(ctx context.Context, runID contracts.ID, mode contracts.ExecutionMode, err error) error
+}
+
+// terminalPublishContext 构造发布终态事件所用的 context。
+// 用 background 而非 execCtx：运行失败/服务停止时 execCtx 可能已被取消，一旦取消事件就发不出去，
+// 前端 SSE 会一直等不到终态。同时把 correlation 从 execCtx 搬过来，否则事件会丢 trace_id，
+// 排查时无法与日志 / Trace 关联。
+func terminalPublishContext(execCtx context.Context) context.Context {
+	base := context.Background()
+	traceID, requestID := contracts.CorrelationFromContext(execCtx)
+	if traceID == "" && requestID == "" {
+		return base
+	}
+	return contracts.WithCorrelation(base, traceID, requestID)
+}
+
+// publishRunCompleted 在 MarkCompleted 落库成功之后发布成功终态事件，
+// 使「收到终态事件 ⇒ agent_runs 已可读」成为不变式（P2 顺序根治）。
+//
+// ⚠️ 必须排在 updateRunObservability 之前：后者会调用 AgentRunTiming() 并消费掉 timings，
+// 一旦被提前消费，本事件里的 first_token_at 与 model_generate_duration 会静默丢失（不报错）。
+func (w *AgentWorker) publishRunCompleted(execCtx context.Context, runID contracts.ID, result contracts.AgentRunResult) {
+	pub, ok := w.events.(agentRunTerminalPublisher)
+	if !ok {
+		return
+	}
+	if err := pub.PublishRunCompleted(terminalPublishContext(execCtx), runID, result); err != nil {
+		logger.Error("发布运行完成事件失败", zap.String("run_id", string(runID)), zap.Error(err))
+	}
+}
+
+// publishRunFailed 在 MarkFailed 落库之后补发失败终态事件。
+// 终态事件原先由 adkcore 在落库前发布，P2 收回 Worker 后必须覆盖每一条终止分支：
+// 漏掉任何一条，前端 SSE 都会一直等待终态事件（加载态永远不结束）。
+func (w *AgentWorker) publishRunFailed(execCtx context.Context, runID contracts.ID, mode contracts.ExecutionMode, runErr error) {
+	pub, ok := w.events.(agentRunTerminalPublisher)
+	if !ok {
+		return
+	}
+	if err := pub.PublishRunFailed(terminalPublishContext(execCtx), runID, mode, runErr); err != nil {
+		logger.Error("发布运行失败事件失败", zap.String("run_id", string(runID)), zap.Error(err))
 	}
 }
 

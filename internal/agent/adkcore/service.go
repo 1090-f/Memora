@@ -167,14 +167,12 @@ func (s *Service) runReact(ctx context.Context, request contracts.AgentRunReques
 	if err != nil {
 		if ctx.Err() != nil {
 			_ = s.eventPublisher.PublishRunCancelled(ctx, request.RunID)
-		} else {
-			_ = s.eventPublisher.PublishRunFailed(ctx, request.RunID, contracts.ExecutionReact, err)
 		}
+		// 失败终态事件不在这里发布：Worker 会在 MarkFailed 落库之后再发，
+		// 保证「收到终态事件 ⇒ agent_runs 已可读」。见 P2（顺序根治）。
 		return result, &contracts.AgentRunError{ExecutionMode: contracts.ExecutionReact, Err: err}
 	}
-	if err := s.eventPublisher.PublishRunCompleted(ctx, request.RunID, result); err != nil {
-		return contracts.AgentRunResult{}, err
-	}
+	// 成功终态事件同理，由 Worker 在 MarkCompleted 落库之后发布。
 	return result, nil
 }
 
@@ -211,14 +209,11 @@ func (s *Service) runPlanExecute(ctx context.Context, request contracts.AgentRun
 	if err != nil {
 		if ctx.Err() != nil {
 			_ = s.eventPublisher.PublishRunCancelled(ctx, request.RunID)
-		} else {
-			_ = s.eventPublisher.PublishRunFailed(ctx, request.RunID, contracts.ExecutionPlanExecute, err)
 		}
+		// 见 runReact：失败终态事件由 Worker 在落库后发布。
 		return result, &contracts.AgentRunError{ExecutionMode: contracts.ExecutionPlanExecute, Err: err}
 	}
-	if err := s.eventPublisher.PublishRunCompleted(ctx, request.RunID, result); err != nil {
-		return contracts.AgentRunResult{}, err
-	}
+	// 见 runReact：成功终态事件由 Worker 在落库后发布。
 	return result, nil
 }
 
