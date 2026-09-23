@@ -97,6 +97,15 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
   pendingRunIdsRef.current = storePendingRunIds;
   const activeHydratedRunIdsRef = useRef(activeHydratedRunIds);
   activeHydratedRunIdsRef.current = activeHydratedRunIds;
+  // 同一次挂载内「已尝试过回放」的 run 标记（按会话键控）。
+  // 不能复用 activeHydratedRunIds —— 它在空回答时刻意不下写以保留自愈入口，
+  // 若没有这道一次性闸门，finalizeRun 的 invalidateQueries 会让 messagesQuery.data 变化、
+  // 又把回放 effect 触发一次，形成死循环（React 报 Maximum update depth exceeded → 白屏）。
+  const replayAttemptedRunIdsRef = useRef<Record<string, string>>({});
+  // 记录「已被写入 store 的那一份 messagesQuery.data」（按会话键控）。
+  // 用途：保证同一份数据只 dispatch 一次 —— setMessages 内部会合并连续 assistant 消息，
+  // 仅靠 run 集合比较会让判断反复成立，与 storeMessages 依赖形成同步死循环（白屏）。
+  const appliedMessagesDataRef = useRef<Record<string, unknown>>({});
 
   // 当前会话的派生状态
   const runState = activeConversationId ? (agentRunStatesStore[activeConversationId] ?? initialAgentRunState) : initialAgentRunState;
@@ -131,12 +140,13 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
         },
       }));
     }
-    // 仅在确实拿到回答时标记已完整回放。为空时不下写，保留重放/重试入口，
-    // 否则空回答会被永久锁死（再次进入会话不再回放）。
+    // 仅在确实拿到回答时标记已完整回放并失效消息查询。
+    // 为空时两者都不做：不写标记是为了保留自愈入口（下次进会话可再试）；
+    // 不失效是为了避免 messagesQuery.data 变化再次触发回放 effect —— 那是死循环的驱动源。
     if (answer) {
       dispatch(markActiveRunHydrated({ conversationId: targetConversationId, runId }));
+      void queryClient.invalidateQueries({ queryKey: ['conversations', targetConversationId, 'messages'] });
     }
-    void queryClient.invalidateQueries({ queryKey: ['conversations', targetConversationId, 'messages'] });
   };
 
   useEffect(() => {
@@ -205,18 +215,34 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
   // Load messages from API — 仅在 store 无该会话消息时整体填充，避免乐观写入被缓存覆盖。
   useEffect(() => {
     if (!messagesQuery.data || !activeConversationId) return;
+
+    // 同一份 data 只处理一次。
+    // 不能只依赖下面的 run 集合比较：setMessages 会把连续 assistant 消息合并成
+    // 「单条消息 + versions」，合并后靠前的 run 不再挂在 agent_run_id 上，
+    // 比较会反复判定"服务端有新 run"，与本 effect 的 storeMessages 依赖形成
+    // 同步死循环（React 报 Maximum update depth exceeded → 整个页面白屏）。
+    if (appliedMessagesDataRef.current[activeConversationId] === messagesQuery.data) return;
+
     const existing = storeMessages[activeConversationId] ?? [];
     // 守卫本意是"不覆盖乐观写入"。但首次拉取可能早于 worker 落库，
     // 此时 store 会被"还没有 AI 回复"的旧列表钉死，服务端之后补齐也不再更新。
-    // 因此放宽为：服务端出现 store 中不存在的 assistant run 时，允许写入补齐（只补缺，不无谓覆盖）。
+    // 因此放宽为：服务端出现 store 中不存在的 assistant run 时允许写入补齐（只补缺，不无谓覆盖）。
+    // run id 需同时收集 versions 里的 —— 合并后的消息只有主消息带 agent_run_id。
     const existingRunIds = new Set(
-      existing.map((m) => m.agent_run_id).filter((id): id is string => Boolean(id)),
+      existing.flatMap((m) => {
+        const ids: string[] = [];
+        if (m.agent_run_id) ids.push(m.agent_run_id);
+        if (m.versions) for (const v of m.versions) if (v.agent_run_id) ids.push(v.agent_run_id);
+        return ids;
+      }),
     );
     const hasNewRun = messagesQuery.data.items.some((m) => {
       if (m.role !== 'assistant' || !m.agent_run_id) return false;
       return !existingRunIds.has(m.agent_run_id);
     });
     if (existing.length > 0 && !hasNewRun) return;
+
+    appliedMessagesDataRef.current[activeConversationId] = messagesQuery.data;
     const sortedMessages = [...messagesQuery.data.items].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     dispatch(setMessages({ conversationId: activeConversationId, messages: sortedMessages }));
   }, [messagesQuery.data, activeConversationId, storeMessages, dispatch]);
@@ -275,6 +301,12 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
     const existingIsLive = existing && (existing.status === 'queued' || existing.status === 'running');
     if (existingIsLive) return; // 已由续传 effect 处理
     if (activeHydratedRunIdsRef.current[activeConversationId] === latestRunId) return;
+    // 一次性闸门（按会话键控）：同一次挂载内对同一个 run 只回放一次。
+    // activeHydratedRunIds 在「空回答」时刻意不下写以保留自愈入口，
+    // 缺了这道闸门就会与本 effect 的 dependencies 形成死循环（白屏）。
+    // 刷新页面后 ref 重置，自愈能力保留。
+    if (replayAttemptedRunIdsRef.current[activeConversationId] === latestRunId) return;
+    replayAttemptedRunIdsRef.current[activeConversationId] = latestRunId;
 
     const replayConversationId = activeConversationId;
     replayAbortRef.current?.abort();
