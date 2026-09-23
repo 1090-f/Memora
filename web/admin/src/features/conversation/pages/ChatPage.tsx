@@ -202,10 +202,21 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
     enabled: enabled && Boolean(activeConversationId) && !submitting,
   });
 
-  // Load messages from API — only when store 中尚无该会话消息，避免乐观写入被缓存覆盖
+  // Load messages from API — 仅在 store 无该会话消息时整体填充，避免乐观写入被缓存覆盖。
   useEffect(() => {
     if (!messagesQuery.data || !activeConversationId) return;
-    if (storeMessages[activeConversationId] && storeMessages[activeConversationId].length > 0) return;
+    const existing = storeMessages[activeConversationId] ?? [];
+    // 守卫本意是"不覆盖乐观写入"。但首次拉取可能早于 worker 落库，
+    // 此时 store 会被"还没有 AI 回复"的旧列表钉死，服务端之后补齐也不再更新。
+    // 因此放宽为：服务端出现 store 中不存在的 assistant run 时，允许写入补齐（只补缺，不无谓覆盖）。
+    const existingRunIds = new Set(
+      existing.map((m) => m.agent_run_id).filter((id): id is string => Boolean(id)),
+    );
+    const hasNewRun = messagesQuery.data.items.some((m) => {
+      if (m.role !== 'assistant' || !m.agent_run_id) return false;
+      return !existingRunIds.has(m.agent_run_id);
+    });
+    if (existing.length > 0 && !hasNewRun) return;
     const sortedMessages = [...messagesQuery.data.items].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
     dispatch(setMessages({ conversationId: activeConversationId, messages: sortedMessages }));
   }, [messagesQuery.data, activeConversationId, storeMessages, dispatch]);
@@ -536,9 +547,12 @@ function ChatPageContent({ kbId, conversationId }: { kbId: string; conversationI
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '智能问答请求失败');
     } finally {
+      // 先解除 messagesQuery 的禁用（其 enabled 含 !submitting），让出一次宏任务确保生效，
+      // 再触发失效。否则失效会落在查询被禁用的窗口内，补拉时机退回到 worker 落库之前。
+      setSubmitting(false);
+      await new Promise((resolve) => setTimeout(resolve, 0));
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations(kbId) });
       if (activeConversationId) void queryClient.invalidateQueries({ queryKey: ['conversations', activeConversationId, 'messages'] });
-      setSubmitting(false);
       abortRef.current = null;
     }
   };
