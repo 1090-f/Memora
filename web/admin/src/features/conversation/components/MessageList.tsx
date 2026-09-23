@@ -30,12 +30,31 @@ const markdownSx = {
   '& img': { maxWidth: '100%', maxHeight: 480, width: 'auto', height: 'auto', cursor: 'zoom-in' },
 } as const;
 
-function MarkdownContent({ content }: { content: string }) {
+function MarkdownContent({ content, runId }: { content: string; runId?: string | null }) {
   if (!content) {
+    // 空回答的兜底：给出可操作入口，而不是只显示一句「（空回复）」。
+    // 样式与下方 AgentRunLoading 的「完整详情」保持一致。
     return (
-      <Typography sx={{ color: '#8c97aa', fontSize: 13, fontStyle: 'italic' }}>
-        （空回复）
-      </Typography>
+      <Box
+        sx={{
+          width: '100%',
+          border: '1px dashed #dde3ec',
+          borderRadius: 2.5,
+          bgcolor: '#fafbfd',
+          px: 1.5,
+          py: 1,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1.2,
+        }}
+      >
+        <Typography sx={{ color: '#7b8799', fontSize: 12 }}>未获取到回答</Typography>
+        {runId && (
+          <Button component={Link} to={`/runs/${runId}`} size="small" sx={{ ml: 'auto', whiteSpace: 'nowrap' }}>
+            完整详情
+          </Button>
+        )}
+      </Box>
     );
   }
   return (
@@ -198,7 +217,7 @@ export function MessageList({ messages, knowledgeBaseId, streamingAnswer, agentR
           <Box minWidth={0} sx={{ flex: message.role === 'assistant' ? 1 : 'initial' }}>
             <Paper variant="outlined" sx={{ p: message.role === 'user' ? '13px 16px' : 2, borderRadius: message.role === 'user' ? '14px 4px 14px 14px' : '4px 14px 14px 14px', borderColor: message.role === 'user' ? 'transparent' : '#e1e5ed', bgcolor: message.role === 'user' ? '#efefff' : '#fff', boxShadow: message.role === 'user' ? 'none' : '0 5px 18px rgba(31,45,90,.035)' }}>
               <Box sx={{ color: '#25314c', fontSize: 14, lineHeight: 1.75 }}>
-                <MarkdownContent content={getEffectiveContent(message)} />
+                <MarkdownContent content={getEffectiveContent(message)} runId={getEffectiveAgentRunId(message)} />
               </Box>
               {message.citations && message.citations.length > 0 && (
                 <Stack direction="row" useFlexGap flexWrap="wrap" spacing={0.8} sx={{ mt: 1.2 }}>
