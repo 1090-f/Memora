@@ -86,15 +86,14 @@ func (m *AgentMiddleware) BeforeModelRewriteState(ctx context.Context, state *ad
 	return ctx, state, nil
 }
 
-// AfterModelRewriteState 在每次模型调用后触发，发布流式结果事件。
+// AfterModelRewriteState 在每次模型调用后调用，发布 ReAct 轮次完成事件。
+// 注意：内容增量（agent.answer.delta）不由这里发布——Runner 事件循环在
+// EnableStreaming 模式下已逐 chunk 发布。此处只发布轮次元数据。
 func (m *AgentMiddleware) AfterModelRewriteState(ctx context.Context, state *adk.ChatModelAgentState, mc *adk.ModelContext) (context.Context, *adk.ChatModelAgentState, error) {
 	if m.EventPublisher == nil || len(state.Messages) == 0 {
 		return ctx, state, nil
 	}
 	last := state.Messages[len(state.Messages)-1]
-	if last != nil && last.Content != "" {
-		_ = m.EventPublisher.PublishAnswerDelta(ctx, m.RunID, last.Content)
-	}
 
 	durationMs := int64(time.Since(m.roundStartTime).Milliseconds())
 
