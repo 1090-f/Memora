@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
@@ -15,6 +16,15 @@ import (
 	"github.com/1090-f/Memora/internal/agent/core"
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/repository"
+)
+
+const (
+	// answerHoldbackRunes 是「认定为最终回答轮」前至少要缓冲的正文长度（字符）。
+	// 模型可能在调用工具前先写一句说明，缓冲住它才能保证不闪到用户页面上。
+	answerHoldbackRunes = 60
+	// answerHoldback 是同类判定的时间上限：超过它仍未出现工具调用分片，
+	// 就认为本轮是最终回答轮并开始逐块实时推送，避免长回答等到整轮结束才出现。
+	answerHoldback = 800 * time.Millisecond
 )
 
 // ADKReactRunner 是基于 Eino ADK ChatModelAgent 的 ReAct 运行器。
@@ -69,7 +79,10 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 		"- Try a different tool that might achieve the same goal\n" +
 		"- Use the information you already have to answer the user\n" +
 		"- If you cannot proceed, inform the user about the limitation clearly\n" +
-		"Do not waste iterations by repeatedly calling the same failing tool.\n"
+		"Do not waste iterations by repeatedly calling the same failing tool.\n" +
+		"When you decide to use a tool, call it directly: do NOT write any explanation, preamble,\n" +
+		"or progress narration before the tool call. Put all explanation in the final answer,\n" +
+		"after the tools have returned.\n"
 
 	// 2. 构建 ChatModel
 	chatModel, err := r.ModelFactory(ctx, contracts.ID(request.Context.ChatModelID))
@@ -212,12 +225,17 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 						continue
 				}
 
-				// 流式消息：先缓冲所有 chunk，流结束后根据本轮是否有工具调用决定是否发布。
-				//    - 有工具调用的轮次（中间轮次）：内容静默丢弃，不输出到用户页面
-				//    - 无工具调用的轮次（最终回答轮次）：逐一发布 chunk 增量
+				// 助手输出：边收边发。本轮的性质靠一个观察窗口定型 ——
+				//   - 窗口内出现工具调用分片 ⇒ 本轮是工具轮次，缓冲的正文全部丢弃；
+				//   - 窗口内没出现工具调用 ⇒ 本轮就是最终回答轮（ADK 的 ReAct 图在
+				//     没有工具调用的轮次会直接终结 run），补发已缓冲部分后逐块实时推送。
+				// 窗口的意义：模型可能先写一句「让我查一下」再发起工具调用，
+				// 若一收到正文就发，这句话会闪到用户页面上。
 				var sb strings.Builder
-				var contentChunks []string
 				var hasToolCall bool
+				var publishing bool
+				var bufferedRunes int
+				var roundStartedAt time.Time
 				for {
 					chunk, recvErr := mv.MessageStream.Recv()
 					if recvErr != nil {
@@ -231,12 +249,11 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 					if chunk == nil {
 						continue
 					}
+					if roundStartedAt.IsZero() {
+						roundStartedAt = time.Now()
+					}
 					if len(chunk.ToolCalls) > 0 {
 						hasToolCall = true
-					}
-					if chunk.Content != "" {
-						sb.WriteString(chunk.Content)
-						contentChunks = append(contentChunks, chunk.Content)
 					}
 					// 部分 LLM 实现仅在最后一个 chunk 携带 Usage
 					if chunk.ResponseMeta != nil && chunk.ResponseMeta.Usage != nil {
@@ -244,20 +261,36 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 						accumulatedUsage.OutputTokens += chunk.ResponseMeta.Usage.CompletionTokens
 						accumulatedUsage.TotalTokens += chunk.ResponseMeta.Usage.TotalTokens
 					}
+					if chunk.Content == "" {
+						continue
+					}
+					if hasToolCall {
+						continue // 工具轮次的正文一律丢弃，不输出到用户页面
+					}
+					sb.WriteString(chunk.Content)
+					if !publishing {
+						bufferedRunes += utf8.RuneCountInString(chunk.Content)
+						if bufferedRunes < answerHoldbackRunes && time.Since(roundStartedAt) < answerHoldback {
+							continue // 观察窗口内：先按住不发
+						}
+						publishing = true
+						// 补发窗口内已缓冲的正文，此后逐块实时推送
+						_ = eventPublisher.PublishAnswerDelta(ctx, request.RunID, sb.String())
+						continue
+					}
+					_ = eventPublisher.PublishAnswerDelta(ctx, request.RunID, chunk.Content)
 				}
 				mv.MessageStream.Close()
 
 				if hasToolCall {
-					// 工具调用轮次：内容静默丢弃，不更新 finalContent
+					// 工具调用轮次：内容已丢弃，也不更新 finalContent
 					// 只有纯回答轮次（无工具调用）的 finalContent 才保留为最终答案
-				} else {
-					// 纯回答轮次：逐一发布内容增量
-					for _, delta := range contentChunks {
-						_ = eventPublisher.PublishAnswerDelta(ctx, request.RunID, delta)
+				} else if msgContent := sb.String(); msgContent != "" {
+					if !publishing {
+						// 整个流都在观察窗口内结束（短回答）：到这里一次性发出
+						_ = eventPublisher.PublishAnswerDelta(ctx, request.RunID, msgContent)
 					}
-					if msgContent := sb.String(); msgContent != "" {
-						finalContent = msgContent
-					}
+					finalContent = msgContent
 				}
 				continue
 		}
