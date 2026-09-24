@@ -492,7 +492,8 @@ func (e *PlanExecutor) RefineFinalAnswer(ctx context.Context, plan *contracts.Pl
 }
 
 // SynthesizeFinalAnswerWithUsage 基于实际步骤证据回答用户问题并返回 token 使用量。
-func (e *PlanExecutor) SynthesizeFinalAnswerWithUsage(ctx context.Context, plan *contracts.Plan, request contracts.AgentRunRequest) (string, contracts.TokenUsage, error) {
+// onDelta 非空时使用流式生成（Stream），逐 chunk 回调用于发布 answer.delta。
+func (e *PlanExecutor) SynthesizeFinalAnswerWithUsage(ctx context.Context, plan *contracts.Plan, request contracts.AgentRunRequest, onDelta func(string)) (string, contracts.TokenUsage, error) {
 	if e.modelFactory == nil || request.Context.ChatModelID == "" {
 		return "", contracts.TokenUsage{}, fmt.Errorf("chat model is required to synthesize final answer")
 	}
@@ -500,12 +501,41 @@ func (e *PlanExecutor) SynthesizeFinalAnswerWithUsage(ctx context.Context, plan 
 	if evidence == "" {
 		return "", contracts.TokenUsage{}, fmt.Errorf("no completed step evidence")
 	}
-	model, err := e.modelFactory.GetChatModel(ctx, contracts.ID(request.Context.ChatModelID))
+	chatModel, err := e.modelFactory.GetChatModel(ctx, contracts.ID(request.Context.ChatModelID))
 	if err != nil {
 		return "", contracts.TokenUsage{}, fmt.Errorf("get chat model: %w", err)
 	}
 	prompt := fmt.Sprintf("请只基于下面的步骤执行证据回答用户问题。整合重复信息、处理冲突；证据不足时明确说明，不得采用未被证据支持的计划草稿。保留有助于阅读的 Markdown。\n\n用户问题：\n%s\n\n执行证据：\n%s", request.Context.Query, evidence)
-	response, err := model.Generate(ctx, contracts.ChatRequest{Messages: []contracts.ChatMessage{{Role: "user", Content: prompt}}})
+
+	if onDelta != nil {
+		// 流式路径：逐 chunk 回调并拼接完整内容
+		stream, err := chatModel.Stream(ctx, contracts.ChatRequest{Messages: []contracts.ChatMessage{{Role: "user", Content: prompt}}})
+		if err != nil {
+			return "", contracts.TokenUsage{}, fmt.Errorf("stream final answer: %w", err)
+		}
+		var sb strings.Builder
+		var usage contracts.TokenUsage
+		for ev := range stream {
+			if ev.Done {
+				if ev.Usage != nil {
+					usage = *ev.Usage
+				}
+				break
+			}
+			if ev.Delta != "" {
+				sb.WriteString(ev.Delta)
+				onDelta(ev.Delta)
+			}
+		}
+		answer := strings.TrimSpace(sb.String())
+		if answer == "" {
+			return "", usage, fmt.Errorf("model returned empty final answer")
+		}
+		return answer, usage, nil
+	}
+
+	// 非流式路径（向后兼容）
+	response, err := chatModel.Generate(ctx, contracts.ChatRequest{Messages: []contracts.ChatMessage{{Role: "user", Content: prompt}}})
 	if err != nil {
 		return "", response.Usage, fmt.Errorf("generate final answer: %w", err)
 	}

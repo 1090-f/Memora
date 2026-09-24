@@ -167,10 +167,15 @@ func (g *PlanExecuteGraph) Run(ctx context.Context, request contracts.AgentRunRe
 
 	// 3. 生成最终答案（在审查之前，让审查检查真实结果）
 	_ = g.eventPublisher.PublishModelGenerationStarted(ctx, request.RunID)
-	finalAnswer, synthUsage, synthErr := g.executor.SynthesizeFinalAnswerWithUsage(ctx, plan, request)
+	finalAnswer, synthUsage, synthErr := g.executor.SynthesizeFinalAnswerWithUsage(ctx, plan, request, func(delta string) {
+			_ = g.eventPublisher.PublishAnswerDelta(ctx, request.RunID, delta)
+		})
 	totalUsage.Add(synthUsage)
 	if synthErr != nil {
 		finalAnswer = g.generateFinalAnswer(plan, request)
+		if finalAnswer != "" {
+			_ = g.eventPublisher.PublishAnswerDelta(ctx, request.RunID, finalAnswer)
+		}
 	}
 	plan.FinalAnswer = finalAnswer
 
@@ -184,11 +189,11 @@ func (g *PlanExecuteGraph) Run(ctx context.Context, request contracts.AgentRunRe
 			finalAnswer = refined
 			plan.FinalAnswer = refined
 			totalUsage.Add(refineUsage)
-		}
+				// 修订后的答案整段发布一次（审查修订不频繁，接受非流式）
+				_ = g.eventPublisher.PublishAnswerDelta(ctx, request.RunID, finalAnswer)
+			}
 	}
 
-	// 发布最终答案事件
-	_ = g.eventPublisher.PublishAnswerDelta(ctx, request.RunID, finalAnswer)
 
 	// 5. 组装最终结果
 	return contracts.AgentRunResult{

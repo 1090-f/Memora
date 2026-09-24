@@ -2,8 +2,12 @@ package adkcore
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
@@ -12,6 +16,15 @@ import (
 	"github.com/1090-f/Memora/internal/agent/core"
 	"github.com/1090-f/Memora/internal/contracts"
 	"github.com/1090-f/Memora/internal/repository"
+)
+
+const (
+	// answerHoldbackRunes 是「认定为最终回答轮」前至少要缓冲的正文长度（字符）。
+	// 模型可能在调用工具前先写一句说明，缓冲住它才能保证不闪到用户页面上。
+	answerHoldbackRunes = 60
+	// answerHoldback 是同类判定的时间上限：超过它仍未出现工具调用分片，
+	// 就认为本轮是最终回答轮并开始逐块实时推送，避免长回答等到整轮结束才出现。
+	answerHoldback = 800 * time.Millisecond
 )
 
 // ADKReactRunner 是基于 Eino ADK ChatModelAgent 的 ReAct 运行器。
@@ -66,7 +79,10 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 		"- Try a different tool that might achieve the same goal\n" +
 		"- Use the information you already have to answer the user\n" +
 		"- If you cannot proceed, inform the user about the limitation clearly\n" +
-		"Do not waste iterations by repeatedly calling the same failing tool.\n"
+		"Do not waste iterations by repeatedly calling the same failing tool.\n" +
+		"When you decide to use a tool, call it directly: do NOT write any explanation, preamble,\n" +
+		"or progress narration before the tool call. Put all explanation in the final answer,\n" +
+		"after the tools have returned.\n"
 
 	// 2. 构建 ChatModel
 	chatModel, err := r.ModelFactory(ctx, contracts.ID(request.Context.ChatModelID))
@@ -149,7 +165,8 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 
 	// 8. 构建 AgentInput
 	input := &adk.AgentInput{
-		Messages: convertedMessages,
+		Messages:          convertedMessages,
+		EnableStreaming:   true,
 	}
 
 	// 9. 构建 AgentRunOption
@@ -170,6 +187,12 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 	// 11. 迭代事件流并收集最终结果和 token 用量
 	// 注意：ADK 的 AfterAgent 中间件钩子在错误路径上不会被调用，
 	// 因此必须在事件循环中主动累积 token 用量，确保失败时也有记录。
+	//
+	// 流式模式（EnableStreaming = true）：
+	//   每轮模型调用产生一个 Output.MessageOutput.IsStreaming == true 的事件，
+	//   携带 MessageStream（schema.StreamReader[*schema.Message]）。
+	//   此处直接消费 MessageStream 逐 chunk 发布 agent.answer.delta，
+	//   同时拼接出完整的 finalContent。不再调用 adk.GetMessage（它会 concat 并排空流）。
 	var finalContent string
 	var accumulatedUsage contracts.TokenUsage
 	for {
@@ -184,13 +207,111 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 		if event.Err != nil {
 			err = event.Err
 		}
-		// 从消息输出中提取最终内容和 token 用量
-		// GetMessage 返回 (msg, wrappedEvent, error)
-		if msg, _, getErr := adk.GetMessage(event); getErr == nil && msg != nil {
+		// 跳过非消息事件（工具调用、阶段事件等由中间件另行发布）
+		if event.Output == nil || event.Output.MessageOutput == nil {
+			continue
+		}
+		mv := event.Output.MessageOutput
+
+		if mv.IsStreaming && mv.MessageStream != nil {
+				// 只处理「助手模型输出」的流式事件。
+				// 打开 EnableStreaming 后 ADK 连工具执行也切到流式路径：工具结果同样以
+				// IsStreaming=true 的 MessageOutput 事件下发（Role=schema.Tool，
+				// 分片 Content 就是工具返回的原始正文）。若把工具结果也当成回答增量，
+				// 工具返回内容会泄漏到用户页面，且每个工具调用都会多出一条「生成最终回答」。
+				if mv.Role != schema.Assistant || mv.ToolName != "" {
+						// 副本不读也必须关：Eino 的 StreamReader 是 pipe，不关会拖住上游生产协程。
+						mv.MessageStream.Close()
+						continue
+				}
+
+				// 助手输出：边收边发。本轮的性质靠一个观察窗口定型 ——
+				//   - 窗口内出现工具调用分片 ⇒ 本轮是工具轮次，缓冲的正文全部丢弃；
+				//   - 窗口内没出现工具调用 ⇒ 本轮就是最终回答轮（ADK 的 ReAct 图在
+				//     没有工具调用的轮次会直接终结 run），补发已缓冲部分后逐块实时推送。
+				// 窗口的意义：模型可能先写一句「让我查一下」再发起工具调用，
+				// 若一收到正文就发，这句话会闪到用户页面上。
+				var sb strings.Builder
+				var hasToolCall bool
+				var publishing bool
+				var bufferedRunes int
+				var roundStartedAt time.Time
+				// roundUsage 记本轮「最后一次出现的」usage，流结束后整轮才累加进 accumulatedUsage。
+				// 不能逐 chunk 相加：GLM 等 provider 在每个 chunk 里带的都是「本次请求的累积 usage」，
+				// 相加会把 token 放大到百万级（实测 input_tokens 被放大成 8523520）。
+				var roundUsage contracts.TokenUsage
+				for {
+					chunk, recvErr := mv.MessageStream.Recv()
+					if recvErr != nil {
+						if !errors.Is(recvErr, io.EOF) && !errors.Is(recvErr, context.Canceled) {
+							if err == nil {
+								err = recvErr
+							}
+						}
+						break
+					}
+					if chunk == nil {
+						continue
+					}
+					if roundStartedAt.IsZero() {
+						roundStartedAt = time.Now()
+					}
+					if len(chunk.ToolCalls) > 0 {
+						hasToolCall = true
+					}
+					// 兼容两类实现：只在最后一个 chunk 带 usage 的、每个 chunk 都带累积 usage 的。
+					// 取值而不累加，跨轮才累加。
+					if chunk.ResponseMeta != nil && chunk.ResponseMeta.Usage != nil {
+						roundUsage = contracts.TokenUsage{
+							InputTokens:  chunk.ResponseMeta.Usage.PromptTokens,
+							OutputTokens: chunk.ResponseMeta.Usage.CompletionTokens,
+							TotalTokens:  chunk.ResponseMeta.Usage.TotalTokens,
+						}
+					}
+					if chunk.Content == "" {
+						continue
+					}
+					if hasToolCall {
+						continue // 工具轮次的正文一律丢弃，不输出到用户页面
+					}
+					sb.WriteString(chunk.Content)
+					if !publishing {
+						bufferedRunes += utf8.RuneCountInString(chunk.Content)
+						if bufferedRunes < answerHoldbackRunes && time.Since(roundStartedAt) < answerHoldback {
+							continue // 观察窗口内：先按住不发
+						}
+						publishing = true
+						// 补发窗口内已缓冲的正文，此后逐块实时推送
+						_ = eventPublisher.PublishAnswerDelta(ctx, request.RunID, sb.String())
+						continue
+					}
+					_ = eventPublisher.PublishAnswerDelta(ctx, request.RunID, chunk.Content)
+				}
+				mv.MessageStream.Close()
+				// 每轮的 usage 是独立的，跨轮相加才有意义（工具轮次同样消耗 token，
+				// 所以这里不看 hasToolCall）。
+				accumulatedUsage.Add(roundUsage)
+
+				if hasToolCall {
+					// 工具调用轮次：内容已丢弃，也不更新 finalContent
+					// 只有纯回答轮次（无工具调用）的 finalContent 才保留为最终答案
+				} else if msgContent := sb.String(); msgContent != "" {
+					if !publishing {
+						// 整个流都在观察窗口内结束（短回答）：到这里一次性发出
+						_ = eventPublisher.PublishAnswerDelta(ctx, request.RunID, msgContent)
+					}
+					finalContent = msgContent
+				}
+				continue
+		}
+
+		// 非流式兜底：兼容未实现流式的事件类型（保持原有行为）
+		if mv.Message != nil {
+			msg := mv.Message
 			if msg.Role == schema.Assistant && msg.Content != "" {
 				finalContent = msg.Content
 			}
-			// 从每条消息中提取 token 用量并累积
+			// 非流式事件一条消息就是一轮，直接累加即可（与流式分支「轮内取值、轮间累加」等价）
 			if msg.ResponseMeta != nil && msg.ResponseMeta.Usage != nil {
 				accumulatedUsage.InputTokens += msg.ResponseMeta.Usage.PromptTokens
 				accumulatedUsage.OutputTokens += msg.ResponseMeta.Usage.CompletionTokens

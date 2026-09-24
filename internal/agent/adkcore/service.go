@@ -2,6 +2,7 @@ package adkcore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/1090-f/Memora/internal/agent/core"
 	"github.com/1090-f/Memora/internal/contracts"
+	appobservability "github.com/1090-f/Memora/pkg/observability"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -84,12 +86,15 @@ func (s *Service) Run(ctx context.Context, request contracts.AgentRunRequest) (c
 
 	// 1. Router 决策（此时 cancel 函数已注册，Cancel() 可以生效）
 	routeCtx, routeSpan := otel.Tracer("github.com/1090-f/Memora/agent").Start(runCtx, "agent.route")
+	// Langfuse：入参在 Span 建立后立即写，这样即便路由被取消（下方提前 return）也有 Input 可看。
+	appobservability.SetLangfuseInput(routeSpan, request.Context.Query)
 	decision, err := s.router.Route(routeCtx, request.Context)
 	if err != nil {
 		routeSpan.RecordError(err)
 		if errors.Is(err, context.Canceled) {
 			// context 已被 Cancel() 取消，且尚未决策出模式，不再继续执行
 			routeSpan.SetStatus(codes.Error, "router cancelled")
+			appobservability.SetLangfuseOutput(routeSpan, langfuseJSON(map[string]any{"status": "cancelled"}))
 			routeSpan.End()
 			return contracts.AgentRunResult{}, context.Canceled
 		}
@@ -106,6 +111,9 @@ func (s *Service) Run(ctx context.Context, request contracts.AgentRunRequest) (c
 	if err != nil {
 		routeSpan.SetStatus(codes.Error, "router fallback used")
 	}
+	// Langfuse：产出是路由结论。此处此前只写 memora.* 属性（postgres 白名单里可见、
+	// 但 Langfuse 只把它们塞进 metadata），所以节点详情页的 Output 一直是空的。
+	appobservability.SetLangfuseOutput(routeSpan, langfuseJSON(decision))
 	routeSpan.End()
 
 	// 记录已确定的执行模式，供 Cancel 在取消时回填 execution_mode。
@@ -157,12 +165,15 @@ func (s *Service) runReact(ctx context.Context, request contracts.AgentRunReques
 		attribute.String("langfuse.user.id", string(request.Context.UserID)),
 		attribute.StringSlice("langfuse.trace.tags", []string{string(contracts.ExecutionReact)}),
 	)
+	appobservability.SetLangfuseObservationType(span, "agent")
+	appobservability.SetLangfuseInput(span, request.Context.Query)
 	result, err := s.reactRunner.Run(runCtx, request, s.eventPublisher, s.citationCollector)
 	span.SetAttributes(attribute.Int("gen_ai.usage.input_tokens", result.Usage.InputTokens), attribute.Int("gen_ai.usage.output_tokens", result.Usage.OutputTokens))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "react execution failed")
 	}
+	appobservability.SetLangfuseOutput(span, runOutputForLangfuse(result, err))
 	span.End()
 	if err != nil {
 		if ctx.Err() != nil {
@@ -199,12 +210,15 @@ func (s *Service) runPlanExecute(ctx context.Context, request contracts.AgentRun
 		attribute.String("langfuse.user.id", string(request.Context.UserID)),
 		attribute.StringSlice("langfuse.trace.tags", []string{string(contracts.ExecutionPlanExecute)}),
 	)
+	appobservability.SetLangfuseObservationType(span, "agent")
+	appobservability.SetLangfuseInput(span, request.Context.Query)
 	result, err := s.planGraph.Run(runCtx, request)
 	span.SetAttributes(attribute.Int("gen_ai.usage.input_tokens", result.Usage.InputTokens), attribute.Int("gen_ai.usage.output_tokens", result.Usage.OutputTokens))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "plan execution failed")
 	}
+	appobservability.SetLangfuseOutput(span, runOutputForLangfuse(result, err))
 	span.End()
 	if err != nil {
 		if ctx.Err() != nil {
@@ -215,6 +229,35 @@ func (s *Service) runPlanExecute(ctx context.Context, request contracts.AgentRun
 	}
 	// 见 runReact：成功终态事件由 Worker 在落库后发布。
 	return result, nil
+}
+
+// --- Langfuse 展示辅助 ---
+
+// langfuseJSON 把任意值压成 JSON 字符串供 Langfuse 渲染。
+// 失败时退化为 Go 默认格式 —— 埋点本身不该因为序列化问题报错。
+func langfuseJSON(v any) string {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(raw)
+}
+
+// runOutputForLangfuse 汇总一次 Agent 执行的产出。
+// 失败时带上错误信息，否则该节点在 Langfuse 上看起来像「空跑一场」。
+func runOutputForLangfuse(result contracts.AgentRunResult, err error) string {
+	payload := map[string]any{
+		"execution_mode":   string(result.ExecutionMode),
+		"knowledge_status": result.KnowledgeStatus,
+		"final_result":     result.FinalResult,
+		"input_tokens":     result.Usage.InputTokens,
+		"output_tokens":    result.Usage.OutputTokens,
+		"total_tokens":     result.Usage.TotalTokens,
+	}
+	if err != nil {
+		payload["error"] = err.Error()
+	}
+	return langfuseJSON(payload)
 }
 
 // Cancel 停止正在运行的 Agent 执行。
