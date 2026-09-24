@@ -201,6 +201,17 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 		mv := event.Output.MessageOutput
 
 		if mv.IsStreaming && mv.MessageStream != nil {
+				// 只处理「助手模型输出」的流式事件。
+				// 打开 EnableStreaming 后 ADK 连工具执行也切到流式路径：工具结果同样以
+				// IsStreaming=true 的 MessageOutput 事件下发（Role=schema.Tool，
+				// 分片 Content 就是工具返回的原始正文）。若把工具结果也当成回答增量，
+				// 工具返回内容会泄漏到用户页面，且每个工具调用都会多出一条「生成最终回答」。
+				if mv.Role != schema.Assistant || mv.ToolName != "" {
+						// 副本不读也必须关：Eino 的 StreamReader 是 pipe，不关会拖住上游生产协程。
+						mv.MessageStream.Close()
+						continue
+				}
+
 				// 流式消息：先缓冲所有 chunk，流结束后根据本轮是否有工具调用决定是否发布。
 				//    - 有工具调用的轮次（中间轮次）：内容静默丢弃，不输出到用户页面
 				//    - 无工具调用的轮次（最终回答轮次）：逐一发布 chunk 增量
