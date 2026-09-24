@@ -263,3 +263,48 @@ func TestReactRunnerPublishesFinalAnswerBeforeStreamEnds(t *testing.T) {
 		t.Fatalf("FinalResult 应为 %q，实际 %q", want, result.FinalResult)
 	}
 }
+
+// TestReactRunnerStreamingUsageTakesLastValuePerRound 锁住流式 usage 的累加口径。
+//
+// GLM 等 provider 在每个 chunk 里带的都是「本次请求的累积 usage」，逐 chunk 相加会把
+// token 放大到百万级。期望：每一轮只取最后一个出现的值，跨轮才相加。
+func TestReactRunnerStreamingUsageTakesLastValuePerRound(t *testing.T) {
+	loadExampleConfig(t)
+
+	meta := func(in, out, total int) *schema.ResponseMeta {
+		return &schema.ResponseMeta{Usage: &schema.TokenUsage{PromptTokens: in, CompletionTokens: out, TotalTokens: total}}
+	}
+
+	scripted := &scriptedStreamModel{rounds: [][]*schema.Message{
+		{
+			{
+				Role: schema.Assistant,
+				ToolCalls: []schema.ToolCall{{
+					ID:       "call_1",
+					Type:     "function",
+					Function: schema.FunctionCall{Name: "fake_search", Arguments: `{"q":"x"}`},
+				}},
+				ResponseMeta: meta(10, 2, 12), // 工具轮次第 1 片
+			},
+			{Role: schema.Assistant, ResponseMeta: meta(10, 5, 15)}, // 轮内累积到 15
+		},
+		{
+			{Role: schema.Assistant, Content: "这是", ResponseMeta: meta(20, 1, 21)},
+			{Role: schema.Assistant, Content: "最终", ResponseMeta: meta(20, 2, 22)},
+			{Role: schema.Assistant, Content: "答案。", ResponseMeta: meta(20, 4, 24)},
+		},
+	}}
+
+	runner := newTestRunner(scripted)
+	request := newTestRequest(&streamableEchoTool{result: "tool-result"})
+
+	result, err := runner.Run(context.Background(), request, &deltaRecorder{}, core.NewCitationCollector())
+	if err != nil {
+		t.Fatalf("运行失败: %v", err)
+	}
+
+	want := contracts.TokenUsage{InputTokens: 30, OutputTokens: 9, TotalTokens: 39}
+	if result.Usage != want {
+		t.Fatalf("usage 应为 %+v（每轮取最后一个值后相加），实际 %+v", want, result.Usage)
+	}
+}

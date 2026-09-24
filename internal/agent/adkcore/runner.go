@@ -236,6 +236,10 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 				var publishing bool
 				var bufferedRunes int
 				var roundStartedAt time.Time
+				// roundUsage 记本轮「最后一次出现的」usage，流结束后整轮才累加进 accumulatedUsage。
+				// 不能逐 chunk 相加：GLM 等 provider 在每个 chunk 里带的都是「本次请求的累积 usage」，
+				// 相加会把 token 放大到百万级（实测 input_tokens 被放大成 8523520）。
+				var roundUsage contracts.TokenUsage
 				for {
 					chunk, recvErr := mv.MessageStream.Recv()
 					if recvErr != nil {
@@ -255,11 +259,14 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 					if len(chunk.ToolCalls) > 0 {
 						hasToolCall = true
 					}
-					// 部分 LLM 实现仅在最后一个 chunk 携带 Usage
+					// 兼容两类实现：只在最后一个 chunk 带 usage 的、每个 chunk 都带累积 usage 的。
+					// 取值而不累加，跨轮才累加。
 					if chunk.ResponseMeta != nil && chunk.ResponseMeta.Usage != nil {
-						accumulatedUsage.InputTokens += chunk.ResponseMeta.Usage.PromptTokens
-						accumulatedUsage.OutputTokens += chunk.ResponseMeta.Usage.CompletionTokens
-						accumulatedUsage.TotalTokens += chunk.ResponseMeta.Usage.TotalTokens
+						roundUsage = contracts.TokenUsage{
+							InputTokens:  chunk.ResponseMeta.Usage.PromptTokens,
+							OutputTokens: chunk.ResponseMeta.Usage.CompletionTokens,
+							TotalTokens:  chunk.ResponseMeta.Usage.TotalTokens,
+						}
 					}
 					if chunk.Content == "" {
 						continue
@@ -281,6 +288,9 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 					_ = eventPublisher.PublishAnswerDelta(ctx, request.RunID, chunk.Content)
 				}
 				mv.MessageStream.Close()
+				// 每轮的 usage 是独立的，跨轮相加才有意义（工具轮次同样消耗 token，
+				// 所以这里不看 hasToolCall）。
+				accumulatedUsage.Add(roundUsage)
 
 				if hasToolCall {
 					// 工具调用轮次：内容已丢弃，也不更新 finalContent
@@ -301,6 +311,7 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 			if msg.Role == schema.Assistant && msg.Content != "" {
 				finalContent = msg.Content
 			}
+			// 非流式事件一条消息就是一轮，直接累加即可（与流式分支「轮内取值、轮间累加」等价）
 			if msg.ResponseMeta != nil && msg.ResponseMeta.Usage != nil {
 				accumulatedUsage.InputTokens += msg.ResponseMeta.Usage.PromptTokens
 				accumulatedUsage.OutputTokens += msg.ResponseMeta.Usage.CompletionTokens
