@@ -2,7 +2,10 @@ package adkcore
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"strings"
 	"time"
 
 	"github.com/cloudwego/eino/adk"
@@ -149,7 +152,8 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 
 	// 8. 构建 AgentInput
 	input := &adk.AgentInput{
-		Messages: convertedMessages,
+		Messages:          convertedMessages,
+		EnableStreaming:   true,
 	}
 
 	// 9. 构建 AgentRunOption
@@ -170,6 +174,12 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 	// 11. 迭代事件流并收集最终结果和 token 用量
 	// 注意：ADK 的 AfterAgent 中间件钩子在错误路径上不会被调用，
 	// 因此必须在事件循环中主动累积 token 用量，确保失败时也有记录。
+	//
+	// 流式模式（EnableStreaming = true）：
+	//   每轮模型调用产生一个 Output.MessageOutput.IsStreaming == true 的事件，
+	//   携带 MessageStream（schema.StreamReader[*schema.Message]）。
+	//   此处直接消费 MessageStream 逐 chunk 发布 agent.answer.delta，
+	//   同时拼接出完整的 finalContent。不再调用 adk.GetMessage（它会 concat 并排空流）。
 	var finalContent string
 	var accumulatedUsage contracts.TokenUsage
 	for {
@@ -184,13 +194,52 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 		if event.Err != nil {
 			err = event.Err
 		}
-		// 从消息输出中提取最终内容和 token 用量
-		// GetMessage 返回 (msg, wrappedEvent, error)
-		if msg, _, getErr := adk.GetMessage(event); getErr == nil && msg != nil {
+		// 跳过非消息事件（工具调用、阶段事件等由中间件另行发布）
+		if event.Output == nil || event.Output.MessageOutput == nil {
+			continue
+		}
+		mv := event.Output.MessageOutput
+
+		if mv.IsStreaming && mv.MessageStream != nil {
+			// 流式消息：逐 chunk 发布增量，同时拼接完整内容
+			var sb strings.Builder
+			for {
+				chunk, recvErr := mv.MessageStream.Recv()
+				if recvErr != nil {
+					if !errors.Is(recvErr, io.EOF) && !errors.Is(recvErr, context.Canceled) {
+						if err == nil {
+							err = recvErr
+						}
+					}
+					break
+				}
+				if chunk == nil {
+					continue
+				}
+				if chunk.Content != "" {
+					sb.WriteString(chunk.Content)
+					_ = eventPublisher.PublishAnswerDelta(ctx, request.RunID, chunk.Content)
+				}
+				// 部分 LLM 实现仅在最后一个 chunk 携带 Usage
+				if chunk.ResponseMeta != nil && chunk.ResponseMeta.Usage != nil {
+					accumulatedUsage.InputTokens += chunk.ResponseMeta.Usage.PromptTokens
+					accumulatedUsage.OutputTokens += chunk.ResponseMeta.Usage.CompletionTokens
+					accumulatedUsage.TotalTokens += chunk.ResponseMeta.Usage.TotalTokens
+				}
+			}
+			mv.MessageStream.Close()
+			if msgContent := sb.String(); msgContent != "" {
+				finalContent = msgContent
+			}
+			continue
+		}
+
+		// 非流式兜底：兼容未实现流式的事件类型（保持原有行为）
+		if mv.Message != nil {
+			msg := mv.Message
 			if msg.Role == schema.Assistant && msg.Content != "" {
 				finalContent = msg.Content
 			}
-			// 从每条消息中提取 token 用量并累积
 			if msg.ResponseMeta != nil && msg.ResponseMeta.Usage != nil {
 				accumulatedUsage.InputTokens += msg.ResponseMeta.Usage.PromptTokens
 				accumulatedUsage.OutputTokens += msg.ResponseMeta.Usage.CompletionTokens
