@@ -12,7 +12,7 @@ import (
 
 	"github.com/1090-f/Memora/internal/agent/core"
 	"github.com/1090-f/Memora/internal/contracts"
-	"github.com/1090-f/Memora/pkg/config"
+	appobservability "github.com/1090-f/Memora/pkg/observability"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -131,11 +131,10 @@ func (m *AgentMiddleware) WrapInvokableToolCall(ctx context.Context, endpoint ad
 		toolName := tc.Name
 		callID := tc.CallID
 		toolCtx, span := otel.Tracer("github.com/1090-f/Memora/agent").Start(ctx, "tool."+toolName)
-		span.SetAttributes(attribute.String("memora.run_id", string(m.RunID)), attribute.String("memora.tool_name", toolName), attribute.String("memora.tool_call_id", callID), attribute.String("langfuse.observation.type", "tool"))
-		if captureLangfuseContent() {
-			// 工具入参写进 Langfuse —— 这是"点开一条 trace 能看到工具收到什么"的关键
-			span.SetAttributes(attribute.String("langfuse.observation.input", truncateRunesForTrace(argumentsInJSON, langfuseToolIOMaxRunes)))
-		}
+		span.SetAttributes(attribute.String("memora.run_id", string(m.RunID)), attribute.String("memora.tool_name", toolName), attribute.String("memora.tool_call_id", callID))
+		appobservability.SetLangfuseObservationType(span, "tool")
+		// 工具入参写进 Langfuse —— 这是"点开一条 trace 能看到工具收到什么"的关键
+		appobservability.SetLangfuseInput(span, argumentsInJSON)
 
 		if m.EventPublisher != nil {
 			_ = m.EventPublisher.PublishToolCallStarted(ctx, m.RunID, toolName, contracts.ID(callID))
@@ -148,10 +147,8 @@ func (m *AgentMiddleware) WrapInvokableToolCall(ctx context.Context, endpoint ad
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "tool call failed")
 		}
-		if captureLangfuseContent() {
-			// 工具返回结果同样写进 Langfuse（工具结果可能很长，已按字符截断）
-			span.SetAttributes(attribute.String("langfuse.observation.output", truncateRunesForTrace(result, langfuseToolIOMaxRunes)))
-		}
+		// 工具返回结果同样写进 Langfuse（工具结果可能很长，helper 内部按字符截断）
+		appobservability.SetLangfuseOutput(span, result)
 		span.End()
 
 		if m.CitationCollector != nil {
@@ -183,11 +180,10 @@ func (m *AgentMiddleware) WrapStreamableToolCall(ctx context.Context, endpoint a
 		toolName := tc.Name
 		callID := tc.CallID
 		toolCtx, span := otel.Tracer("github.com/1090-f/Memora/agent").Start(ctx, "tool.stream.open."+toolName)
-		span.SetAttributes(attribute.String("memora.run_id", string(m.RunID)), attribute.String("memora.tool_name", toolName), attribute.String("memora.tool_call_id", callID), attribute.String("langfuse.observation.type", "tool"))
-		if captureLangfuseContent() {
-			// 流式工具只记入参：输出是 StreamReader，要消费掉才能拿到结果，代价太大
-			span.SetAttributes(attribute.String("langfuse.observation.input", truncateRunesForTrace(argumentsInJSON, langfuseToolIOMaxRunes)))
-		}
+		span.SetAttributes(attribute.String("memora.run_id", string(m.RunID)), attribute.String("memora.tool_name", toolName), attribute.String("memora.tool_call_id", callID))
+		appobservability.SetLangfuseObservationType(span, "tool")
+		// 工具入参写进 Langfuse —— 这是"点开一条 trace 能看到工具收到什么"的关键
+		appobservability.SetLangfuseInput(span, argumentsInJSON)
 
 		if m.EventPublisher != nil {
 			_ = m.EventPublisher.PublishToolCallStarted(ctx, m.RunID, toolName, contracts.ID(callID))
@@ -198,8 +194,41 @@ func (m *AgentMiddleware) WrapStreamableToolCall(ctx context.Context, endpoint a
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "tool call failed")
+			span.End()
+		} else if result == nil {
+			// 理论不可达（err 为 nil 时必然有流）；真发生了也必须闭合 Span，
+			// 否则该节点在 Langfuse 里会永远停在「进行中」。
+			span.End()
+		} else if appobservability.LangfuseCaptureContent() {
+			// 流式工具的产出是 StreamReader，Span 必须等流读完才能写 output ——
+			// 此前这里直接 span.End() 且不写 output，Langfuse 上所有 tool.stream.open.* 节点都是空的。
+			// 做法与 internal/ai/traced_chat_model.go 一致：Copy 出旁路副本，边读边累计，读完写 output 再 End。
+			// 捕获关闭时不做 Copy，隐私模式下不产生额外开销。
+			// ⚠️ Eino 语义（两个易错点）：
+			//   ① Copy(1) 因 n<2 直接返回原 reader、不产生副本，必须 Copy(2)；
+			//   ② Copy 之后原 reader 即不可用，只能返回副本；副本必须 Close，
+			//      否则上游 pipe 阻塞，整条 pipeline 的协程与内存都会泄漏。
+			copies := result.Copy(2)
+			go func() {
+				defer span.End()        // defer 逆序：先执行下一行的 Close，再 End
+				defer copies[1].Close() // 流结束（含取消）后本 goroutine 必定退出
+				var sb strings.Builder
+				for {
+					chunk, recvErr := copies[1].Recv()
+					if recvErr != nil {
+						break // io.EOF，或流被取消
+					}
+					// 超预算后只把流读干净、不再累积：中途 break 会让上游阻塞。
+					if sb.Len() < appobservability.LangfuseIOMaxRunes*4 {
+						sb.WriteString(chunk)
+					}
+				}
+				appobservability.SetLangfuseOutput(span, sb.String())
+			}()
+			result = copies[0]
+		} else {
+			span.End()
 		}
-		span.End()
 
 		if m.CitationCollector != nil {
 			citations := extractCitationsFromContext(ctx)
@@ -259,26 +288,10 @@ func truncateString(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// langfuseToolIOMaxRunes 是工具输入/输出写入 Langfuse 的单条字符上限。
-// 工具结果可能很大（如整页文档），不截断会让 Span 过肥、拖累导出。
-const langfuseToolIOMaxRunes = 8000
-
-// captureLangfuseContent 返回是否允许把工具正文外发到 Langfuse。
-// 与 internal/ai/traced_chat_model.go 读同一份配置。
-func captureLangfuseContent() bool {
-	return config.Get().Langfuse.CaptureContent
-}
-
-// truncateRunesForTrace 按「字符」而非「字节」截断。
-// 不要复用上面的 truncateString —— 它用 s[:maxLen] 按字节切，
-// 中文会被切在 UTF-8 字符中间产生乱码。
-func truncateRunesForTrace(s string, maxRunes int) string {
-	runes := []rune(s)
-	if len(runes) <= maxRunes {
-		return s
-	}
-	return string(runes[:maxRunes]) + "...(已截断)"
-}
+// 说明：Langfuse 正文写入（input / output / observation.type）与字符截断
+// 统一由 pkg/observability 的 SetLangfuseInput / SetLangfuseOutput /
+// SetLangfuseObservationType / TruncateRunesForLangfuse 提供，
+// 本包不再保留私有副本 —— 多份实现会导致「有的节点写了、有的没写」。
 
 // getToolNamesFromInfos 从 ToolInfo 列表获取工具名称
 func getToolNamesFromInfos(infos []*schema.ToolInfo) []string {

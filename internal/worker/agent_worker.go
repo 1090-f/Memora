@@ -264,6 +264,13 @@ func (w *AgentWorker) executeRun(parent context.Context, run *entity.AgentRun) {
 		attribute.String("langfuse.session.id", run.ConversationID.String()),
 		attribute.String("langfuse.user.id", run.UserID.String()),
 	)
+	// Langfuse：根节点同样要有 Input/Output。它被导出白名单当作 trace 的首屏节点，
+	// 空着的话点开一条 trace 第一眼是白板。
+	appobservability.SetLangfuseInput(queueSpan, run.Query)
+	appobservability.SetLangfuseOutput(queueSpan, langfuseJSONPayload(map[string]any{
+		"queue_wait_ms": queueEndedAt.Sub(queueStartedAt).Milliseconds(),
+		"started_at":    queueStartedAt.UTC().Format(time.RFC3339Nano),
+	}))
 	queueSpan.End(trace.WithTimestamp(queueEndedAt))
 	execCtx, span := otel.Tracer("github.com/1090-f/Memora/worker").Start(queueCtx, "agent.run")
 	defer span.End()
@@ -277,6 +284,10 @@ func (w *AgentWorker) executeRun(parent context.Context, run *entity.AgentRun) {
 		attribute.String("langfuse.session.id", run.ConversationID.String()),
 		attribute.String("langfuse.user.id", run.UserID.String()),
 	)
+	// 节点类型显式声明为 agent，让 Langfuse 用 agent 语义渲染（默认会被当成普通 span）。
+	appobservability.SetLangfuseObservationType(span, "agent")
+	// 入参：用户问题。产出在下方每个终局分支里各自写入（见 langfuseRunOutput）。
+	appobservability.SetLangfuseInput(span, run.Query)
 
 	runID := contracts.ID(run.ID.String())
 	execCtx = contracts.WithAgentStageReporter(execCtx, func(ctx context.Context, stage contracts.AgentStage, status contracts.StageStatus, durationMS int64, summary string, metadata map[string]any) {
@@ -286,6 +297,7 @@ func (w *AgentWorker) executeRun(parent context.Context, run *entity.AgentRun) {
 	contextStarted := time.Now().UTC()
 	w.publishStage(execCtx, runID, contracts.AgentStageContextBuild, contracts.StageRunning, 0, "正在准备会话、记忆与知识上下文")
 	contextBuildCtx, contextBuildSpan := otel.Tracer("github.com/1090-f/Memora/worker").Start(execCtx, "context.build")
+	appobservability.SetLangfuseInput(contextBuildSpan, run.Query)
 
 	// 1. 构建 Agent 执行上下文（从数据库加载会话历史、Agent 配置、记忆等）
 	agentCtx, err := w.contextBuilder.Build(contextBuildCtx, contracts.AgentContextRequest{
@@ -299,6 +311,10 @@ func (w *AgentWorker) executeRun(parent context.Context, run *entity.AgentRun) {
 	if err != nil {
 		contextBuildSpan.RecordError(err)
 		contextBuildSpan.SetStatus(codes.Error, "context build failed")
+		appobservability.SetLangfuseOutput(contextBuildSpan, langfuseJSONPayload(map[string]any{
+			"status": "failed",
+			"error":  err.Error(),
+		}))
 		contextBuildSpan.End()
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "context build failed")
@@ -317,8 +333,10 @@ func (w *AgentWorker) executeRun(parent context.Context, run *entity.AgentRun) {
 		w.updateRunObservability(execCtx, run.ID, contracts.AgentStageContextBuild, true, "请检查知识库、模型与会话配置后重试。")
 		// 创建失败状态的助手消息，确保问答页面能够展示本次运行失败的结果。
 		w.createFailureMessage(context.Background(), run, fmt.Sprintf("抱歉，系统在准备回答时遇到了问题。失败原因：%s", failureMessage))
+		appobservability.SetLangfuseOutput(span, langfuseRunOutput("context_build_failed", "", contracts.TokenUsage{}, err))
 		return
 	}
+	appobservability.SetLangfuseOutput(contextBuildSpan, contextBuildSummaryForLangfuse(agentCtx))
 	contextBuildSpan.End()
 	w.publishStage(execCtx, runID, contracts.AgentStageContextBuild, contracts.StageSucceeded, time.Since(contextStarted).Milliseconds(), "上下文准备完成")
 	if agentCtx.KnowledgeStatus == "" {
@@ -347,9 +365,11 @@ func (w *AgentWorker) executeRun(parent context.Context, run *entity.AgentRun) {
 				}
 				w.publishRunFailed(execCtx, runID, "", errors.New("服务停止，运行已中断"))
 				logger.Info("Agent 运行因 Worker 停止而中断", zap.String("run_id", run.ID.String()))
+				appobservability.SetLangfuseOutput(span, langfuseRunOutput("worker_stopped", "", result.Usage, errors.New("服务停止，运行已中断")))
 				return
 			}
 			logger.Info("Agent 运行已被用户取消", zap.String("run_id", run.ID.String()))
+			appobservability.SetLangfuseOutput(span, langfuseRunOutput("cancelled", "", result.Usage, context.Canceled))
 			return
 		}
 
@@ -374,6 +394,7 @@ func (w *AgentWorker) executeRun(parent context.Context, run *entity.AgentRun) {
 		w.updateRunObservability(context.Background(), run.ID, contracts.AgentStageModelGenerate, true, "请重试；若仍失败，请检查模型服务状态并使用 Trace ID 诊断。")
 		// 创建失败状态的助手消息，向用户反馈本次运行执行失败。
 		w.createFailureMessage(context.Background(), run, w.getFriendlyErrorMessage(err))
+		appobservability.SetLangfuseOutput(span, langfuseRunOutput("failed", "", result.Usage, err))
 		return
 	}
 
@@ -403,6 +424,7 @@ func (w *AgentWorker) executeRun(parent context.Context, run *entity.AgentRun) {
 		w.publishRunFailed(execCtx, runID, result.ExecutionMode, errors.New("任务执行完成但未生成有效最终回答"))
 		w.updateRunObservability(context.Background(), run.ID, contracts.AgentStageAnswer, true, "请重试或简化问题；若持续为空，请检查模型输出配置。")
 		w.createFailureMessage(context.Background(), run, "任务执行完成但未生成有效最终回答，请重试或简化问题")
+		appobservability.SetLangfuseOutput(span, langfuseRunOutput("empty_final_answer", result.FinalResult, result.Usage, errors.New("任务执行完成但未生成有效最终回答")))
 		return
 	}
 
@@ -438,11 +460,13 @@ func (w *AgentWorker) executeRun(parent context.Context, run *entity.AgentRun) {
 		w.publishRunFailed(execCtx, runID, result.ExecutionMode, errors.New("运行结果保存失败"))
 		w.updateRunObservability(context.Background(), run.ID, contracts.AgentStageAnswer, true, "请重试；若持续失败，请检查数据库状态。")
 		w.createFailureMessage(context.Background(), run, "运行结果保存失败，请重试")
+		appobservability.SetLangfuseOutput(span, langfuseRunOutput("persist_failed", result.FinalResult, result.Usage, errors.New("运行结果保存失败")))
 		return
 	}
 	// MarkCompleted 已成功落库，此时才发布成功终态事件 ——
 	// 「收到 agent.run.completed ⇒ agent_runs.final_result 已可读」的不变式由此成立。
 	// 必须排在下面的 updateRunObservability 之前（原因见 publishRunCompleted 的注释）。
+	appobservability.SetLangfuseOutput(span, langfuseRunOutput("completed", result.FinalResult, result.Usage, nil))
 	w.publishRunCompleted(execCtx, runID, result)
 	w.updateRunObservability(context.Background(), run.ID, "", false, "")
 
@@ -545,6 +569,50 @@ func (w *AgentWorker) publishStage(ctx context.Context, runID contracts.ID, stag
 	if err := w.events.Publish(ctx, contracts.AgentEvent{RunID: runID, TraceID: traceID, RequestID: requestID, Stage: stage, Status: status, EventType: contracts.EventStageUpdated, Data: payload}); err != nil {
 		logger.Warn("发布问答阶段事件失败，运行继续", zap.String("run_id", string(runID)), zap.String("stage", string(stage)), zap.Error(err))
 	}
+}
+
+// --- Langfuse 节点正文辅助 ---
+
+// langfuseJSONPayload 把结构压成 JSON 供 Langfuse 渲染。
+// 序列化失败返回空串 —— observability.SetLangfuse* 对空串是 no-op，埋点不会因此把主流程带崩。
+func langfuseJSONPayload(v any) string {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+// langfuseRunOutput 汇总 agent.run 节点的产出。
+// status 取「终局分支名」，便于在 Langfuse 上直接筛「哪些 run 是空回答 / 落库失败」。
+func langfuseRunOutput(status, answer string, usage contracts.TokenUsage, err error) string {
+	payload := map[string]any{
+		"status":        status,
+		"answer":        answer,
+		"input_tokens":  usage.InputTokens,
+		"output_tokens": usage.OutputTokens,
+		"total_tokens":  usage.TotalTokens,
+	}
+	if err != nil {
+		payload["error"] = err.Error()
+	}
+	return langfuseJSONPayload(payload)
+}
+
+// contextBuildSummaryForLangfuse 汇总上下文构建结果。
+// 只放结构性指标、不放完整提示词 —— 提示词正文已在每次 generation 节点里出现，
+// 在这里再写一遍只是让 Span 变肥（同一份内容外发两遍）。
+func contextBuildSummaryForLangfuse(ctx contracts.AgentContext) string {
+	return langfuseJSONPayload(map[string]any{
+		"status":              "succeeded",
+		"conversation_msgs":   len(ctx.Conversation.Messages),
+		"memories":            len(ctx.Memories),
+		"allowed_tools":       ctx.AllowedTools,
+		"knowledge_status":    ctx.KnowledgeStatus,
+		"memory_enabled":      ctx.MemoryEnabled,
+		"network_enabled":     ctx.NetworkEnabled,
+		"system_prompt_chars": len([]rune(ctx.SystemPrompt)),
+	})
 }
 
 func (w *AgentWorker) updateRunObservability(ctx context.Context, runID uuid.UUID, failureStage contracts.AgentStage, retryable bool, recoveryAdvice string) {
