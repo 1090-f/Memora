@@ -201,37 +201,54 @@ func (r *ADKReactRunner) Run(ctx context.Context, request contracts.AgentRunRequ
 		mv := event.Output.MessageOutput
 
 		if mv.IsStreaming && mv.MessageStream != nil {
-			// 流式消息：逐 chunk 发布增量，同时拼接完整内容
-			var sb strings.Builder
-			for {
-				chunk, recvErr := mv.MessageStream.Recv()
-				if recvErr != nil {
-					if !errors.Is(recvErr, io.EOF) && !errors.Is(recvErr, context.Canceled) {
-						if err == nil {
-							err = recvErr
+				// 流式消息：先缓冲所有 chunk，流结束后根据本轮是否有工具调用决定是否发布。
+				//    - 有工具调用的轮次（中间轮次）：内容静默丢弃，不输出到用户页面
+				//    - 无工具调用的轮次（最终回答轮次）：逐一发布 chunk 增量
+				var sb strings.Builder
+				var contentChunks []string
+				var hasToolCall bool
+				for {
+					chunk, recvErr := mv.MessageStream.Recv()
+					if recvErr != nil {
+						if !errors.Is(recvErr, io.EOF) && !errors.Is(recvErr, context.Canceled) {
+							if err == nil {
+								err = recvErr
+							}
 						}
+						break
 					}
-					break
+					if chunk == nil {
+						continue
+					}
+					if len(chunk.ToolCalls) > 0 {
+						hasToolCall = true
+					}
+					if chunk.Content != "" {
+						sb.WriteString(chunk.Content)
+						contentChunks = append(contentChunks, chunk.Content)
+					}
+					// 部分 LLM 实现仅在最后一个 chunk 携带 Usage
+					if chunk.ResponseMeta != nil && chunk.ResponseMeta.Usage != nil {
+						accumulatedUsage.InputTokens += chunk.ResponseMeta.Usage.PromptTokens
+						accumulatedUsage.OutputTokens += chunk.ResponseMeta.Usage.CompletionTokens
+						accumulatedUsage.TotalTokens += chunk.ResponseMeta.Usage.TotalTokens
+					}
 				}
-				if chunk == nil {
-					continue
+				mv.MessageStream.Close()
+
+				if hasToolCall {
+					// 工具调用轮次：内容静默丢弃，不更新 finalContent
+					// 只有纯回答轮次（无工具调用）的 finalContent 才保留为最终答案
+				} else {
+					// 纯回答轮次：逐一发布内容增量
+					for _, delta := range contentChunks {
+						_ = eventPublisher.PublishAnswerDelta(ctx, request.RunID, delta)
+					}
+					if msgContent := sb.String(); msgContent != "" {
+						finalContent = msgContent
+					}
 				}
-				if chunk.Content != "" {
-					sb.WriteString(chunk.Content)
-					_ = eventPublisher.PublishAnswerDelta(ctx, request.RunID, chunk.Content)
-				}
-				// 部分 LLM 实现仅在最后一个 chunk 携带 Usage
-				if chunk.ResponseMeta != nil && chunk.ResponseMeta.Usage != nil {
-					accumulatedUsage.InputTokens += chunk.ResponseMeta.Usage.PromptTokens
-					accumulatedUsage.OutputTokens += chunk.ResponseMeta.Usage.CompletionTokens
-					accumulatedUsage.TotalTokens += chunk.ResponseMeta.Usage.TotalTokens
-				}
-			}
-			mv.MessageStream.Close()
-			if msgContent := sb.String(); msgContent != "" {
-				finalContent = msgContent
-			}
-			continue
+				continue
 		}
 
 		// 非流式兜底：兼容未实现流式的事件类型（保持原有行为）
