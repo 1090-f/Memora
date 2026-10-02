@@ -38,33 +38,29 @@ services:
       timeout: 5s
       retries: 15
 
+  # 注意：MinIO 社区版已于 2026-09 停更，minio/minio 与 minio/mc 从 Docker Hub 删除、
+  # quay.io 也关闭了匿名拉取，原镜像无法再获取。这里改用 RustFS（Apache-2.0，S3 协议兼容），
+  # 服务名/端口/凭据环境变量保持与 MinIO 一致，业务代码零改动。
   minio:
-    image: minio/minio:latest
+    image: rustfs/rustfs:latest
     restart: unless-stopped
     logging: *default-logging
-    command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${MEMORA_MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MEMORA_MINIO_SECRET_KEY:-minioadmin}
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: "0.0.0.0:9000"
+      RUSTFS_CONSOLE_ADDRESS: "0.0.0.0:9001"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_REGION: us-east-1
+      RUSTFS_ACCESS_KEY: ${MEMORA_MINIO_ACCESS_KEY:-minioadmin}
+      RUSTFS_SECRET_KEY: ${MEMORA_MINIO_SECRET_KEY:-minioadmin}
     ports: ["19000:9000", "19001:9001"]
     volumes: ["memora-minio:/data"]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 2s
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/health"]
+      interval: 5s
       timeout: 5s
-      retries: 15
-
-  minio-init:
-    image: minio/mc:latest
-    depends_on:
-      minio: {condition: service_healthy}
-    environment:
-      MINIO_ROOT_USER: ${MEMORA_MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MEMORA_MINIO_SECRET_KEY:-minioadmin}
-      MEMORA_MINIO_BUCKET: ${MEMORA_MINIO_BUCKET:-memora}
-    entrypoint: ["/bin/sh", "-c"]
-    command: ['mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" && mc mb --ignore-existing "local/$${MEMORA_MINIO_BUCKET}"']
-    restart: "no"
+      retries: 20
+      start_period: 20s
 
   migrate:
     build:
@@ -210,10 +206,12 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - docling-models:/models/huggingface
+    # 原 minio-init（mc mb 建桶）已移除：objectstore.Open 内部 ensureBucket 会自动建桶，
+    # 无需依赖外部 mc 镜像（该镜像已随 MinIO 一并下架）。
     depends_on: &application-dependencies
       bootstrap-admin: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
-      minio-init: {condition: service_completed_successfully}
+      minio: {condition: service_healthy}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health/ready', timeout=3)"]
       interval: 5s
